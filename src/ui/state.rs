@@ -3,7 +3,7 @@
 //! Terminalden ve ağdan bağımsız tutuldu: burası saf bir durum makinesi olduğu için
 //! "kim nerede görünüyor, hangi mesaj hangi panele düşüyor" soruları test edilebiliyor.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::net::Event;
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
@@ -35,6 +35,10 @@ pub struct App {
     pub voice: Option<ChannelId>,
     pub muted: bool,
     pub input: String,
+    /// O anda konuşanlar — ses motorundan gelir, kullanıcı listesinde gösterilir.
+    pub speaking: HashSet<PeerId>,
+    /// Ses donanımı açılabildi mi. Açılamadıysa arayüz bunu söylemeli.
+    pub voice_available: bool,
     pub status: Option<String>,
     /// Oturum bittiğinde dolan gerekçe; dolduğunda arayüz kapanır.
     pub ended: Option<String>,
@@ -54,6 +58,8 @@ impl App {
             voice: None,
             muted: false,
             input: String::new(),
+            speaking: HashSet::new(),
+            voice_available: false,
             status: None,
             ended: None,
         }

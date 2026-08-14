@@ -14,3 +14,4 @@ pub mod room;
 
 pub mod net;
 pub mod ui;
+pub mod audio;

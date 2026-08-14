@@ -1,6 +1,7 @@
 //! iroh endpoint kurulumu ve kimlik dönüşümleri.
 
 use anyhow::{Context, Result};
+use iroh::address_lookup::MemoryLookup;
 use iroh::{Endpoint, EndpointId, RelayMode, endpoint::presets};
 
 use crate::proto::{self, PeerId};
@@ -11,7 +12,7 @@ use crate::proto::{self, PeerId};
 /// bu sayede davet kodu tek başına (adres listesi olmadan) yeterli oluyor.
 pub async fn bind() -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::N0)
-        .alpns(vec![proto::ALPN.to_vec()])
+        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
         .relay_mode(RelayMode::Default)
         .bind()
         .await
@@ -27,11 +28,27 @@ pub async fn bind() -> Result<Endpoint> {
 /// tam `EndpointAddr` verilmelidir.
 pub async fn bind_offline() -> Result<Endpoint> {
     Endpoint::builder(presets::Minimal)
-        .alpns(vec![proto::ALPN.to_vec()])
+        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
         .bind()
         .await
         .context("test endpoint'i açılamadı")
+}
+
+/// Testler için: keşif servisi yerine elle beslenen bir adres defteri olan endpoint.
+///
+/// Ses mesh'inde peer'lar birbirini kimlikten bulur; gerçekte bunu DNS keşfi yapar.
+/// Testte defteri kendimiz doldurup keşfi (ve interneti) devre dışı bırakıyoruz.
+pub async fn bind_offline_with_lookup() -> Result<(Endpoint, MemoryLookup)> {
+    let lookup = MemoryLookup::default();
+    let endpoint = Endpoint::builder(presets::Minimal)
+        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .relay_mode(RelayMode::Disabled)
+        .address_lookup(lookup.clone())
+        .bind()
+        .await
+        .context("test endpoint'i açılamadı")?;
+    Ok((endpoint, lookup))
 }
 
 pub fn to_peer_id(id: EndpointId) -> PeerId {

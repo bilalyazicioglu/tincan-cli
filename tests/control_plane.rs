@@ -61,7 +61,7 @@ async fn wait_for_chat(session: &mut Session, text: &str) -> Result<()> {
 async fn peer_joins_and_both_sides_converge() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), "parola".into(), "ahmet").await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), "parola".into(), "ahmet", None).await?;
 
     let welcome = wait_for(&mut host, "host welcome", |e| match e {
         Event::Welcome { room, .. } => Some(room),
@@ -72,7 +72,7 @@ async fn peer_joins_and_both_sides_converge() -> Result<()> {
     assert_eq!(welcome.channels, vec!["genel", "oyun"]);
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "parola", "mehmet").await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "parola", "mehmet", None).await?;
 
     let guest_welcome = wait_for(&mut guest, "guest welcome", |e| match e {
         Event::Welcome { room, .. } => Some(room),
@@ -101,10 +101,10 @@ async fn peer_joins_and_both_sides_converge() -> Result<()> {
 async fn wrong_password_is_refused() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let _host = Coordinator::spawn(host_ep, test_room(), "doğru-parola".into(), "ahmet").await?;
+    let _host = Coordinator::spawn(host_ep, test_room(), "doğru-parola".into(), "ahmet", None).await?;
 
     let guest_ep = bind_offline().await?;
-    let result = Client::connect(guest_ep, host_addr, "yanlış-parola", "davetsiz").await;
+    let result = Client::connect(guest_ep, host_addr, "yanlış-parola", "davetsiz", None).await;
 
     let err = result.err().expect("yanlış parola kabul edilmemeli").to_string();
     assert!(err.contains("parola"), "hata parolayı işaret etmeli: {err}");
@@ -116,11 +116,11 @@ async fn wrong_password_is_refused() -> Result<()> {
 async fn chat_reaches_everyone_including_the_sender() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet").await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet").await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
@@ -151,11 +151,11 @@ async fn chat_reaches_everyone_including_the_sender() -> Result<()> {
 async fn channel_switch_is_visible_to_everyone() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet").await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet").await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
     let guest_id = guest.me;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
@@ -191,11 +191,11 @@ async fn channel_switch_is_visible_to_everyone() -> Result<()> {
 async fn invalid_channel_request_is_ignored_without_breaking_the_session() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet").await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet").await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
@@ -221,11 +221,11 @@ async fn invalid_channel_request_is_ignored_without_breaking_the_session() -> Re
 async fn leaving_updates_the_roster() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet").await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet").await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
@@ -241,11 +241,11 @@ async fn leaving_updates_the_roster() -> Result<()> {
 async fn duplicate_nicknames_are_disambiguated_over_the_wire() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet").await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "ahmet").await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "ahmet", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let roster = wait_for_roster(&mut host, 2).await?;
@@ -260,14 +260,14 @@ async fn duplicate_nicknames_are_disambiguated_over_the_wire() -> Result<()> {
 async fn three_participants_stay_in_sync() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet").await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
-    let mut first = Client::connect(bind_offline().await?, host_addr.clone(), "", "mehmet").await?;
+    let mut first = Client::connect(bind_offline().await?, host_addr.clone(), "", "mehmet", None).await?;
     wait_for(&mut first, "welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
-    let mut second = Client::connect(bind_offline().await?, host_addr, "", "zeynep").await?;
+    let mut second = Client::connect(bind_offline().await?, host_addr, "", "zeynep", None).await?;
     wait_for(&mut second, "welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 3).await?;
 

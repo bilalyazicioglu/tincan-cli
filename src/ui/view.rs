@@ -72,14 +72,20 @@ fn draw_people(frame: &mut Frame, area: Rect, app: &App) {
         .peers
         .iter()
         .map(|peer| {
-            // Faz 2'de dolu daire gerçek konuşma göstergesi olacak; şimdilik
-            // sadece "ses kanalında mı" bilgisini taşıyor.
-            let symbol = match (peer.channel.is_some(), peer.muted) {
-                (_, true) => "🔇",
-                (true, false) => "●",
-                (false, false) => "○",
+            let speaking = app.speaking.contains(&peer.id);
+            let symbol = match (peer.channel.is_some(), peer.muted, speaking) {
+                (_, true, _) => "🔇",
+                (true, false, true) => "●",
+                (true, false, false) => "○",
+                (false, false, _) => "·",
             };
-            let mut spans = vec![Span::raw(format!("{symbol} {}", peer.name))];
+            // Konuşan kişi listede hemen ayırt edilebilmeli.
+            let name_style = if speaking {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![Span::styled(format!("{symbol} {}", peer.name), name_style)];
             if peer.id == app.me {
                 spans.push(Span::styled(" (sen)", Style::default().fg(DIM)));
             }
@@ -152,16 +158,20 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let voice = match app.voice {
-        Some(channel) if app.muted => format!("🔇 {} (susturuldu)", app.channel_name(channel)),
-        Some(channel) => format!("🔊 {}", app.channel_name(channel)),
-        None => "sessiz — Ctrl+J ile katıl".to_string(),
+    let voice = if !app.voice_available {
+        "ses kapalı (yalnızca yazışma)".to_string()
+    } else {
+        match app.voice {
+            Some(channel) if app.muted => format!("🔇 {} (susturuldu)", app.channel_name(channel)),
+            Some(channel) => format!("🔊 {}", app.channel_name(channel)),
+            None => "sessiz — F2 ile katıl".to_string(),
+        }
     };
 
     let left = app
         .status
         .clone()
-        .unwrap_or_else(|| "Tab kanal · Ctrl+J ses · Ctrl+M sustur · Ctrl+C çık".into());
+        .unwrap_or_else(|| "Tab kanal · F2 ses · F3 sustur · Ctrl+C çık".into());
 
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Min(20), Constraint::Length(48)]).areas(area);

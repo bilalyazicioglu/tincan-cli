@@ -25,6 +25,7 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 use tracing::{debug, warn};
 
 use super::endpoint::to_peer_id;
+use super::voice::VoiceMesh;
 use super::{Command, Event, Session, now};
 use crate::auth;
 use crate::invite;
@@ -59,7 +60,7 @@ async fn read_msg<T: DeserializeOwned>(stream: &mut RecvStream) -> Result<T> {
 
 // ── Koordinatör ────────────────────────────────────────────────────────────────
 
-struct Shared {
+pub(crate) struct Shared {
     room: Mutex<Room>,
     /// Tüm bağlı peer'lara **ve** host'un kendi arayüzüne giden yayın.
     broadcast: broadcast::Sender<ToPeer>,
@@ -110,6 +111,7 @@ impl Coordinator {
         room: Room,
         password: String,
         host_name: &str,
+        voice: Option<VoiceMesh>,
     ) -> Result<Session> {
         let me = to_peer_id(endpoint.id());
         let invite_code = invite::encode(&me.0);
@@ -138,7 +140,7 @@ impl Coordinator {
             event_tx.clone(),
         ));
 
-        tokio::spawn(accept_loop(endpoint.clone(), shared.clone()));
+        tokio::spawn(accept_loop(endpoint.clone(), Some(shared.clone()), voice));
         tokio::spawn(host_commands(shared, command_rx, event_tx, endpoint, me));
 
         Ok(Session {
@@ -176,16 +178,52 @@ async fn host_commands(
     }
 }
 
-async fn accept_loop(endpoint: Endpoint, shared: Arc<Shared>) {
+/// Gelen bağlantıları ALPN'e göre dağıtır.
+///
+/// Aynı endpoint hem kontrol hem ses bağlantısı kabul eder. Koordinatör olmayan
+/// peer'larda `control` boştur — onlar yalnızca ses bağlantısı karşılar.
+pub(crate) async fn accept_loop(
+    endpoint: Endpoint,
+    control: Option<Arc<Shared>>,
+    voice: Option<VoiceMesh>,
+) {
     while let Some(incoming) = endpoint.accept().await {
-        let shared = shared.clone();
+        let control = control.clone();
+        let voice = voice.clone();
         tokio::spawn(async move {
-            let conn = match incoming.await {
+            let mut accepting = match incoming.accept() {
+                Ok(accepting) => accepting,
+                Err(err) => {
+                    debug!("gelen bağlantı kabul edilemedi: {err:#}");
+                    return;
+                }
+            };
+            let alpn = match accepting.alpn().await {
+                Ok(alpn) => alpn,
+                Err(err) => {
+                    debug!("ALPN okunamadı: {err:#}");
+                    return;
+                }
+            };
+            let conn = match accepting.await {
                 Ok(conn) => conn,
                 Err(err) => {
                     debug!("gelen bağlantı kurulamadı: {err:#}");
                     return;
                 }
+            };
+
+            if alpn == proto::VOICE_ALPN {
+                match voice {
+                    Some(mesh) => mesh.accept(conn),
+                    None => debug!("ses bağlantısı geldi ama ses açık değil"),
+                }
+                return;
+            }
+
+            let Some(shared) = control else {
+                debug!("kontrol bağlantısı geldi ama koordinatör değiliz");
+                return;
             };
             let peer = to_peer_id(conn.remote_id());
             if let Err(err) = serve_peer(shared.clone(), conn, peer).await {
@@ -312,6 +350,7 @@ impl Client {
         target: impl Into<EndpointAddr>,
         password: &str,
         name: &str,
+        voice: Option<VoiceMesh>,
     ) -> Result<Session> {
         let target: EndpointAddr = target.into();
         let coordinator = to_peer_id(target.id);
@@ -351,6 +390,10 @@ impl Client {
             .await
             .ok();
 
+        // Katılan taraf da ses bağlantısı karşılamalı: mesh iki yönlüdür.
+        if let Some(mesh) = voice {
+            super::voice::spawn_accept(endpoint.clone(), mesh);
+        }
         tokio::spawn(client_reader(recv, event_tx.clone()));
         tokio::spawn(client_writer(send, command_rx, conn, endpoint, event_tx));
 

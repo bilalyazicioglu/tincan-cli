@@ -10,6 +10,47 @@ use serde::{Deserialize, Serialize};
 /// Kontrol akışında kullanılan ALPN.
 pub const ALPN: &[u8] = b"tincan/control/0";
 
+/// Ses mesh'inde kullanılan ALPN. Kontrol düzleminden ayrı: ses bağlantıları
+/// peer'lar arasında doğrudan kurulur, koordinatörden geçmez.
+pub const VOICE_ALPN: &[u8] = b"tincan/voice/0";
+
+/// Ses paketi başlığı — datagramın ilk baytları.
+///
+/// Gönderenin kimliği pakete yazılmaz: ses datagramı zaten o peer'la kurulmuş,
+/// public key ile doğrulanmış bir QUIC bağlantısından gelir. Kimliği pakete yazmak
+/// hem yer israfı olurdu hem de yalan söylenebilir bir alan yaratırdı.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceHeader {
+    /// Çerçeve sıra numarası; jitter buffer sıralama ve kayıp tespitinde kullanır.
+    /// 20ms'lik çerçevelerde `u32` yaklaşık 2.7 yıl sürer, sarma derdi yok.
+    pub seq: u32,
+    /// Hangi kanala konuşulduğu. Alıcı, kendi kanalından olmayan sesi çalmaz —
+    /// kanal değişimi ile roster güncellemesi arasındaki kısa boşlukta bile.
+    pub channel: ChannelId,
+}
+
+impl VoiceHeader {
+    pub const SIZE: usize = 5;
+
+    pub fn write_into(&self, buffer: &mut [u8]) {
+        buffer[..4].copy_from_slice(&self.seq.to_le_bytes());
+        buffer[4] = self.channel.0;
+    }
+
+    /// Datagramı başlık ve Opus yüküne ayırır.
+    pub fn parse(datagram: &[u8]) -> Option<(Self, &[u8])> {
+        if datagram.len() <= Self::SIZE {
+            return None;
+        }
+        let seq = u32::from_le_bytes(datagram[..4].try_into().ok()?);
+        let header = Self {
+            seq,
+            channel: ChannelId(datagram[4]),
+        };
+        Some((header, &datagram[Self::SIZE..]))
+    }
+}
+
 /// Tek bir kontrol mesajının kabul edilen en büyük boyutu.
 /// Chat satırları küçük; bu sınır bozuk/kötü niyetli uzunluk öneklerine karşı korumadır.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
@@ -210,6 +251,32 @@ mod tests {
             text: "a".repeat(MAX_MESSAGE_BYTES + 1),
         };
         assert!(encode(&huge).is_err());
+    }
+
+    #[test]
+    fn voice_header_round_trips() {
+        let header = VoiceHeader {
+            seq: 123_456,
+            channel: ChannelId(2),
+        };
+        let payload = [9u8; 80];
+
+        let mut datagram = vec![0u8; VoiceHeader::SIZE + payload.len()];
+        header.write_into(&mut datagram);
+        datagram[VoiceHeader::SIZE..].copy_from_slice(&payload);
+
+        let (parsed, body) = VoiceHeader::parse(&datagram).unwrap();
+        assert_eq!(parsed, header);
+        assert_eq!(body, payload);
+    }
+
+    /// Bozuk ya da yüksüz datagram sessizce yoksayılmalı — ses yolunda panik olamaz.
+    #[test]
+    fn voice_header_rejects_undersized_datagrams() {
+        assert!(VoiceHeader::parse(&[]).is_none());
+        assert!(VoiceHeader::parse(&[1, 2, 3]).is_none());
+        // Tam başlık ama yük yok: çalınacak bir şey olmadığı için bu da geçersiz.
+        assert!(VoiceHeader::parse(&[0; VoiceHeader::SIZE]).is_none());
     }
 
     #[test]
