@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
 use iroh::Endpoint;
@@ -38,6 +39,26 @@ struct Shared {
     channel: Mutex<Option<ChannelId>>,
     /// Giden çerçeve sayacı.
     seq: AtomicU32,
+}
+
+/// Ses bağlantılarının o anki durumu — arayüzdeki kalite göstergesini besler.
+///
+/// Kullanıcının bilmek isteyeceği tek şey "sesim düzgün gidiyor mu"; bunun iki
+/// bileşeni var: doğrudan mı gidiyor yoksa relay üzerinden mi dolaşıyor, ve gecikme.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinkStatus {
+    /// Doğrudan P2P bağlantı kurulmuş peer sayısı.
+    pub direct: usize,
+    /// Relay üzerinden akan peer sayısı (delik açma başarısız olmuş).
+    pub relayed: usize,
+    /// Bağlantılar arasındaki en yüksek gidiş-dönüş süresi.
+    pub worst_rtt: Option<Duration>,
+}
+
+impl LinkStatus {
+    pub fn peers(&self) -> usize {
+        self.direct + self.relayed
+    }
 }
 
 /// Ses mesh'inin dışarıya açılan yüzü.
@@ -136,6 +157,28 @@ impl VoiceMesh {
             }
             self.dial(*peer);
         }
+    }
+
+    /// Kurulu ses bağlantılarının kalitesini özetler.
+    pub async fn link_status(&self) -> LinkStatus {
+        let connections = self.shared.connections.lock().await;
+        let mut status = LinkStatus::default();
+
+        for conn in connections.values() {
+            let paths = conn.paths();
+            // Aynı anda birden çok yol açık olabilir; trafiği taşıyan seçili olandır.
+            let Some(selected) = paths.iter().find(|path| path.is_selected()) else {
+                continue;
+            };
+            if selected.is_relay() {
+                status.relayed += 1;
+            } else {
+                status.direct += 1;
+            }
+            let rtt = selected.rtt();
+            status.worst_rtt = Some(status.worst_rtt.map_or(rtt, |worst| worst.max(rtt)));
+        }
+        status
     }
 
     fn dial(&self, peer: PeerId) {

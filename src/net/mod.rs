@@ -18,6 +18,7 @@ pub enum Command {
     /// mesaj yazıldığı kanala düşmeli.
     Chat { channel: ChannelId, text: String },
     SetMuted(bool),
+    SetDeafened(bool),
     Quit,
 }
 

@@ -49,15 +49,38 @@ pub struct AudioDevices {
     _output: cpal::Stream,
 }
 
+/// Hangi cihazın kullanılacağı. `None` = sistemin varsayılanı.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceChoice {
+    pub input: Option<String>,
+    pub output: Option<String>,
+}
+
+/// İsme göre cihaz seçer. Eşleşme büyük/küçük harf duyarsız ve kısmi:
+/// kullanıcı `tincan devices` çıktısındaki adın ayırt edici bir parçasını yazabilsin.
+fn pick(mut devices: impl Iterator<Item = cpal::Device>, wanted: &str) -> Option<cpal::Device> {
+    let wanted = wanted.to_lowercase();
+    devices.find(|d| {
+        d.description()
+            .map(|desc| desc.name().to_lowercase().contains(&wanted))
+            .unwrap_or(false)
+    })
+}
+
 /// Mikrofon ve hoparlörü açar; yakalama ve çalma uçlarını döndürür.
-pub fn open() -> Result<OpenAudio> {
+pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
     let host = cpal::default_host();
-    let input = host
-        .default_input_device()
-        .context("mikrofon bulunamadı")?;
-    let output = host
-        .default_output_device()
-        .context("hoparlör bulunamadı")?;
+
+    let input = match &choice.input {
+        Some(name) => pick(host.input_devices()?, name)
+            .with_context(|| format!("'{name}' adında bir mikrofon yok (tincan devices ile listeleyin)"))?,
+        None => host.default_input_device().context("mikrofon bulunamadı")?,
+    };
+    let output = match &choice.output {
+        Some(name) => pick(host.output_devices()?, name)
+            .with_context(|| format!("'{name}' adında bir hoparlör yok (tincan devices ile listeleyin)"))?,
+        None => host.default_output_device().context("hoparlör bulunamadı")?,
+    };
 
     let in_cfg = input.default_input_config().context("mikrofon ayarı okunamadı")?;
     let out_cfg = output.default_output_config().context("hoparlör ayarı okunamadı")?;

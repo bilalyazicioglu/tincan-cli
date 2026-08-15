@@ -38,9 +38,8 @@ enum Sub {
         /// Virgülle ayrılmış kanal listesi.
         #[arg(long, default_value = DEFAULT_CHANNELS)]
         channels: String,
-        /// Sesi hiç açma; yalnızca yazışma.
-        #[arg(long)]
-        no_voice: bool,
+        #[command(flatten)]
+        audio: AudioArgs,
     },
     /// Davet koduyla var olan bir odaya katılır.
     Join {
@@ -50,11 +49,28 @@ enum Sub {
         name: Option<String>,
         #[arg(long, short)]
         password: Option<String>,
-        #[arg(long)]
-        no_voice: bool,
+        #[command(flatten)]
+        audio: AudioArgs,
     },
     /// Ses cihazlarını listeler.
     Devices,
+}
+
+/// Ses ile ilgili ortak bayraklar.
+#[derive(clap::Args, Clone)]
+struct AudioArgs {
+    /// Sesi hiç açma; yalnızca yazışma.
+    #[arg(long)]
+    no_voice: bool,
+    /// Kullanılacak mikrofon (adın bir parçası yeter).
+    #[arg(long)]
+    input: Option<String>,
+    /// Kullanılacak hoparlör (adın bir parçası yeter).
+    #[arg(long)]
+    output: Option<String>,
+    /// Bas-konuş modu: mikrofon yalnızca F4 ile açılır.
+    #[arg(long)]
+    ptt: bool,
 }
 
 #[tokio::main]
@@ -75,14 +91,14 @@ async fn main() -> Result<()> {
             password,
             room,
             channels,
-            no_voice,
-        } => host(name, password, room, channels, no_voice).await,
+            audio,
+        } => host(name, password, room, channels, audio).await,
         Sub::Join {
             code,
             name,
             password,
-            no_voice,
-        } => join(code, name, password, no_voice).await,
+            audio,
+        } => join(code, name, password, audio).await,
         Sub::Devices => {
             println!("{}", audio::device::describe_devices()?);
             Ok(())
@@ -95,7 +111,7 @@ async fn host(
     password: Option<String>,
     room_name: String,
     channels: String,
-    no_voice: bool,
+    audio: AudioArgs,
 ) -> Result<()> {
     let channels: Vec<String> = channels
         .split(',')
@@ -107,7 +123,7 @@ async fn host(
     println!("ağa bağlanılıyor...");
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
-    let (mesh, control) = setup_voice(&endpoint, me, no_voice);
+    let (mesh, control) = setup_voice(&endpoint, me, &audio);
 
     let session = Coordinator::spawn(
         endpoint,
@@ -124,14 +140,14 @@ async fn host(
     println!("  Arayüz açılıyor...");
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
 
-    ui::run(session, control).await
+    ui::run(session, control, audio.ptt).await
 }
 
 async fn join(
     code: String,
     name: Option<String>,
     password: Option<String>,
-    no_voice: bool,
+    audio: AudioArgs,
 ) -> Result<()> {
     let key = invite::decode(&code).context("davet kodu okunamadı")?;
     let coordinator = PeerId(key);
@@ -139,7 +155,7 @@ async fn join(
     println!("odaya bağlanılıyor...");
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
-    let (mesh, control) = setup_voice(&endpoint, me, no_voice);
+    let (mesh, control) = setup_voice(&endpoint, me, &audio);
 
     let target = endpoint::to_endpoint_id(&coordinator)?;
     let session = Client::connect(
@@ -151,7 +167,7 @@ async fn join(
     )
     .await?;
 
-    ui::run(session, control).await
+    ui::run(session, control, audio.ptt).await
 }
 
 /// Ses donanımını ve mesh'i kurar.
@@ -161,18 +177,23 @@ async fn join(
 fn setup_voice(
     endpoint: &Endpoint,
     me: PeerId,
-    disabled: bool,
+    args: &AudioArgs,
 ) -> (Option<VoiceMesh>, Option<VoiceControl>) {
-    if disabled {
+    if args.no_voice {
         return (None, None);
     }
-    match audio::start(me) {
+    let choice = audio::device::DeviceChoice {
+        input: args.input.clone(),
+        output: args.output.clone(),
+    };
+    match audio::start(me, &choice) {
         Ok(io) => {
             let mesh = VoiceMesh::start(endpoint.clone(), me, io.incoming.clone(), io.outgoing);
             let control = VoiceControl {
                 mesh: mesh.clone(),
                 speaking: io.speaking,
-                muted: io.muted,
+                mic_open: io.mic_open,
+                hearing: io.hearing,
                 health: io.health,
                 _devices: io.devices,
             };

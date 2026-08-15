@@ -89,6 +89,11 @@ impl Shared {
                 let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
             }
 
+            ToCoordinator::SetDeafened { deafened } => {
+                room.set_deafened(&from, deafened)?;
+                let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
+            }
+
             ToCoordinator::Leave => {
                 if let Some(peer) = room.leave(&from) {
                     let _ = self.broadcast.send(ToPeer::Notice {
@@ -416,9 +421,13 @@ async fn client_reader(mut recv: RecvStream, events: mpsc::Sender<Event>) {
                     return;
                 }
             }
-            Err(err) => {
+            Err(_) => {
+                // Kopmanın QUIC seviyesindeki gerekçesi kullanıcıya bir şey anlatmaz;
+                // pratikte tek anlamı odanın kapanmış olmasıdır.
                 let _ = events
-                    .send(Event::Disconnected(format!("bağlantı koptu: {err}")))
+                    .send(Event::Disconnected(
+                        "odayla bağlantı kesildi — koordinatör çıkmış olabilir".into(),
+                    ))
                     .await;
                 return;
             }
@@ -459,6 +468,7 @@ fn into_wire(command: Command) -> ToCoordinator {
         Command::SwitchChannel(channel) => ToCoordinator::SwitchChannel { channel },
         Command::Chat { channel, text } => ToCoordinator::Chat { channel, text },
         Command::SetMuted(muted) => ToCoordinator::SetMuted { muted },
+        Command::SetDeafened(deafened) => ToCoordinator::SetDeafened { deafened },
         Command::Quit => ToCoordinator::Leave,
     }
 }

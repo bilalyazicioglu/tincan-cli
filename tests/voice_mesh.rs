@@ -201,6 +201,28 @@ async fn speaking_outside_a_channel_is_a_no_op() -> Result<()> {
     Ok(())
 }
 
+/// Bağlantı kalitesi raporu, kurulan bağlantıyı doğru sınıflandırmalı.
+#[tokio::test]
+async fn link_status_reports_direct_connections() -> Result<()> {
+    let a = node().await?;
+    let mut b = node().await?;
+    introduce(&a, &b);
+
+    assert_eq!(a.mesh.link_status().await.peers(), 0, "başta bağlantı yok");
+
+    let channel = Some(ChannelId(0));
+    a.mesh.set_membership(channel, vec![b.id]).await;
+    b.mesh.set_membership(channel, vec![a.id]).await;
+    send_until_received(&a, &mut b, b"kalite").await?;
+
+    let status = a.mesh.link_status().await;
+    assert_eq!(status.peers(), 1);
+    assert_eq!(status.direct, 1, "yerel ağda doğrudan bağlanmalı");
+    assert_eq!(status.relayed, 0, "relay kapalıyken relay raporlanmamalı");
+    assert!(status.worst_rtt.is_some(), "RTT ölçülmeli");
+    Ok(())
+}
+
 /// Üç kişilik mesh: herkes herkesi duymalı, koordinatör aracılık etmeden.
 #[tokio::test]
 async fn three_peers_form_a_full_mesh() -> Result<()> {

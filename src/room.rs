@@ -76,6 +76,7 @@ impl Room {
                 name: name.clone(),
                 channel: None,
                 muted: false,
+                deafened: false,
             },
         );
         Ok(name)
@@ -100,6 +101,12 @@ impl Room {
     pub fn set_muted(&mut self, id: &PeerId, muted: bool) -> Result<()> {
         let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("odada değilsiniz"))?;
         peer.muted = muted;
+        Ok(())
+    }
+
+    pub fn set_deafened(&mut self, id: &PeerId, deafened: bool) -> Result<()> {
+        let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("odada değilsiniz"))?;
+        peer.deafened = deafened;
         Ok(())
     }
 

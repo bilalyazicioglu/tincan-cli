@@ -90,6 +90,9 @@ tincan devices
 | `--room` | Oda adı (yalnızca `host`) |
 | `--channels` | Virgülle ayrılmış kanal listesi (varsayılan: `genel,oyun,müzik`) |
 | `--no-voice` | Sesi hiç açma; yalnızca yazışma |
+| `--input` | Kullanılacak mikrofon (adın ayırt edici bir parçası yeter) |
+| `--output` | Kullanılacak hoparlör |
+| `--ptt` | Bas-konuş modu: mikrofon yalnızca F4 ile açılır |
 
 ### Kısayollar
 
@@ -98,8 +101,16 @@ tincan devices
 | `Tab` / `Shift+Tab` | Kanallar arasında gezin |
 | `F2` (veya `Ctrl+G`) | Bakılan kanalın sesine gir / çık |
 | `F3` (veya `Ctrl+T`) | Mikrofonu sustur / aç |
+| `F4` | Bas-konuş (yalnızca `--ptt` modunda) |
+| `F5` | Sağırlaştır: kimseyi duyma (mikrofonu da kapatır) |
 | `Enter` | Mesajı gönder |
 | `Ctrl+C` | Çık |
+
+Cihaz seçmek için önce `tincan devices` ile listeyi görün, sonra adın bir parçasını verin:
+
+```bash
+tincan join <kod> --input "MacBook Pro Mic" --output "AirPods"
+```
 
 Bakılan kanal ile sesle bağlı olunan kanal birbirinden bağımsızdır: "oyun"da konuşurken
 "genel"deki yazışmayı okuyabilirsiniz. Kanal listesinde `>` baktığınız kanalı, `🔊` sesle
@@ -107,6 +118,10 @@ bağlı olduğunuz kanalı gösterir.
 
 Ses kısayolları bilerek F-tuşları: terminalde `Ctrl+M` (0x0D) ve `Ctrl+J` (0x0A) Enter'ın
 kendisidir, ondan ayırt edilemez — onlar kullanılsaydı "sustur" tuşu sessizce mesaj gönderirdi.
+
+Alt bilgide bağlantı durumu görünür: kaç peer'a doğrudan bağlısınız, kaçı relay üzerinden
+akıyor, en kötü gecikme ne kadar ve ses kesintisi yaşandı mı. Her şey yolundaysa bunun yerine
+kısayol ipuçları gösterilir — teknik bilgi ancak bir sorun varsa öne çıkar.
 
 ## Güvenlik
 
@@ -122,7 +137,7 @@ Parola şifreleme için değil, **katılım denetimi** içindir — şifrelemeyi
 ## Geliştirme
 
 ```bash
-cargo test              # 82 test: birim + kontrol düzlemi + ses mesh'i
+cargo test              # 93 test: birim + kontrol düzlemi + ses mesh'i
 cargo clippy --all-targets
 RUST_LOG=tincan=debug cargo run -- host 2>tincan.log   # loglar arayüzü bozmasın diye dosyaya
 ```
@@ -169,6 +184,8 @@ yazıldı, üründe kullanılmıyor.
   kopyala-yapıştır için sorun değil, telefonda okumak için uygun değil.
 - **Ölçek 2–6 kişi.** Mesh'te herkes herkese gönderir; 8+ kişide koordinatörün sesi
   mikslemesi (SFU) gerekir.
-- **Push-to-talk yok.** Şimdilik açık mikrofon + konuşma algılama; sustur tuşu var.
+- **Bas-konuş "basılı tutma" değil.** Terminaller tuş bırakma olayını genelde bildirmediği
+  için `--ptt` modunda F4 bir aç/kapat düğmesi gibi çalışır: bir kez basınca mikrofon açılır,
+  tekrar basınca kapanır.
 - **Bağlantının ilk saniyesi relay üzerinden akar**, sonra doğrudan bağlantıya geçer.
   Odaya girdiğinizde ilk anlarda gecikme fark edebilirsiniz.

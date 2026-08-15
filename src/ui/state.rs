@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::net::Event;
+use crate::net::voice::LinkStatus;
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
 
 /// Sohbet panelinde tutulan en fazla satır.
@@ -34,11 +35,21 @@ pub struct App {
     /// kullanıcı "oyun"da konuşurken "genel"deki yazışmayı okuyabilmeli.
     pub voice: Option<ChannelId>,
     pub muted: bool,
+    /// Sağırlaştırma: kimseyi duymuyoruz. Roster'dan gelir, herkes görür.
+    pub deafened: bool,
+    /// Bas-konuş modu açık mı (`--ptt`).
+    pub ptt_mode: bool,
+    /// Bas-konuş tuşu şu an aktif mi.
+    pub ptt_active: bool,
     pub input: String,
     /// O anda konuşanlar — ses motorundan gelir, kullanıcı listesinde gösterilir.
     pub speaking: HashSet<PeerId>,
     /// Ses donanımı açılabildi mi. Açılamadıysa arayüz bunu söylemeli.
     pub voice_available: bool,
+    /// Ses bağlantılarının kalitesi; periyodik olarak tazelenir.
+    pub link: LinkStatus,
+    /// Ses kesintisi sayacı — sıfırdan büyükse kullanıcı çıtırtı duymuş demektir.
+    pub audio_dropouts: u64,
     pub status: Option<String>,
     /// Oturum bittiğinde dolan gerekçe; dolduğunda arayüz kapanır.
     pub ended: Option<String>,
@@ -57,9 +68,14 @@ impl App {
             viewing: ChannelId(0),
             voice: None,
             muted: false,
+            deafened: false,
+            ptt_mode: false,
+            ptt_active: false,
             input: String::new(),
             speaking: HashSet::new(),
             voice_available: false,
+            link: LinkStatus::default(),
+            audio_dropouts: 0,
             status: None,
             ended: None,
         }
@@ -109,6 +125,7 @@ impl App {
         if let Some(me) = self.peers.iter().find(|p| p.id == self.me) {
             self.voice = me.channel;
             self.muted = me.muted;
+            self.deafened = me.deafened;
         }
     }
 
@@ -155,6 +172,20 @@ impl App {
         });
     }
 
+    /// Mikrofonun o an açık olup olmadığı — susturma ve bas-konuş kararlarının bileşkesi.
+    ///
+    /// Ses motoru tek bir bayrağa bakar; iki ayrı durumu orada birleştirmek yerine
+    /// kararı burada veriyoruz ki mantık tek yerde dursun ve test edilebilsin.
+    pub fn mic_open(&self) -> bool {
+        if self.muted {
+            return false;
+        }
+        if self.ptt_mode {
+            return self.ptt_active;
+        }
+        true
+    }
+
     /// Yazılan mesajı alır ve girdi alanını temizler; gönderilecek bir şey yoksa `None`.
     pub fn take_input(&mut self) -> Option<String> {
         let text = self.input.trim().to_string();
@@ -174,6 +205,7 @@ mod tests {
             name: format!("kişi{seed}"),
             channel,
             muted: false,
+            deafened: false,
         }
     }
 
@@ -295,6 +327,49 @@ mod tests {
             app.apply(Event::Notice(format!("bildirim {i}")));
         }
         assert_eq!(app.lines.len(), VISIBLE_HISTORY);
+    }
+
+    #[test]
+    fn microphone_is_open_by_default() {
+        let app = welcomed();
+        assert!(app.mic_open(), "normal modda mikrofon açık olmalı");
+    }
+
+    #[test]
+    fn muting_closes_the_microphone_in_every_mode() {
+        let mut app = welcomed();
+        app.muted = true;
+        assert!(!app.mic_open());
+
+        // Bas-konuş tuşu basılı olsa bile susturma her şeyi keser.
+        app.ptt_mode = true;
+        app.ptt_active = true;
+        assert!(!app.mic_open(), "susturma bas-konuşu geçersiz kılmalı");
+    }
+
+    /// Bas-konuş modunda varsayılan sessizlik olmalı; ses ancak tuşla açılır.
+    #[test]
+    fn push_to_talk_keeps_the_microphone_shut_until_pressed() {
+        let mut app = welcomed();
+        app.ptt_mode = true;
+        assert!(!app.mic_open(), "tuşa basılmadan yayın olmamalı");
+
+        app.ptt_active = true;
+        assert!(app.mic_open());
+
+        app.ptt_active = false;
+        assert!(!app.mic_open(), "tuş bırakılınca kapanmalı");
+    }
+
+    #[test]
+    fn deafened_state_comes_from_the_roster() {
+        let mut app = welcomed();
+        assert!(!app.deafened);
+
+        let mut me = peer(1, None);
+        me.deafened = true;
+        app.apply(Event::Roster(vec![me]));
+        assert!(app.deafened, "sağırlaştırma koordinatörden gelmeli");
     }
 
     #[test]

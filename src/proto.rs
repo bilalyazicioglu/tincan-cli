@@ -96,7 +96,11 @@ pub struct PeerInfo {
     pub name: String,
     /// `None` ise peer odada ama hiçbir ses kanalında değil (sadece metin).
     pub channel: Option<ChannelId>,
+    /// Mikrofonu kapalı — kimse onu duymuyor.
     pub muted: bool,
+    /// Kulaklığı kapalı — o kimseyi duymuyor. Karşı tarafın boşa konuşmaması için
+    /// bu da paylaşılıyor; yalnızca yerel tutulsaydı kimse fark edemezdi.
+    pub deafened: bool,
 }
 
 /// Odaya yeni katılan bir peer'ın devraldığı tam durum.
@@ -127,6 +131,7 @@ pub enum ToCoordinator {
     SwitchChannel { channel: Option<ChannelId> },
     Chat { channel: ChannelId, text: String },
     SetMuted { muted: bool },
+    SetDeafened { deafened: bool },
     /// Zarif ayrılma. Bu gelmezse koordinatör bağlantı kopmasından anlar.
     Leave,
 }
@@ -177,6 +182,7 @@ mod tests {
             name: format!("kullanıcı{seed}"),
             channel: Some(ChannelId(1)),
             muted: false,
+            deafened: false,
         }
     }
 
@@ -220,6 +226,7 @@ mod tests {
             ToCoordinator::SwitchChannel { channel: None },
             ToCoordinator::Chat { channel: ChannelId(0), text: "çok güzel".into() },
             ToCoordinator::SetMuted { muted: true },
+            ToCoordinator::SetDeafened { deafened: true },
             ToCoordinator::Leave,
         ];
 

@@ -51,24 +51,28 @@ pub struct VoiceIo {
     pub incoming: mpsc::Sender<Incoming>,
     /// O anda konuşanlar (kendimiz dahil) — arayüzdeki gösterge bunu dinler.
     pub speaking: watch::Receiver<HashSet<PeerId>>,
-    /// Mikrofon kapalı mı. Ses motoru her çerçevede buna bakar.
-    pub muted: Arc<AtomicBool>,
+    /// Mikrofon açık mı — susturma ve bas-konuş kararlarının **sonucu**.
+    /// Arayüz bu tek bayrağı hesaplar, motor yalnızca ona bakar.
+    pub mic_open: Arc<AtomicBool>,
+    /// Karşı tarafları duyuyor muyuz (sağırlaştırma kapalıysa `true`).
+    pub hearing: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
     /// Hayatta tutulduğu sürece ses donanımı açık kalır.
     pub devices: AudioDevices,
 }
 
 /// Mikrofonu ve hoparlörü açar, ses döngülerini başlatır.
-pub fn start(me: PeerId) -> Result<VoiceIo> {
-    let (devices, mut capture, mut playback, health) = device::open()?;
+pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
+    let (devices, mut capture, mut playback, health) = device::open(choice)?;
 
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<Incoming>(256);
     let (speaking_tx, speaking_rx) = watch::channel(HashSet::new());
-    let muted = Arc::new(AtomicBool::new(false));
+    let mic_open = Arc::new(AtomicBool::new(true));
+    let hearing = Arc::new(AtomicBool::new(true));
 
     // ── Yakalama: mikrofon → VAD → Opus → ağ ────────────────────────────────
-    let capture_muted = muted.clone();
+    let capture_mic = mic_open.clone();
     let capture_speaking = speaking_tx.clone();
     tokio::spawn(async move {
         let mut encoder = match codec::Encoder::new() {
@@ -92,10 +96,9 @@ pub fn start(me: PeerId) -> Result<VoiceIo> {
                     *slot = capture.pop().unwrap_or(0.0);
                 }
 
-                let muted_now = capture_muted.load(Ordering::Relaxed);
-                // Susturulmuşken de VAD'i besliyoruz ki susturma kalkınca
+                // Mikrofon kapalıyken de VAD'i besliyoruz ki tekrar açılınca
                 // hangover durumu tutarlı olsun; ama paket göndermiyoruz.
-                let active = detector.update(&pcm) && !muted_now;
+                let active = detector.update(&pcm) && capture_mic.load(Ordering::Relaxed);
 
                 capture_speaking.send_if_modified(|speakers| {
                     if active {
@@ -121,6 +124,7 @@ pub fn start(me: PeerId) -> Result<VoiceIo> {
     });
 
     // ── Çalma: ağ → jitter → Opus çözme → miksaj → hoparlör ─────────────────
+    let playback_hearing = hearing.clone();
     tokio::spawn(async move {
         let mut streams: HashMap<PeerId, PeerStream> = HashMap::new();
         let mut mixer = Mixer::default();
@@ -178,8 +182,12 @@ pub fn start(me: PeerId) -> Result<VoiceIo> {
 
                         let refs: Vec<&[f32]> = sources.iter().map(|s| s.as_slice()).collect();
                         mixer.mix(&refs, &mut mixed);
+
+                        // Sağırlaştırmada akışı durdurmuyoruz, sessizlik besliyoruz:
+                        // hoparlör tamponu boşalırsa underrun sayacı yanlış yere şişer.
+                        let hearing_now = playback_hearing.load(Ordering::Relaxed);
                         for sample in mixed.iter() {
-                            let _ = playback.push(*sample);
+                            let _ = playback.push(if hearing_now { *sample } else { 0.0 });
                         }
 
                         speaking_tx.send_if_modified(|speakers| {
@@ -209,7 +217,8 @@ pub fn start(me: PeerId) -> Result<VoiceIo> {
         outgoing: outgoing_rx,
         incoming: incoming_tx,
         speaking: speaking_rx,
-        muted,
+        mic_open,
+        hearing,
         health,
         devices,
     })
