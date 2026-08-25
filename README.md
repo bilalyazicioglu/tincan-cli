@@ -1,193 +1,208 @@
 # tincan
 
-Terminalde çalışan, sunucusuz sesli sohbet. Discord'un yaptığı işi, kimsenin sunucusuna
-ihtiyaç duymadan yapar: uygulamayı ilk açan kişi odayı kurar, ürettiği davet kodunu
-arkadaşlarına gönderir, onlar da dünyanın herhangi bir yerinden o kodla bağlanır.
-VPN yok, port yönlendirme yok, hesap açma yok.
-
-Türkçe Developer Blog: <https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet>
+Serverless voice chat that runs in your terminal. It does what Discord does, without
+needing anyone's server: the first person to open the app creates the room, sends the
+invite code it prints to their friends, and they connect with that code from anywhere in
+the world. No VPN, no port forwarding, no accounts.
 
 ```
-┌ kanallar ──────────────┐┌ #genel · istanbul ─────────────────────────────┐
-│>  🔊 genel   2         ││23:56 — mehmet odaya katıldı                    │
-│      oyun              ││23:56 mehmet: merhaba ben mehmet                │
-│      müzik             ││                                                │
-└────────────────────────┘│                                                │
-┌ kişiler (2) ───────────┐│                                                │
-│● ahmet · genel         ││                                                │
-│● mehmet (sen) · genel  │└────────────────────────────────────────────────┘
-└────────────────────────┘┌────────────────────────────────────────────────┐
-                          │#genel ▏                                        │
-Tab kanal · F2 ses · F3 sustur · Ctrl+C çık          🔊 genel  kod: n73w-kuqc…
+┌ channels ──────────────┐┌ #general · lobby ────────────────────────────────┐
+│>  🔊 general   2       ││23:56 — bob joined the room                       │
+│      gaming            ││23:56 bob: hey, bob here                          │
+│      music             ││                                                  │
+└────────────────────────┘│                                                  │
+┌ people (2) ────────────┐│                                                  │
+│● alice · general       ││                                                  │
+│● bob (you) · general   │└──────────────────────────────────────────────────┘
+└────────────────────────┘┌──────────────────────────────────────────────────┐
+                          │#general ▏                                        │
+                          └──────────────────────────────────────────────────┘
+Tab channel · F2 voice · F3 mute · Ctrl+C quit    🔊 general  code: n73w-kuqc…
 ```
 
-## Nasıl çalışır
-
-İki düzlem birbirinden ayrı:
-
-**Kontrol düzlemi (yıldız).** Odayı ilk açan kişi _koordinatördür_: üye listesi, kanallar ve
-yazışma onun üzerinden akar. Trafiği küçüktür, saniyede birkaç yüz bayt.
-
-**Ses düzlemi (mesh).** Aynı kanaldaki peer'lar birbirine doğrudan bağlanır ve Opus
-paketlerini QUIC datagram olarak yollar. **Ses koordinatörden geçmez** — host'un bağlantısı
-darboğaz olmaz, 6 kişilik bir odada kişi başı ~160 kbps upload yeter.
-
-```
-        [ahmet: koordinatör]
-         /      |      \          ── kontrol (güvenilir stream)
-     ayşe    mehmet   zeynep
-        \______|______/           ── ses (mesh, doğrudan datagram)
-```
-
-Bağlantı için [iroh](https://iroh.computer) kullanılıyor: davet kodu peer'ın public key'idir.
-Çoğu durumda doğrudan P2P bağlantı kurulur; NAT delme başarısız olursa trafik relay üzerinden
-akar — relay içeriği çözemez, sadece iletir. QUIC her bağlantıyı uçtan uca şifreler ve karşı
-tarafın kimliğini public key ile doğrular.
-
-## Kurulum
-
-Gereksinimler:
-
-- **Rust 1.91+** (`rustup update stable`)
-- **cmake** ve **pkg-config** — Opus kodeki kaynaktan derleniyor
-  (macOS: `brew install cmake pkg-config`, Debian/Ubuntu: `apt install cmake pkg-config`)
-- 48000 Hz çalışan bir mikrofon ve hoparlör
+## Install
 
 ```bash
-git clone <repo> && cd tincan-cli
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/bilalyazicioglu/tincan-cli/main/install.sh | sh
 ```
 
-İlk çalıştırmada işletim sistemi mikrofon izni ister. macOS'ta izni isteyen, tincan değil
-onu çalıştıran terminal uygulamasıdır (Terminal, iTerm, VS Code...).
+This downloads a prebuilt binary for your platform into `~/.local/bin` and verifies its
+checksum. macOS (Apple Silicon and Intel) and Linux (x86_64 and arm64) are covered. If
+you would rather read the script before running it — always a reasonable instinct with
+`curl | sh` — it lives at [`install.sh`](install.sh) in this repo.
 
-## Kullanım
-
-**Oda açmak:**
+**From source**, if you prefer it or your platform has no prebuilt binary:
 
 ```bash
-tincan host --name ahmet --room istanbul --password gizli
+cargo install --git https://github.com/bilalyazicioglu/tincan-cli
 ```
 
-Ekrana bir davet kodu basar. Kodu arkadaşlarınıza gönderin (kopyala-yapıştır; 63 karakter).
+That needs Rust 1.91+, plus **cmake** and **pkg-config** (Opus is built from source) and
+**libasound2-dev** on Linux. It takes a few minutes.
 
-**Odaya katılmak:**
+Either way you need a microphone and speaker that run at 48000 Hz. On the first run your
+operating system will ask for microphone permission — on macOS the prompt comes from the
+terminal app running tincan (Terminal, iTerm, VS Code…), not from tincan itself.
+
+## Usage
+
+**Open a room:**
 
 ```bash
-tincan join n73w-kuqc-uog2-... --name mehmet --password gizli
+tincan host --name alice --room lobby --password secret
 ```
 
-**Ses cihazlarını görmek:**
+It prints an invite code. Send it to your friends — copy and paste, 63 characters.
+
+**Join a room:**
+
+```bash
+tincan join n73w-kuqc-uog2-... --name bob --password secret
+```
+
+**See your audio devices:**
 
 ```bash
 tincan devices
 ```
 
-### Seçenekler
+### Options
 
-| Seçenek            | Açıklama                                                         |
-| ------------------ | ---------------------------------------------------------------- |
-| `--name`, `-n`     | Odada görünecek takma adınız (varsayılan: sistem kullanıcı adı)  |
-| `--password`, `-p` | Oda parolası. Verilmezse kodu bilen herkes girebilir             |
-| `--room`           | Oda adı (yalnızca `host`)                                        |
-| `--channels`       | Virgülle ayrılmış kanal listesi (varsayılan: `genel,oyun,müzik`) |
-| `--no-voice`       | Sesi hiç açma; yalnızca yazışma                                  |
-| `--input`          | Kullanılacak mikrofon (adın ayırt edici bir parçası yeter)       |
-| `--output`         | Kullanılacak hoparlör                                            |
-| `--ptt`            | Bas-konuş modu: mikrofon yalnızca F4 ile açılır                  |
+| Option             | Description                                                     |
+| ------------------ | --------------------------------------------------------------- |
+| `--name`, `-n`     | Your nickname in the room (default: your system username)       |
+| `--password`, `-p` | Room password. Without one, anyone with the code can walk in    |
+| `--room`           | Room name (`host` only)                                         |
+| `--channels`       | Comma-separated channel list (default: `general,gaming,music`)  |
+| `--no-voice`       | Skip audio entirely; text chat only                             |
+| `--input`          | Microphone to use (a distinctive part of the name is enough)    |
+| `--output`         | Speaker to use                                                  |
+| `--ptt`            | Push-to-talk: the microphone only opens with F4                 |
 
-### Kısayollar
+### Shortcuts
 
-| Tuş                  | İş                                                |
-| -------------------- | ------------------------------------------------- |
-| `Tab` / `Shift+Tab`  | Kanallar arasında gezin                           |
-| `F2` (veya `Ctrl+G`) | Bakılan kanalın sesine gir / çık                  |
-| `F3` (veya `Ctrl+T`) | Mikrofonu sustur / aç                             |
-| `F4`                 | Bas-konuş (yalnızca `--ptt` modunda)              |
-| `F5`                 | Sağırlaştır: kimseyi duyma (mikrofonu da kapatır) |
-| `Enter`              | Mesajı gönder                                     |
-| `Ctrl+C`             | Çık                                               |
+| Key                  | Action                                          |
+| -------------------- | ----------------------------------------------- |
+| `Tab` / `Shift+Tab`  | Move between channels                           |
+| `F2` (or `Ctrl+G`)   | Join / leave the voice of the channel you see   |
+| `F3` (or `Ctrl+T`)   | Mute / unmute your microphone                   |
+| `F4`                 | Push-to-talk (only in `--ptt` mode)             |
+| `F5`                 | Deafen: hear nobody (also closes your mic)      |
+| `Enter`              | Send the message                                |
+| `Ctrl+C`             | Quit                                            |
 
-Cihaz seçmek için önce `tincan devices` ile listeyi görün, sonra adın bir parçasını verin:
+To pick a device, list them with `tincan devices` first, then pass part of a name:
 
 ```bash
-tincan join <kod> --input "MacBook Pro Mic" --output "AirPods"
+tincan join <code> --input "MacBook Pro Mic" --output "AirPods"
 ```
 
-Bakılan kanal ile sesle bağlı olunan kanal birbirinden bağımsızdır: "oyun"da konuşurken
-"genel"deki yazışmayı okuyabilirsiniz. Kanal listesinde `>` baktığınız kanalı, `🔊` sesle
-bağlı olduğunuz kanalı gösterir.
+The channel you are looking at and the channel you are connected to by voice are
+independent: you can read the chat in "general" while talking in "gaming". In the channel
+list, `>` marks the one you are viewing and `🔊` the one you are in.
 
-Ses kısayolları bilerek F-tuşları: terminalde `Ctrl+M` (0x0D) ve `Ctrl+J` (0x0A) Enter'ın
-kendisidir, ondan ayırt edilemez — onlar kullanılsaydı "sustur" tuşu sessizce mesaj gönderirdi.
+The audio shortcuts are F-keys on purpose: in a terminal `Ctrl+M` (0x0D) and `Ctrl+J`
+(0x0A) *are* Enter and cannot be told apart from it — had those been used, the "mute" key
+would have quietly sent a message.
 
-Alt bilgide bağlantı durumu görünür: kaç peer'a doğrudan bağlısınız, kaçı relay üzerinden
-akıyor, en kötü gecikme ne kadar ve ses kesintisi yaşandı mı. Her şey yolundaysa bunun yerine
-kısayol ipuçları gösterilir — teknik bilgi ancak bir sorun varsa öne çıkar.
+The footer shows link status: how many peers you reach directly, how many flow through a
+relay, the worst latency, and whether you have had audio dropouts. When everything is
+fine it shows shortcut hints instead — technical detail only surfaces when there is a
+problem.
 
-## Güvenlik
+## How it works
 
-Parola tel üzerinden hiç geçmez: koordinatör rastgele bir nonce yollar, istemci
-`Argon2id(parola, nonce)` sonucunu geri gönderir. Nonce her bağlantıda yenilendiği için
-yakalanan bir kanıt tekrar kullanılamaz.
+Two planes, kept apart:
 
-Parola şifreleme için değil, **katılım denetimi** içindir — şifrelemeyi QUIC zaten yapıyor.
+**Control plane (star).** Whoever opens the room is the _coordinator_: the roster, the
+channels and the chat flow through them. The traffic is tiny, a few hundred bytes per
+second.
 
-> `--password` komut satırında görünür, yani aynı makinedeki başka kullanıcılar `ps` ile
-> okuyabilir. Paylaşımlı bir makinedeyseniz bunu aklınızda tutun.
+**Voice plane (mesh).** Peers in the same channel connect directly to each other and send
+Opus packets as QUIC datagrams. **Voice never passes through the coordinator** — the
+host's connection is not a bottleneck, and a six-person room needs about 160 kbps of
+upload each.
 
-## Geliştirme
+```
+        [alice: coordinator]
+         /      |      \          ── control (reliable stream)
+      bob     carol    dave
+         \______|______/          ── voice (mesh, direct datagrams)
+```
+
+Connectivity comes from [iroh](https://iroh.computer): the invite code *is* the peer's
+public key. Most of the time a direct P2P connection is established; if hole punching
+fails, traffic flows through a relay — which cannot decrypt anything, it only forwards.
+QUIC encrypts every connection end to end and verifies the other side's identity by
+public key.
+
+## Security
+
+The password never travels over the wire: the coordinator sends a random nonce and the
+client returns `Argon2id(password, nonce)`. Because the nonce is fresh on every
+connection, a captured proof cannot be replayed.
+
+The password is not for encryption but for **admission control** — QUIC already handles
+the encryption.
+
+> `--password` is visible on the command line, so other users on the same machine can
+> read it with `ps`. Keep that in mind on a shared machine.
+
+## Development
 
 ```bash
-cargo test              # 93 test: birim + kontrol düzlemi + ses mesh'i
+cargo test              # 93 tests: unit + control plane + voice mesh
 cargo clippy --all-targets
-RUST_LOG=tincan=debug cargo run -- host 2>tincan.log   # loglar arayüzü bozmasın diye dosyaya
+RUST_LOG=tincan=debug cargo run -- host 2>tincan.log   # logs to a file, so they don't scramble the UI
 ```
 
-Testler internete çıkmaz: kontrol düzlemi ve ses mesh'i testleri gerçek iki iroh endpoint'i
-ve gerçek QUIC bağlantısı kullanır ama relay ve keşif kapalıdır, adresler elle tanıtılır.
-Ses testleri ses donanımı da kullanmaz — mesh'in uçlarına doğrudan bağlanırlar.
+The tests never touch the internet: the control-plane and voice-mesh tests use two real
+iroh endpoints over a real QUIC connection, but with relays and discovery disabled and
+addresses introduced by hand. The audio tests use no audio hardware either — they attach
+directly to the ends of the mesh.
 
-### Kaynak düzeni
+### Source layout
 
 ```
 src/
-  proto.rs        Tel üzerindeki tipler (kontrol mesajları + ses paketi başlığı)
-  room.rs         Odanın otoriter durumu — koordinatörün tek gerçek kaynağı, saf ve testli
-  auth.rs         Parola kanıtı (Argon2id + nonce)
-  invite.rs       Davet kodu: base32, gruplu, yapıştırmaya toleranslı
+  proto.rs        On-the-wire types (control messages + voice packet header)
+  room.rs         The room's authoritative state — the coordinator's single source
+                  of truth, pure and tested
+  auth.rs         Password proof (Argon2id + nonce)
+  invite.rs       The invite code: base32, grouped, tolerant of pasting
   net/
-    endpoint.rs   iroh endpoint kurulumu, kimlik dönüşümleri
-    control.rs    Koordinatör sunucusu + katılan istemci
-    voice.rs      Ses mesh'i: bağlantı yönetimi, datagram taşıma, kanal filtresi
+    endpoint.rs   iroh endpoint setup, identity conversions
+    control.rs    Coordinator server + joining client
+    voice.rs      Voice mesh: connection management, datagram transport, channel filter
   audio/
-    device.rs     cpal ↔ kilitsiz ring buffer köprüsü
-    codec.rs      Opus kodlama/çözme + kayıp örtme
-    jitter.rs     Peer başına jitter tamponu
-    mixer.rs      Çok kaynaklı miksaj + limitleyici
-    vad.rs        Konuşma algılama (gösterge + DTX)
+    device.rs     cpal ↔ lock-free ring buffer bridge
+    codec.rs      Opus encode/decode + loss concealment
+    jitter.rs     Per-peer jitter buffer
+    mixer.rs      Multi-source mixing + limiter
+    vad.rs        Voice activity detection (indicator + DTX)
   ui/
-    state.rs      Arayüz durumu (ağdan ve terminalden bağımsız, testli)
-    view.rs       Ekran düzeni
-examples/         Faz 0 probe'ları — atılabilir ölçüm araçları
+    state.rs      Interface state (independent of network and terminal, tested)
+    view.rs       Screen layout
+examples/         Phase 0 probes — throwaway measurement tools
 ```
 
-`examples/ping.rs` iki makine arasındaki bağlantıyı ve gecikmeyi ölçer,
-`examples/loopback.rs` ses zincirini ölçer. İkisi de tasarım kararlarını doğrulamak için
-yazıldı, üründe kullanılmıyor.
+`examples/ping.rs` measures connectivity and latency between two machines;
+`examples/loopback.rs` measures the audio chain. Both were written to validate design
+decisions and are not used in the product.
 
-## Bilinen sınırlar
+## Known limits
 
-- **Koordinatör tek hata noktası.** Host çıkarsa oda dağılır. Lider devri bilinçli olarak
-  MVP dışında bırakıldı.
-- **48 kHz zorunlu.** Yeniden örnekleme yok; cihazınız farklı bir hızda çalışıyorsa tincan
-  bunu açıkça söyleyip yazışma moduna düşer, sessizce bozuk ses üretmez.
-- **Davet kodu 63 karakter.** Public key'in kendisi olduğu için kısaltılamaz —
-  kopyala-yapıştır için sorun değil, telefonda okumak için uygun değil.
-- **Ölçek 2–6 kişi.** Mesh'te herkes herkese gönderir; 8+ kişide koordinatörün sesi
-  mikslemesi (SFU) gerekir.
-- **Bas-konuş "basılı tutma" değil.** Terminaller tuş bırakma olayını genelde bildirmediği
-  için `--ptt` modunda F4 bir aç/kapat düğmesi gibi çalışır: bir kez basınca mikrofon açılır,
-  tekrar basınca kapanır.
-- **Bağlantının ilk saniyesi relay üzerinden akar**, sonra doğrudan bağlantıya geçer.
-  Odaya girdiğinizde ilk anlarda gecikme fark edebilirsiniz.
+- **The coordinator is a single point of failure.** If the host leaves, the room
+  dissolves. Leader handover was deliberately left out of the MVP.
+- **48 kHz required.** There is no resampling; if your device runs at another rate tincan
+  says so plainly and falls back to text chat rather than producing broken audio in
+  silence.
+- **The invite code is 63 characters.** It cannot be shortened, because it is the public
+  key itself — fine for copy and paste, not for reading down the phone.
+- **Scale is 2–6 people.** In a mesh everyone sends to everyone; past 8 you would need
+  the coordinator to mix the audio (an SFU).
+- **Push-to-talk is not hold-to-talk.** Terminals generally do not report key-release
+  events, so in `--ptt` mode F4 works as a toggle: press once to open the microphone,
+  press again to close it.
+- **The first second of a connection flows through a relay** before switching to a direct
+  link. You may notice the latency in the first moments after joining.
