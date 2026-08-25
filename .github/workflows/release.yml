@@ -17,8 +17,8 @@ jobs:
       matrix:
         include:
           # Native runners per architecture: audiopus_sys builds Opus from C
-          # source via cmake, which makes cross-compiling far more fragile than
-          # it is worth. ubuntu-22.04 (glibc 2.35) keeps the Linux binaries
+          # source with autotools, which makes cross-compiling far more fragile
+          # than it is worth. ubuntu-22.04 (glibc 2.35) keeps the Linux binaries
           # usable on older distributions.
           - target: aarch64-apple-darwin
             runner: macos-15
@@ -32,17 +32,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # audiopus_sys has no system Opus to find here, so it builds the vendored
+      # C source with autogen.sh -> configure -> make and links it statically.
+      # That is what we want for a distributable binary: no runtime libopus
+      # dependency. It does mean autotools must be present.
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config libasound2-dev
+          sudo apt-get install -y autoconf automake libtool pkg-config libasound2-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install autoconf automake libtool
+          # Homebrew installs GNU libtoolize as `glibtoolize`; autoreconf looks
+          # for `libtoolize`. The gnubin directory provides it under that name.
+          echo "$(brew --prefix)/opt/libtool/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --no-self-update
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The whole point of shipping a binary is that it runs with nothing else
+      # installed. Opus must be linked in, not loaded at runtime — if that ever
+      # regresses, fail here rather than handing users a binary that cannot start.
+      - name: Verify the binary is self-contained
+        run: |
+          BIN=target/${{ matrix.target }}/release/tincan
+          if [ "${{ runner.os }}" = "macOS" ]; then LINKS=$(otool -L "$BIN"); else LINKS=$(ldd "$BIN"); fi
+          echo "$LINKS"
+          if echo "$LINKS" | grep -qi 'libopus'; then
+            echo "::error::tincan links libopus dynamically; the released binary would not run without it"
+            exit 1
+          fi
 
       - name: Package
         run: |

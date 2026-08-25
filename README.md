@@ -37,10 +37,18 @@ you would rather read the script before running it — always a reasonable insti
 cargo install --git https://github.com/bilalyazicioglu/tincan-cli
 ```
 
-That needs Rust 1.91+, plus **cmake** and **pkg-config** (Opus is built from source) and
-**libasound2-dev** on Linux. It takes a few minutes.
+That needs Rust 1.91+ and a way to get Opus. The easiest is to install it from your
+package manager — `cargo` picks it up through `pkg-config` and links it in:
 
-Either way you need a microphone and speaker that run at 48000 Hz. On the first run your
+```bash
+brew install opus pkg-config                             # macOS
+sudo apt install libopus-dev pkg-config libasound2-dev   # Debian/Ubuntu
+```
+
+Without a system Opus, the build compiles the vendored C source instead, which needs
+autotools (`autoconf`, `automake`, `libtool`). Either way it takes a few minutes.
+
+However you install it, you need a microphone and speaker that run at 48000 Hz. On the first run your
 operating system will ask for microphone permission — on macOS the prompt comes from the
 terminal app running tincan (Terminal, iTerm, VS Code…), not from tincan itself.
 

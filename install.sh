@@ -69,13 +69,13 @@ build_from_source() {
         say "" >&2
         say "      cargo install --git https://github.com/$REPO" >&2
         say "" >&2
-        say "  You will also need cmake and pkg-config (Opus is built from source)," >&2
-        say "  plus libasound2-dev on Linux." >&2
+        say "  You will also need Opus: 'brew install opus pkg-config' on macOS, or" >&2
+        say "  'apt install libopus-dev pkg-config libasound2-dev' on Debian/Ubuntu." >&2
         printf '\n' >&2
         exit 1
     fi
     warn "no prebuilt binary for this platform; building from source instead."
-    say "${DIM}This needs cmake and pkg-config and takes a few minutes.${RESET}"
+    say "${DIM}This needs Opus (or autotools to build it) and takes a few minutes.${RESET}"
     printf '\n'
     cargo install --git "https://github.com/$REPO" --locked
     printf '\n'
