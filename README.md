@@ -5,6 +5,8 @@ ihtiyaç duymadan yapar: uygulamayı ilk açan kişi odayı kurar, ürettiği da
 arkadaşlarına gönderir, onlar da dünyanın herhangi bir yerinden o kodla bağlanır.
 VPN yok, port yönlendirme yok, hesap açma yok.
 
+Türkçe Developer Blog: <https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet>
+
 ```
 ┌ kanallar ──────────────┐┌ #genel · istanbul ─────────────────────────────┐
 │>  🔊 genel   2         ││23:56 — mehmet odaya katıldı                    │
@@ -23,7 +25,7 @@ Tab kanal · F2 ses · F3 sustur · Ctrl+C çık          🔊 genel  kod: n73w-
 
 İki düzlem birbirinden ayrı:
 
-**Kontrol düzlemi (yıldız).** Odayı ilk açan kişi *koordinatördür*: üye listesi, kanallar ve
+**Kontrol düzlemi (yıldız).** Odayı ilk açan kişi _koordinatördür_: üye listesi, kanallar ve
 yazışma onun üzerinden akar. Trafiği küçüktür, saniyede birkaç yüz bayt.
 
 **Ses düzlemi (mesh).** Aynı kanaldaki peer'lar birbirine doğrudan bağlanır ve Opus
@@ -83,28 +85,28 @@ tincan devices
 
 ### Seçenekler
 
-| Seçenek | Açıklama |
-|---|---|
-| `--name`, `-n` | Odada görünecek takma adınız (varsayılan: sistem kullanıcı adı) |
-| `--password`, `-p` | Oda parolası. Verilmezse kodu bilen herkes girebilir |
-| `--room` | Oda adı (yalnızca `host`) |
-| `--channels` | Virgülle ayrılmış kanal listesi (varsayılan: `genel,oyun,müzik`) |
-| `--no-voice` | Sesi hiç açma; yalnızca yazışma |
-| `--input` | Kullanılacak mikrofon (adın ayırt edici bir parçası yeter) |
-| `--output` | Kullanılacak hoparlör |
-| `--ptt` | Bas-konuş modu: mikrofon yalnızca F4 ile açılır |
+| Seçenek            | Açıklama                                                         |
+| ------------------ | ---------------------------------------------------------------- |
+| `--name`, `-n`     | Odada görünecek takma adınız (varsayılan: sistem kullanıcı adı)  |
+| `--password`, `-p` | Oda parolası. Verilmezse kodu bilen herkes girebilir             |
+| `--room`           | Oda adı (yalnızca `host`)                                        |
+| `--channels`       | Virgülle ayrılmış kanal listesi (varsayılan: `genel,oyun,müzik`) |
+| `--no-voice`       | Sesi hiç açma; yalnızca yazışma                                  |
+| `--input`          | Kullanılacak mikrofon (adın ayırt edici bir parçası yeter)       |
+| `--output`         | Kullanılacak hoparlör                                            |
+| `--ptt`            | Bas-konuş modu: mikrofon yalnızca F4 ile açılır                  |
 
 ### Kısayollar
 
-| Tuş | İş |
-|---|---|
-| `Tab` / `Shift+Tab` | Kanallar arasında gezin |
-| `F2` (veya `Ctrl+G`) | Bakılan kanalın sesine gir / çık |
-| `F3` (veya `Ctrl+T`) | Mikrofonu sustur / aç |
-| `F4` | Bas-konuş (yalnızca `--ptt` modunda) |
-| `F5` | Sağırlaştır: kimseyi duyma (mikrofonu da kapatır) |
-| `Enter` | Mesajı gönder |
-| `Ctrl+C` | Çık |
+| Tuş                  | İş                                                |
+| -------------------- | ------------------------------------------------- |
+| `Tab` / `Shift+Tab`  | Kanallar arasında gezin                           |
+| `F2` (veya `Ctrl+G`) | Bakılan kanalın sesine gir / çık                  |
+| `F3` (veya `Ctrl+T`) | Mikrofonu sustur / aç                             |
+| `F4`                 | Bas-konuş (yalnızca `--ptt` modunda)              |
+| `F5`                 | Sağırlaştır: kimseyi duyma (mikrofonu da kapatır) |
+| `Enter`              | Mesajı gönder                                     |
+| `Ctrl+C`             | Çık                                               |
 
 Cihaz seçmek için önce `tincan devices` ile listeyi görün, sonra adın bir parçasını verin:
 
