@@ -206,3 +206,7 @@ decisions and are not used in the product.
   press again to close it.
 - **The first second of a connection flows through a relay** before switching to a direct
   link. You may notice the latency in the first moments after joining.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

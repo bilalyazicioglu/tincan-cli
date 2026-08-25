@@ -6,6 +6,7 @@ rust-version = "1.91"
 description = "Serverless peer-to-peer voice and text chat for your terminal"
 repository = "https://github.com/bilalyazicioglu/tincan-cli"
 readme = "README.md"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
