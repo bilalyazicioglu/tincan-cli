@@ -1,4 +1,4 @@
-//! Ağ katmanı: iroh endpoint'i, kontrol düzlemi ve (Faz 2'de) ses mesh'i.
+//! Networking layer: the iroh endpoint, the control plane and the voice mesh.
 
 pub mod control;
 pub mod endpoint;
@@ -7,42 +7,43 @@ use tokio::sync::mpsc;
 
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo, RoomSnapshot};
 
-/// Arayüzden gelen kullanıcı eylemleri.
+/// User actions coming from the interface.
 ///
-/// Host da, katılan da aynı komutları gönderir; farkı `Session`'ın hangi kurucuyla
-/// yaratıldığı belirler. Arayüz kimin host olduğunu bilmek zorunda kalmaz.
+/// The host and the joiner send the same commands; the only difference is which
+/// constructor built the `Session`. The interface never has to know who is hosting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     SwitchChannel(Option<ChannelId>),
-    /// Kanal açıkça taşınır: kullanıcı mesajı yazarken kanal değiştirebilir,
-    /// mesaj yazıldığı kanala düşmeli.
+    /// The channel travels explicitly: the user can switch channels while typing, and
+    /// the message must land in the channel it was written in.
     Chat { channel: ChannelId, text: String },
     SetMuted(bool),
     SetDeafened(bool),
     Quit,
 }
 
-/// Arayüze giden olaylar.
+/// Events going out to the interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Welcome { me: PeerId, room: RoomSnapshot },
     Roster(Vec<PeerInfo>),
     Chat(ChatLine),
     Notice(String),
-    /// Oturum bitti — koordinatör kapandı, bağlantı koptu ya da reddedildik.
+    /// The session is over — the coordinator shut down, the link dropped, or we were
+    /// rejected.
     Disconnected(String),
 }
 
-/// Arayüzün kontrol düzlemine tutunduğu yer.
+/// Where the interface holds on to the control plane.
 pub struct Session {
     pub me: PeerId,
-    /// Davet kodu — host modunda kendi kodumuz, katılan modda bağlandığımız oda.
+    /// The invite code — our own when hosting, the room we joined otherwise.
     pub invite_code: String,
     pub commands: mpsc::Sender<Command>,
     pub events: mpsc::Receiver<Event>,
 }
 
-/// Koordinatörün chat sıralaması için kullandığı saat.
+/// The clock the coordinator uses to order chat.
 pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

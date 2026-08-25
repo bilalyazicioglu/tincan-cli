@@ -1,12 +1,12 @@
-//! Oda parolası ile katılım denetimi.
+//! Room password admission control.
 //!
-//! Bu katman **şifreleme için değil** — iroh her bağlantıyı QUIC/TLS ile zaten uçtan uca
-//! şifreliyor ve karşı tarafın kimliğini public key ile doğruluyor. Parolanın tek işi
-//! "bu kodu ele geçiren herkes içeri giremesin" demek.
+//! This layer is **not encryption** — iroh already encrypts every connection end to end
+//! with QUIC/TLS and verifies the other side's identity by public key. The password's
+//! only job is to say "not everyone who gets hold of this code may come in".
 //!
-//! Parola tel üzerinden hiç geçmez: koordinatör rastgele bir nonce yollar, istemci
-//! `Argon2id(parola, nonce)` sonucunu geri gönderir. Nonce her bağlantıda yenilendiği
-//! için yakalanan bir kanıt tekrar kullanılamaz.
+//! The password never travels over the wire: the coordinator sends a random nonce, and
+//! the client returns `Argon2id(password, nonce)`. Because the nonce is regenerated on
+//! every connection, a captured proof cannot be replayed.
 
 use anyhow::{Context, Result};
 use argon2::Argon2;
@@ -22,20 +22,20 @@ pub fn random_nonce() -> Nonce {
     nonce
 }
 
-/// Parola + nonce'tan kanıt türetir.
+/// Derives a proof from a password and a nonce.
 ///
-/// Parolasız odalarda boş dize kullanılır: akış tek yol olsun, "parola var mı" dalı
-/// protokolün içine sızmasın diye.
+/// Passwordless rooms use the empty string, so that there is a single path through the
+/// handshake and no "is there a password" branch leaks into the protocol.
 pub fn proof(password: &str, nonce: &Nonce) -> Result<Proof> {
     let mut out = [0u8; 32];
     Argon2::default()
         .hash_password_into(password.as_bytes(), nonce, &mut out)
-        .map_err(|e| anyhow::anyhow!("anahtar türetme başarısız: {e}"))
-        .context("parola kanıtı üretilemedi")?;
+        .map_err(|e| anyhow::anyhow!("key derivation failed: {e}"))
+        .context("could not produce the password proof")?;
     Ok(out)
 }
 
-/// Kanıtı sabit zamanda doğrular — zamanlama sızıntısı olmasın diye `==` kullanılmaz.
+/// Verifies a proof in constant time — `==` is avoided so no timing is leaked.
 pub fn verify(password: &str, nonce: &Nonce, presented: &Proof) -> bool {
     match proof(password, nonce) {
         Ok(expected) => expected.ct_eq(presented).into(),
@@ -50,28 +50,28 @@ mod tests {
     #[test]
     fn correct_password_verifies() {
         let nonce = random_nonce();
-        let p = proof("gizli123", &nonce).unwrap();
-        assert!(verify("gizli123", &nonce, &p));
+        let p = proof("secret123", &nonce).unwrap();
+        assert!(verify("secret123", &nonce, &p));
     }
 
     #[test]
     fn wrong_password_is_rejected() {
         let nonce = random_nonce();
-        let p = proof("gizli123", &nonce).unwrap();
-        assert!(!verify("gizli124", &nonce, &p));
+        let p = proof("secret123", &nonce).unwrap();
+        assert!(!verify("secret124", &nonce, &p));
         assert!(!verify("", &nonce, &p));
     }
 
-    /// Yakalanan bir kanıt başka bir bağlantıda işe yaramamalı.
+    /// A captured proof must be useless on another connection.
     #[test]
     fn proof_is_bound_to_its_nonce() {
         let first = random_nonce();
         let second = random_nonce();
-        assert_ne!(first, second, "nonce her seferinde yenilenmeli");
+        assert_ne!(first, second, "the nonce must be fresh every time");
 
-        let p = proof("aynı-parola", &first).unwrap();
-        assert!(verify("aynı-parola", &first, &p));
-        assert!(!verify("aynı-parola", &second, &p), "replay engellenmeli");
+        let p = proof("same-password", &first).unwrap();
+        assert!(verify("same-password", &first, &p));
+        assert!(!verify("same-password", &second, &p), "replay must be blocked");
     }
 
     #[test]
@@ -79,7 +79,7 @@ mod tests {
         let nonce = random_nonce();
         let p = proof("", &nonce).unwrap();
         assert!(verify("", &nonce, &p));
-        assert!(!verify("bir-parola", &nonce, &p));
+        assert!(!verify("a-password", &nonce, &p));
     }
 
     #[test]
@@ -88,10 +88,11 @@ mod tests {
         assert_eq!(proof("abc", &nonce).unwrap(), proof("abc", &nonce).unwrap());
     }
 
+    /// The point of this test is the multi-byte password — keep it non-ASCII.
     #[test]
     fn non_ascii_passwords_are_supported() {
         let nonce = random_nonce();
-        let p = proof("şifreçğü", &nonce).unwrap();
-        assert!(verify("şifreçğü", &nonce, &p));
+        let p = proof("パスワードäöü", &nonce).unwrap();
+        assert!(verify("パスワードäöü", &nonce, &p));
     }
 }

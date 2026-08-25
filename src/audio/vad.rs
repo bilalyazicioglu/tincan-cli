@@ -1,14 +1,15 @@
-//! Konuşma algılama (VAD).
+//! Voice activity detection (VAD).
 //!
-//! İki işi var: kullanıcı listesinde "kim konuşuyor" göstergesini beslemek ve sessizken
-//! paket göndermeyi kesmek (DTX) — 6 kişilik bir odada genelde bir kişi konuşur, geri
-//! kalan beşin sessizliğini ağdan taşımanın anlamı yok.
+//! It has two jobs: feeding the "who is talking" indicator in the people list, and
+//! stopping transmission during silence (DTX) — in a six-person room usually one person
+//! is speaking, and there is no point carrying the other five's silence over the
+//! network.
 //!
-//! Basit bir RMS eşiği tek başına yetmez: kelimeler arasındaki kısa duraklarda gösterge
-//! titrer ve sesin sonu kesilir. Bu yüzden konuşma bittikten sonra kısa bir süre daha
-//! açık kalınır (hangover).
+//! A plain RMS threshold is not enough on its own: the indicator flickers during the
+//! short pauses between words, and the tail of a word gets clipped. So the gate stays
+//! open for a short while after speech stops (hangover).
 
-/// Çerçevenin ortalama enerjisi (kök ortalama kare).
+/// The frame's average energy (root mean square).
 pub fn rms(pcm: &[f32]) -> f32 {
     if pcm.is_empty() {
         return 0.0;
@@ -19,15 +20,15 @@ pub fn rms(pcm: &[f32]) -> f32 {
 
 pub struct Vad {
     threshold: f32,
-    /// Sessizliğe düştükten sonra kaç çerçeve daha açık kalınacağı.
+    /// How many further frames to stay open after falling back to silence.
     hangover: u32,
     remaining: u32,
 }
 
 impl Default for Vad {
     fn default() -> Self {
-        // ~0.01 RMS sessiz bir odadaki fısıltının biraz üstü; 20ms'lik çerçevelerde
-        // 15 çerçeve ≈ 300ms hangover, kelime araları için rahat bir pay.
+        // ~0.01 RMS sits just above a whisper in a quiet room; at 20 ms per frame,
+        // 15 frames ≈ 300 ms of hangover, a comfortable margin between words.
         Self::new(0.01, 15)
     }
 }
@@ -41,8 +42,8 @@ impl Vad {
         }
     }
 
-    /// Çerçeveyi değerlendirir; `true` ise bu çerçeve gönderilmeli ve kullanıcı
-    /// "konuşuyor" olarak gösterilmeli.
+    /// Evaluates a frame; `true` means the frame should be sent and the user shown
+    /// as speaking.
     pub fn update(&mut self, pcm: &[f32]) -> bool {
         if rms(pcm) >= self.threshold {
             self.remaining = self.hangover;
@@ -82,13 +83,13 @@ mod tests {
     #[test]
     fn detects_speech_and_ignores_room_noise() {
         let mut vad = Vad::default();
-        assert!(vad.update(&tone(0.5)), "net konuşma algılanmalı");
+        assert!(vad.update(&tone(0.5)), "clear speech must be detected");
 
         let mut quiet = Vad::default();
-        assert!(!quiet.update(&[0.0001; 960]), "ortam gürültüsü konuşma sayılmamalı");
+        assert!(!quiet.update(&[0.0001; 960]), "room noise must not count as speech");
     }
 
-    /// Kelime arasındaki kısa sessizlik göstergeyi söndürmemeli.
+    /// A short silence between words must not switch the indicator off.
     #[test]
     fn short_pauses_do_not_cut_speech_off() {
         let mut vad = Vad::new(0.01, 15);
@@ -97,12 +98,12 @@ mod tests {
         for frame in 0..14 {
             assert!(
                 vad.update(&[0.0; 960]),
-                "{frame}. sessiz çerçevede kesilmemeli"
+                "must not cut off at silent frame {frame}"
             );
         }
     }
 
-    /// Ama gerçekten susulduğunda kapanmalı — yoksa DTX hiç devreye girmez.
+    /// But it must close when someone really has stopped — otherwise DTX never engages.
     #[test]
     fn sustained_silence_eventually_stops_transmission() {
         let mut vad = Vad::new(0.01, 15);
@@ -110,7 +111,7 @@ mod tests {
         for _ in 0..15 {
             vad.update(&[0.0; 960]);
         }
-        assert!(!vad.is_active(), "uzun sessizlikte kapanmalı");
+        assert!(!vad.is_active(), "must close after a long silence");
         assert!(!vad.update(&[0.0; 960]));
     }
 
@@ -120,7 +121,7 @@ mod tests {
         vad.update(&tone(0.5));
         vad.update(&[0.0; 960]);
         vad.update(&[0.0; 960]);
-        // Yeniden konuşma başlarsa sayaç baştan dolmalı.
+        // When speech resumes, the counter must refill from the top.
         vad.update(&tone(0.5));
         for _ in 0..4 {
             assert!(vad.update(&[0.0; 960]));
