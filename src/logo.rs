@@ -9,8 +9,7 @@ const GOLD: Color = Color::Yellow;
 
 /// Prints the colorful ASCII logo to stdout for CLI startup banners.
 pub fn print_banner() {
-    let banner = format!(
-        "\x1b[38;5;214m       ( o )\x1b[0m\n\
+    let banner = "\x1b[38;5;214m       ( o )\x1b[0m\n\
          \x1b[1;36m      /=====\\\x1b[0m\n\
          \x1b[1;36m     |\x1b[0m \x1b[1;33mtincan\x1b[0m \x1b[1;36m|\x1b[0m\n\
          \x1b[1;36m     |  \x1b[38;5;214m/\\\x1b[0m   \x1b[1;36m|\x1b[0m\n\
@@ -19,8 +18,7 @@ pub fn print_banner() {
          \x1b[1;36m      \\=====/\x1b[0m\n\
          \x1b[38;5;214m         ~\x1b[0m\n\
          \x1b[38;5;214m        S\x1b[0m\n\
-         \x1b[38;5;214m         ~\x1b[0m"
-    );
+         \x1b[38;5;214m         ~\x1b[0m";
     println!("{banner}");
 }
 
