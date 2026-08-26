@@ -61,3 +61,4 @@ To ensure code stability, seamless community contributions, and predictable rele
 4. **CI Verification**: GitHub Actions automatically runs build & test suites on the PR.
 5. **Merge**: Once approved, squashed or rebased into `develop`.
 6. **Release Cut**: When preparing a release, `develop` is merged into `main`, tagged (e.g. `v0.2.0`), which automatically triggers GitHub Actions binary release builds!
+
