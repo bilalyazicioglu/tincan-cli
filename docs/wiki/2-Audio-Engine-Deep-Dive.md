@@ -62,3 +62,4 @@ Tincan's audio engine (`src/audio/`) is built for sub-30ms real-time voice commu
 ### 6. Multi-Source Audio Mixer & Soft Limiter (`src/audio/mixer.rs`)
 - Sums PCM samples from all active speakers in a channel.
 - Employs a soft limiter to prevent digital clipping when multiple peers talk simultaneously.
+

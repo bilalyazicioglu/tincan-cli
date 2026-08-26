@@ -21,3 +21,4 @@ A: No. Voice traffic is sent directly P2P between peers using QUIC UDP datagrams
 
 ### Issue 2: Terminal Function Keys F1-F5 do not trigger action
 - **Fix**: Some terminal emulators trap F-keys. Use alternative shortcuts: `Ctrl+G` for voice join (F2), `Ctrl+T` for mute (F3).
+

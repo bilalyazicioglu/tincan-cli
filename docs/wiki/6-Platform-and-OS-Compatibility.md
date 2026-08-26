@@ -25,3 +25,4 @@ Tincan is designed to run across Unix and Windows environments.
 
 ## 6.3 Linux Specifics
 - **Static Opus Linking**: Linux release assets link Opus statically to ensure zero `libopus.so` runtime dependency issues across distros.
+

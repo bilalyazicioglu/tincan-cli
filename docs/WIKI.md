@@ -50,6 +50,11 @@ Welcome to the official **Tincan CLI** Technical Wiki. Tincan is a serverless, p
    - NAT Traversal & DERP Relays
    - Terminal Hotkey Configuration & Troubleshooting
 
+8. **[Git Branching & Release Strategy](wiki/8-Git-Branching-and-Release-Strategy.md)**
+   - Git Flow / GitHub Flow Hybrid Model
+   - Branch Hierarchy (`main`, `develop`, `feature/*`, `fix/*`)
+   - PR Review & Automated Release Workflow
+
 ---
 
 ## ⚡ Quick Navigation

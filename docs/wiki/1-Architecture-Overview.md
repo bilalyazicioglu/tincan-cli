@@ -61,3 +61,4 @@ For standard 48 kHz mono speech at 24 kbps with 20ms frames:
 - **6 Peers**: 120 kbps upload / 120 kbps download
 
 For 2–8 participants, full mesh P2P delivers sub-50ms latency without server hosting costs.
+

@@ -68,3 +68,4 @@ Voice packets are sent as QUIC unreliable datagrams directly between peers.
 - `channel`: 1-byte `ChannelId` (voice channel filtering).
 - `sequence`: 8-byte `u64` sequence number for jitter buffer ordering.
 - `payload`: Variable-length Opus mono 48 kHz frame (20ms length).
+

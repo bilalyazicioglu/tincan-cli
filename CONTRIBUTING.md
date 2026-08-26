@@ -19,18 +19,31 @@ Browse the [GitHub Issues](https://github.com/bilalyazicioglu/tincan-cli/issues)
 - `bug`: Confirmed defects needing fixes.
 - `enhancement`: New features and design proposals.
 
-### 2. Setting Up Development Environment
+### 2. Setting Up Development Environment & Branching Model
 1. Fork and clone the repository:
    ```bash
    git clone https://github.com/YOUR-USERNAME/tincan-cli.git
    cd tincan-cli
    ```
-2. Install build dependencies (Opus, pkg-config, ALSA/CoreAudio).
-3. Run tests:
+2. Create a topic branch off `develop`:
+   ```bash
+   git checkout develop
+   git pull origin develop
+   git checkout -b feature/my-feature-name
+   ```
+3. Install build dependencies (Opus, pkg-config, ALSA/CoreAudio).
+4. Run tests:
    ```bash
    cargo test
    cargo clippy --all-targets
    ```
+
+### Branching Conventions
+- `main`: Stable production releases.
+- `develop`: Integration branch for upcoming releases (PR target).
+- `feature/*`: New feature development.
+- `fix/*`: Bug fixes.
+- `docs/*`: Documentation and wiki updates.
 
 ### 3. Submitting Pull Requests
 - Keep PRs focused on a single logical change.

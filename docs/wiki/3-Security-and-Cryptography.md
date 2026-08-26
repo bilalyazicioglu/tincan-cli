@@ -57,3 +57,4 @@ When joining a password-protected room:
 | **Wire Eavesdropping** | Low | QUIC TLS 1.3 encryption for streams & datagrams |
 | **Man-in-the-Middle** | Low | Iroh Ed25519 public key verification |
 | **Relay Tampering** | Low | E2E encrypted QUIC payload |
+

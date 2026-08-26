@@ -62,3 +62,4 @@ Tincan logs to `stderr` so debug messages never scramble the Ratatui terminal in
 ```bash
 RUST_LOG=tincan=debug cargo run -- host 2>tincan.log
 ```
+
