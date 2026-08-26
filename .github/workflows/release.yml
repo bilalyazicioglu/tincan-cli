@@ -29,13 +29,11 @@ jobs:
           # than it is worth. ubuntu-22.04 (glibc 2.35) keeps the Linux binaries
           # usable on older distributions.
           - target: aarch64-apple-darwin
-            runner: macos-15
+            runner: macos-14
           - target: x86_64-apple-darwin
-            runner: macos-15-intel
+            runner: macos-13
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
 
     steps:
       - uses: actions/checkout@v4
