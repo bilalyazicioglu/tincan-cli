@@ -5,6 +5,8 @@ needing anyone's server: the first person to open the app creates the room, send
 invite code it prints to their friends, and they connect with that code from anywhere in
 the world. No VPN, no port forwarding, no accounts.
 
+Developer Blog (Turkish): <https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet>
+
 ```
 ┌ channels ──────────────┐┌ #general · lobby ────────────────────────────────┐
 │>  🔊 general   2       ││23:56 — bob joined the room                       │
@@ -81,29 +83,29 @@ tincan devices
 
 ### Options
 
-| Option             | Description                                                     |
-| ------------------ | --------------------------------------------------------------- |
-| `--name`, `-n`     | Your nickname in the room (default: your system username)       |
-| `--password`, `-p` | Room password. Without one, anyone with the code can walk in    |
-| `--room`           | Room name (`host` only)                                         |
-| `--channels`       | Comma-separated channel list (default: `general,gaming,music`)  |
-| `--no-voice`       | Skip audio entirely; text chat only                             |
-| `--input`          | Microphone to use (a distinctive part of the name is enough)    |
-| `--output`         | Speaker to use                                                  |
-| `--ptt`            | Push-to-talk: the microphone only opens with F4                 |
+| Option             | Description                                                    |
+| ------------------ | -------------------------------------------------------------- |
+| `--name`, `-n`     | Your nickname in the room (default: your system username)      |
+| `--password`, `-p` | Room password. Without one, anyone with the code can walk in   |
+| `--room`           | Room name (`host` only)                                        |
+| `--channels`       | Comma-separated channel list (default: `general,gaming,music`) |
+| `--no-voice`       | Skip audio entirely; text chat only                            |
+| `--input`          | Microphone to use (a distinctive part of the name is enough)   |
+| `--output`         | Speaker to use                                                 |
+| `--ptt`            | Push-to-talk: the microphone only opens with F4                |
 
 ### Shortcuts
 
-| Key                  | Action                                          |
-| -------------------- | ----------------------------------------------- |
-| `Tab` / `Shift+Tab`  | Move between channels                           |
-| `F2` (or `Ctrl+G`)   | Join / leave the voice of the channel you see   |
-| `F3` (or `Ctrl+T`)   | Mute / unmute your microphone                   |
-| `F4`                 | Push-to-talk (only in `--ptt` mode)             |
-| `F5`                 | Deafen: hear nobody (also closes your mic)      |
-| `F1`                 | Show the full invite code (and copy it)         |
-| `Enter`              | Send the message                                |
-| `Ctrl+C`             | Quit                                            |
+| Key                 | Action                                        |
+| ------------------- | --------------------------------------------- |
+| `Tab` / `Shift+Tab` | Move between channels                         |
+| `F2` (or `Ctrl+G`)  | Join / leave the voice of the channel you see |
+| `F3` (or `Ctrl+T`)  | Mute / unmute your microphone                 |
+| `F4`                | Push-to-talk (only in `--ptt` mode)           |
+| `F5`                | Deafen: hear nobody (also closes your mic)    |
+| `F1`                | Show the full invite code (and copy it)       |
+| `Enter`             | Send the message                              |
+| `Ctrl+C`            | Quit                                          |
 
 To pick a device, list them with `tincan devices` first, then pass part of a name:
 
@@ -116,7 +118,7 @@ independent: you can read the chat in "general" while talking in "gaming". In th
 list, `>` marks the one you are viewing and `🔊` the one you are in.
 
 The audio shortcuts are F-keys on purpose: in a terminal `Ctrl+M` (0x0D) and `Ctrl+J`
-(0x0A) *are* Enter and cannot be told apart from it — had those been used, the "mute" key
+(0x0A) _are_ Enter and cannot be told apart from it — had those been used, the "mute" key
 would have quietly sent a message.
 
 The footer shows link status: how many peers you reach directly, how many flow through a
@@ -144,7 +146,7 @@ upload each.
          \______|______/          ── voice (mesh, direct datagrams)
 ```
 
-Connectivity comes from [iroh](https://iroh.computer): the invite code *is* the peer's
+Connectivity comes from [iroh](https://iroh.computer): the invite code _is_ the peer's
 public key. Most of the time a direct P2P connection is established; if hole punching
 fails, traffic flows through a relay — which cannot decrypt anything, it only forwards.
 QUIC encrypts every connection end to end and verifies the other side's identity by
