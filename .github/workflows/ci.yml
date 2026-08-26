@@ -9,6 +9,10 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Match how release builds link Opus, so CI exercises what we ship.
+    env:
+      OPUS_STATIC: "1"
+      CFLAGS: ${{ matrix.os == 'ubuntu-latest' && '-fPIC' || '' }}
     strategy:
       fail-fast: false
       matrix:

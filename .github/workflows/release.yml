@@ -12,6 +12,11 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    env:
+      # audiopus_sys links Opus statically by default on macOS but *dynamically*
+      # on linux-gnu, which produced Linux binaries with an unresolved
+      # `libopus.so.0`. We ship a standalone binary, so demand static everywhere.
+      OPUS_STATIC: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +59,10 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update
 
       - name: Build
+        env:
+          # Opus's static objects have to be position-independent to link into
+          # Rust's PIE executables on Linux.
+          CFLAGS: ${{ runner.os == 'Linux' && '-fPIC' || '' }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       # The whole point of shipping a binary is that it runs with nothing else
