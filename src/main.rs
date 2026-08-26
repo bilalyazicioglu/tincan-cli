@@ -19,8 +19,26 @@ use tincan::ui::{self, VoiceControl};
 /// Channels created by default when a room is opened.
 const DEFAULT_CHANNELS: &str = "general,gaming,music";
 
+const BANNER: &str = r#"
+       ( o )
+      /=====\
+     | tincan|
+     |  /\   |
+     | /  \  |
+     | \  /  |
+      \=====/
+         ~
+        S
+       ~
+"#;
+
 #[derive(Parser)]
-#[command(name = "tincan", version, about = "Serverless voice chat in your terminal")]
+#[command(
+    name = "tincan",
+    version,
+    about = "Serverless voice chat in your terminal",
+    before_help = BANNER
+)]
 struct Cli {
     #[command(subcommand)]
     command: Sub,
