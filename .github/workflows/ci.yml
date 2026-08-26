@@ -2,27 +2,27 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
 
 jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Match how release builds link Opus, so CI exercises what we ship.
     env:
       OPUS_STATIC: "1"
-      CFLAGS: ${{ matrix.os == 'ubuntu-latest' && '-fPIC' || '' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-14]
 
     steps:
       - uses: actions/checkout@v4
 
-      # Opus is built from vendored C source via autotools when no system Opus
-      # is installed, so autoconf/automake/libtool have to be here.
+      - name: Set CFLAGS for Linux
+        if: runner.os == 'Linux'
+        run: echo "CFLAGS=-fPIC" >> $GITHUB_ENV
+
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -33,7 +33,6 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install autoconf automake libtool
-          # autoreconf wants `libtoolize`; Homebrew names it `glibtoolize`.
           echo "$(brew --prefix)/opt/libtool/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Install Rust
