@@ -9,6 +9,7 @@
 //!   coordinator.
 
 pub mod auth;
+pub mod clipboard;
 pub mod invite;
 pub mod proto;
 pub mod room;

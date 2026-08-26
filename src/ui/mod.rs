@@ -140,6 +140,13 @@ async fn handle_key(
     let toggle_voice = key.code == KeyCode::F(2) || (ctrl && key.code == KeyCode::Char('g'));
     let toggle_mute = key.code == KeyCode::F(3) || (ctrl && key.code == KeyCode::Char('t'));
     let push_to_talk = key.code == KeyCode::F(4);
+    let show_code = key.code == KeyCode::F(1);
+
+    if show_code {
+        let copied = crate::clipboard::copy(&app.invite_code);
+        app.show_invite_code(copied);
+        return Ok(false);
+    }
     let toggle_deafen = key.code == KeyCode::F(5);
 
     if push_to_talk && app.ptt_mode {
