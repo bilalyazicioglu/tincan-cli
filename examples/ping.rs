@@ -1,15 +1,16 @@
-//! Faz 0 probe — ATILABILIR KOD.
+//! Phase 0 probe — THROWAWAY CODE.
 //!
-//! Projenin en büyük riskini test eder: farklı ağlardaki (NAT arkasındaki) iki makine
-//! sadece bir kodla birbirine bağlanabiliyor mu, ve ses temposunda (20ms'de bir paket)
-//! datagram akışı sağlıklı mı?
+//! Tests the project's biggest risk: can two machines on different networks (behind
+//! NAT) reach each other from a code alone, and is the datagram flow healthy at speech
+//! tempo (one packet every 20 ms)?
 //!
-//! Ölçülenler: bağlantı doğrudan mı yoksa relay üzerinden mi kuruldu, RTT dağılımı,
-//! paket kaybı, ve `max_datagram_size` bir Opus çerçevesine yetiyor mu.
+//! What it measures: whether the connection is direct or relayed, the RTT
+//! distribution, packet loss, and whether `max_datagram_size` is enough for an Opus
+//! frame.
 //!
-//! Kullanım:
-//!     Makine A:  cargo run --example ping -- host
-//!     Makine B:  cargo run --example ping -- join <A-nin-bastigi-kod>
+//! Usage:
+//!     Machine A:  cargo run --example ping -- host
+//!     Machine B:  cargo run --example ping -- join <the-code-A-printed>
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -21,11 +22,11 @@ use iroh::{Endpoint, EndpointId, RelayMode, endpoint::presets};
 
 const ALPN: &[u8] = b"tincan/probe/0";
 
-/// Ses temposu: 48kHz mono, 20ms çerçeve.
+/// Speech tempo: 48 kHz mono, 20 ms frames.
 const FRAME_INTERVAL: Duration = Duration::from_millis(20);
-/// ~32kbps Opus'ta 20ms'lik bir çerçeve kabaca bu boyutta olur.
+/// At ~32 kbps, an Opus frame of 20 ms comes out roughly this size.
 const FRAME_BYTES: usize = 120;
-/// 10 saniyelik akış.
+/// Ten seconds of stream.
 const FRAME_COUNT: u64 = 500;
 
 #[tokio::main]
@@ -38,10 +39,10 @@ async fn main() -> Result<()> {
         "join" => {
             let code = std::env::args()
                 .nth(2)
-                .context("kullanım: cargo run --example ping -- join <kod>")?;
+                .context("usage: cargo run --example ping -- join <code>")?;
             join(&code).await
         }
-        _ => bail!("kullanım: cargo run --example ping -- [host | join <kod>]"),
+        _ => bail!("usage: cargo run --example ping -- [host | join <code>]"),
     }
 }
 
@@ -55,23 +56,23 @@ async fn bind() -> Result<Endpoint> {
     Ok(ep)
 }
 
-/// Yankı tarafı: gelen her datagramı olduğu gibi geri gönderir.
+/// The echo side: sends every incoming datagram straight back.
 async fn host() -> Result<()> {
     let ep = bind().await?;
 
     println!("\n  Davet kodu:  {}\n", ep.id());
-    println!("  Diğer makinede:  cargo run --example ping -- join {}\n", ep.id());
-    println!("  Bağlantı bekleniyor...");
+    println!("  On the other machine:  cargo run --example ping -- join {}\n", ep.id());
+    println!("  Waiting for a connection...");
 
     while let Some(incoming) = ep.accept().await {
         let conn = match incoming.await {
             Ok(conn) => conn,
             Err(err) => {
-                eprintln!("  gelen bağlantı başarısız: {err:#}");
+                eprintln!("  incoming connection failed: {err:#}");
                 continue;
             }
         };
-        println!("  ✓ bağlandı: {}", conn.remote_id().fmt_short());
+        println!("  ✓ connected: {}", conn.remote_id().fmt_short());
         report_path(&conn, "host");
 
         let mut echoed = 0u64;
@@ -79,31 +80,32 @@ async fn host() -> Result<()> {
             conn.send_datagram(datagram)?;
             echoed += 1;
         }
-        println!("  bağlantı kapandı — {echoed} datagram yankılandı");
+        println!("  connection closed — {echoed} datagrams echoed");
         report_path(&conn, "host/son");
     }
     Ok(())
 }
 
-/// Ölçüm tarafı: ses temposunda datagram gönderir, yankıları eşleştirir, istatistik basar.
+/// The measuring side: sends datagrams at speech tempo, matches the echoes, prints
+/// the statistics.
 async fn join(code: &str) -> Result<()> {
     let ep = bind().await?;
-    let peer: EndpointId = code.trim().parse().context("geçersiz davet kodu")?;
+    let peer: EndpointId = code.trim().parse().context("invalid invite code")?;
 
-    println!("\n  Bağlanılıyor: {peer}");
+    println!("\n  Connecting to: {peer}");
     let started = Instant::now();
-    let conn = ep.connect(peer, ALPN).await.context("bağlantı kurulamadı")?;
-    println!("  ✓ bağlantı {:?} içinde kuruldu", started.elapsed());
+    let conn = ep.connect(peer, ALPN).await.context("could not establish the connection")?;
+    println!("  ✓ connected in {:?}", started.elapsed());
 
     match conn.max_datagram_size() {
         Some(size) if size >= FRAME_BYTES => {
-            println!("  ✓ max_datagram_size = {size} bayt (Opus çerçevesi için fazlasıyla yeterli)")
+            println!("  ✓ max_datagram_size = {size} bytes (ample for an Opus frame)")
         }
-        Some(size) => println!("  ⚠ max_datagram_size = {size} bayt — Opus çerçevesi ({FRAME_BYTES}) sığmıyor!"),
-        None => bail!("karşı taraf datagram desteklemiyor — mimari bu olmadan çalışmaz"),
+        Some(size) => println!("  ⚠ max_datagram_size = {size} bytes — an Opus frame ({FRAME_BYTES}) does not fit!"),
+        None => bail!("the other side does not support datagrams — the architecture needs them"),
     }
 
-    // Gönderim zamanları: seq -> gönderildiği an.
+    // Send times: seq -> the instant it went out.
     let sent_at: Arc<Mutex<HashMap<u64, Instant>>> = Arc::default();
     let rtts: Arc<Mutex<Vec<Duration>>> = Arc::default();
 
@@ -125,7 +127,7 @@ async fn join(code: &str) -> Result<()> {
         }
     });
 
-    println!("\n  {FRAME_COUNT} çerçeve gönderiliyor (20ms aralık, ~10 saniye)...");
+    println!("\n  Sending {FRAME_COUNT} frames (20 ms apart, ~10 seconds)...");
     let mut ticker = tokio::time::interval(FRAME_INTERVAL);
     for seq in 0..FRAME_COUNT {
         ticker.tick().await;
@@ -133,11 +135,11 @@ async fn join(code: &str) -> Result<()> {
         frame[..8].copy_from_slice(&seq.to_le_bytes());
         sent_at.lock().unwrap().insert(seq, Instant::now());
         if let Err(err) = conn.send_datagram(Bytes::from(frame)) {
-            eprintln!("  gönderim hatası (seq {seq}): {err}");
+            eprintln!("  send error (seq {seq}): {err}");
         }
     }
 
-    // Yoldaki son yankıların gelmesi için bekle.
+    // Wait for the last echoes still in flight.
     tokio::time::sleep(Duration::from_millis(500)).await;
     conn.close(0u32.into(), b"probe bitti");
     recv_task.abort();
@@ -147,10 +149,10 @@ async fn join(code: &str) -> Result<()> {
     Ok(())
 }
 
-/// Bağlantının doğrudan mı yoksa relay üzerinden mi aktığını gösterir —
-/// projenin asıl iddiasının kanıtı bu satırda.
-fn report_path(conn: &iroh::endpoint::Connection, etiket: &str) {
-    println!("  [{etiket}] aktif yollar: {:?}", conn.paths());
+/// Shows whether the connection flows directly or through a relay — this line is the
+/// evidence for the project's central claim.
+fn report_path(conn: &iroh::endpoint::Connection, label: &str) {
+    println!("  [{label}] active paths: {:?}", conn.paths());
 }
 
 fn report_stats(rtts: &[Duration]) {
@@ -158,11 +160,11 @@ fn report_stats(rtts: &[Duration]) {
     let lost = FRAME_COUNT.saturating_sub(received);
     let loss_pct = lost as f64 / FRAME_COUNT as f64 * 100.0;
 
-    println!("\n  ── Sonuçlar ──");
-    println!("  gönderilen: {FRAME_COUNT}   dönen: {received}   kayıp: {lost} (%{loss_pct:.1})");
+    println!("\n  ── Results ──");
+    println!("  sent: {FRAME_COUNT}   returned: {received}   lost: {lost} ({loss_pct:.1}%)");
 
     if rtts.is_empty() {
-        println!("  ⚠ hiç yankı dönmedi — bağlantı kurulmuş görünse de veri akmıyor");
+        println!("  ⚠ no echoes came back — the link looks up but no data is flowing");
         return;
     }
 
@@ -180,7 +182,7 @@ fn report_stats(rtts: &[Duration]) {
         sorted[sorted.len() - 1],
     );
     println!(
-        "  → tek yön gecikme kabaca {:?}; ses için hedefimiz <100ms",
+        "  → one-way latency is roughly {:?}; our target for voice is <100 ms",
         mean / 2
     );
 }

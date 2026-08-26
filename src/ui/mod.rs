@@ -1,4 +1,4 @@
-//! Terminal arayüzü.
+//! The terminal interface.
 
 pub mod state;
 mod view;
@@ -17,21 +17,22 @@ use crate::net::{Command, Event, Session};
 use crate::proto::PeerId;
 use state::App;
 
-/// Arayüzün ses tarafına tutunduğu yer. Ses açılamadıysa hiç kurulmaz.
+/// Where the interface holds on to the audio side. Never built if audio failed to
+/// start.
 pub struct VoiceControl {
     pub mesh: VoiceMesh,
-    /// O anda konuşanlar.
+    /// Who is currently speaking.
     pub speaking: watch::Receiver<HashSet<PeerId>>,
-    /// Mikrofon açık mı — arayüz hesaplar, ses motoru okur.
+    /// Whether the microphone is open — the interface computes it, the engine reads it.
     pub mic_open: Arc<AtomicBool>,
-    /// Karşı tarafları duyuyor muyuz.
+    /// Whether we can hear the others.
     pub hearing: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
-    /// Hayatta tutulduğu sürece ses donanımı açık kalır.
+    /// The audio hardware stays open for as long as this is kept alive.
     pub _devices: AudioDevices,
 }
 
-/// Oturumu ekrana bağlar ve kullanıcı çıkana kadar çalışır.
+/// Wires the session to the screen and runs until the user quits.
 pub async fn run(
     mut session: Session,
     mut voice: Option<VoiceControl>,
@@ -42,7 +43,8 @@ pub async fn run(
     app.ptt_mode = ptt_mode && app.voice_available;
     let mut terminal = ratatui::init();
     let mut keys = spawn_key_reader();
-    // Bağlantı kalitesi anlık değil, gözle takip edilen bir bilgi: saniyede bir yeter.
+    // Link quality is something you watch, not something instantaneous: once a
+    // second is plenty.
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
 
     let result = async {
@@ -62,7 +64,7 @@ pub async fn run(
                     None => break,
                 },
 
-                // Konuşma göstergesi ses motorundan gelir.
+                // The speaking indicator comes from the audio engine.
                 changed = next_speakers(voice.as_mut().map(|v| &mut v.speaking)) => {
                     app.speaking = changed;
                 }
@@ -85,7 +87,7 @@ pub async fn run(
             }
 
             if let Some(reason) = app.ended.clone() {
-                // Kullanıcı son durumu görebilsin diye kapanmadan önce bir kare daha çiz.
+                // Draw one more frame before closing so the user sees the final state.
                 app.status = Some(reason);
                 terminal.draw(|frame| view::draw(frame, &app))?;
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -104,7 +106,7 @@ pub async fn run(
     result
 }
 
-/// Tuş okuma bloklayıcı bir işlem; kendi thread'inde çalışıp kanala aktarılır.
+/// Reading keys blocks, so it runs on its own thread and is piped into a channel.
 fn spawn_key_reader() -> mpsc::Receiver<KeyEvent> {
     let (tx, rx) = mpsc::channel(64);
     std::thread::spawn(move || {
@@ -123,7 +125,7 @@ fn spawn_key_reader() -> mpsc::Receiver<KeyEvent> {
     rx
 }
 
-/// Tuşu işler. Çıkılacaksa `true` döner.
+/// Handles a key. Returns `true` if we should quit.
 async fn handle_key(
     app: &mut App,
     key: KeyEvent,
@@ -131,26 +133,27 @@ async fn handle_key(
 ) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    // Ses kısayolları bilerek F-tuşları: terminalde Ctrl+M (0x0D) ve Ctrl+J (0x0A)
-    // Enter'ın kendisidir, ondan ayırt edilemez. Onları kullansaydık "sustur" tuşu
-    // sessizce mesaj gönderirdi. Ctrl+G / Ctrl+T çakışmasız alternatifler.
+    // The audio shortcuts are F-keys on purpose: in a terminal Ctrl+M (0x0D) and
+    // Ctrl+J (0x0A) *are* Enter and cannot be told apart from it. Had we used those,
+    // the "mute" key would have quietly sent a message. Ctrl+G / Ctrl+T are
+    // conflict-free alternatives.
     let toggle_voice = key.code == KeyCode::F(2) || (ctrl && key.code == KeyCode::Char('g'));
     let toggle_mute = key.code == KeyCode::F(3) || (ctrl && key.code == KeyCode::Char('t'));
     let push_to_talk = key.code == KeyCode::F(4);
     let toggle_deafen = key.code == KeyCode::F(5);
 
     if push_to_talk && app.ptt_mode {
-        // Terminaller tuş bırakma olayını genelde bildirmez; bu yüzden bas-konuş
-        // burada "bas-aç / bas-kapat" olarak çalışır. Basılı tutma desteği için
-        // terminalin klavye geliştirmelerini bildirmesi gerekir (bkz. run()).
+        // Terminals usually do not report key-release events, so push-to-talk works
+        // here as press-to-open / press-to-close. Real hold-to-talk would require the
+        // terminal to advertise keyboard enhancements (see run()).
         app.ptt_active = !app.ptt_active;
         return Ok(false);
     }
     if toggle_deafen {
         let deafened = !app.deafened;
         let _ = commands.send(Command::SetDeafened(deafened)).await;
-        // Sağırlaştırırken mikrofonu da kapatmak beklenen davranış: duymadığın
-        // bir sohbete konuşmaya devam etmek karşı tarafı yanıltır.
+        // Closing the microphone along with deafening is the expected behaviour:
+        // carrying on talking into a conversation you cannot hear misleads the others.
         if deafened && !app.muted {
             let _ = commands.send(Command::SetMuted(true)).await;
         }
@@ -158,7 +161,7 @@ async fn handle_key(
     }
 
     if toggle_voice {
-        // Hedef, o an bakılan kanal: kullanıcı hangi kanalı görüyorsa oraya girer.
+        // The target is whichever channel is on screen: you join the one you see.
         let target = if app.voice == Some(app.viewing) {
             None
         } else {
@@ -199,8 +202,8 @@ async fn handle_key(
     Ok(false)
 }
 
-/// Roster değiştiğinde ses mesh'ini yeni üyeliğe göre günceller ve susturma
-/// durumunu koordinatörün söylediğiyle hizalar.
+/// When the roster changes, updates the voice mesh to the new membership and aligns
+/// the mute state with what the coordinator reports.
 async fn sync_voice(app: &App, voice: Option<&VoiceControl>) {
     let Some(voice) = voice else {
         return;
@@ -214,7 +217,7 @@ async fn sync_voice(app: &App, voice: Option<&VoiceControl>) {
     voice.mesh.set_membership(app.voice, members).await;
 }
 
-/// Arayüzün hesapladığı mikrofon/kulaklık kararını ses motoruna aktarır.
+/// Passes the interface's microphone/headphone decision down to the audio engine.
 fn apply_local_audio_state(app: &App, voice: Option<&VoiceControl>) {
     let Some(voice) = voice else {
         return;
@@ -223,16 +226,16 @@ fn apply_local_audio_state(app: &App, voice: Option<&VoiceControl>) {
     voice.hearing.store(!app.deafened, Ordering::Relaxed);
 }
 
-/// Konuşanlar listesindeki bir sonraki değişimi bekler. Ses kapalıysa asla dönmez —
-/// `select!` içinde sonsuza kadar beklemesi istenen dal budur.
+/// Waits for the next change in the speaker list. Never returns when audio is off —
+/// this is the `select!` branch that is meant to wait forever.
 async fn next_speakers(
     speaking: Option<&mut watch::Receiver<HashSet<PeerId>>>,
 ) -> HashSet<PeerId> {
     match speaking {
         Some(speaking) => {
-            // Receiver'ın kendisi ilerletilmeli. Kopyası üzerinden beklenirse asıl
-            // receiver değişikliği "görmemiş" sayılır ve bir sonraki bekleme anında
-            // döner — arayüz döngüsü boşa döner.
+            // The receiver itself has to be advanced. Waiting on a clone leaves the
+            // real receiver counted as not having seen the change, so the next wait
+            // returns immediately and the interface loop spins.
             if speaking.changed().await.is_ok() {
                 speaking.borrow_and_update().clone()
             } else {
@@ -252,7 +255,7 @@ mod tests {
         HashSet::from([PeerId([seed; 32])])
     }
 
-    /// Konuşma durumu değiştiğinde arayüz uyanmalı.
+    /// The interface must wake when the speaking state changes.
     #[tokio::test]
     async fn wakes_up_when_someone_starts_speaking() {
         let (tx, mut rx) = watch::channel(HashSet::new());
@@ -262,10 +265,10 @@ mod tests {
         assert_eq!(speakers, speaker(1));
     }
 
-    /// Ama yeni bir değişiklik yokken beklemeye devam etmeli.
+    /// But with no new change it must keep waiting.
     ///
-    /// Aksi halde arayüz döngüsü boşa dönerek CPU'yu yakar ve ekranı durmadan
-    /// yeniden çizer — kullanıcının fark edeceği tek şey ısınan bilgisayardır.
+    /// Otherwise the interface loop spins, burns CPU and redraws the screen endlessly —
+    /// and the only thing the user notices is a hot laptop.
     #[tokio::test]
     async fn does_not_spin_when_nothing_changes() {
         let (tx, mut rx) = watch::channel(HashSet::new());
@@ -275,11 +278,11 @@ mod tests {
         let again = tokio::time::timeout(Duration::from_millis(150), next_speakers(Some(&mut rx)));
         assert!(
             again.await.is_err(),
-            "değişiklik yokken hemen dönmemeli — boş döngü oluşur"
+            "must not return immediately with no change — that is a spin loop"
         );
     }
 
-    /// Ses kapalıyken bu dal hiç seçilmemeli.
+    /// With audio off this branch must never be selected.
     #[tokio::test]
     async fn never_returns_when_voice_is_off() {
         let result = tokio::time::timeout(Duration::from_millis(100), next_speakers(None));

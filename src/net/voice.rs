@@ -1,18 +1,18 @@
-//! Ses mesh'i: aynı kanaldaki peer'lar arasında doğrudan datagram taşıma.
+//! The voice mesh: direct datagram transport between peers in the same channel.
 //!
-//! Kontrol düzleminden tamamen ayrı çalışır. Koordinatör kimin hangi kanalda olduğunu
-//! söyler; bağlantıları ve ses paketlerini peer'lar kendi aralarında halleder. Ses
-//! trafiği hiçbir zaman koordinatör üzerinden geçmez.
+//! It runs entirely apart from the control plane. The coordinator says who is in which
+//! channel; the peers handle the connections and the voice packets among themselves.
+//! Voice traffic never passes through the coordinator.
 //!
-//! İki incelik:
+//! Two subtleties:
 //!
-//! * **Çift bağlantı.** İki peer aynı anda birbirine bağlanmaya kalkarsa iki ayrı
-//!   bağlantı oluşur ve ses iki kez duyulur. Kural: kimliği küçük olan bağlanır,
-//!   büyük olan bekler. Kimlikler public key olduğu için bu, ek anlaşma gerektirmeyen
-//!   deterministik bir görev paylaşımıdır.
-//! * **Kanal filtresi.** Gelen paketin kanalı bizimkiyle eşleşmiyorsa çalınmaz.
-//!   Kanal değişimi ile roster güncellemesi arasındaki kısa boşlukta yanlış kanaldan
-//!   ses sızmasını bu engeller.
+//! * **Duplicate connections.** If two peers try to connect to each other at the same
+//!   moment, two separate connections form and the audio is heard twice. The rule: the
+//!   lower identity dials, the higher one waits. Since identities are public keys, this
+//!   is a deterministic division of labour that needs no negotiation.
+//! * **Channel filter.** An incoming packet whose channel does not match ours is not
+//!   played. This is what stops audio leaking in from the wrong channel during the
+//!   brief gap between a channel switch and the roster update.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -31,27 +31,29 @@ use crate::proto::{self, ChannelId, PeerId, VoiceHeader};
 
 struct Shared {
     me: PeerId,
-    /// Çözülmüş çerçevelerin gideceği yer (ses motoru).
+    /// Where decoded frames go (the audio engine).
     incoming: mpsc::Sender<Incoming>,
-    /// Kurulu ses bağlantıları.
+    /// The established voice connections.
     connections: Mutex<HashMap<PeerId, Connection>>,
-    /// Kendi ses kanalımız; hem gönderilen başlığa yazılır hem gelen filtrelenir.
+    /// Our own voice channel; written into outgoing headers and used to filter
+    /// incoming ones.
     channel: Mutex<Option<ChannelId>>,
-    /// Giden çerçeve sayacı.
+    /// Outgoing frame counter.
     seq: AtomicU32,
 }
 
-/// Ses bağlantılarının o anki durumu — arayüzdeki kalite göstergesini besler.
+/// The current state of the voice connections — feeds the quality indicator in the
+/// interface.
 ///
-/// Kullanıcının bilmek isteyeceği tek şey "sesim düzgün gidiyor mu"; bunun iki
-/// bileşeni var: doğrudan mı gidiyor yoksa relay üzerinden mi dolaşıyor, ve gecikme.
+/// The only thing a user wants to know is "is my voice getting through cleanly", and
+/// that has two parts: whether it goes direct or detours through a relay, and latency.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinkStatus {
-    /// Doğrudan P2P bağlantı kurulmuş peer sayısı.
+    /// Peers reached over a direct P2P connection.
     pub direct: usize,
-    /// Relay üzerinden akan peer sayısı (delik açma başarısız olmuş).
+    /// Peers whose audio flows through a relay (hole punching did not succeed).
     pub relayed: usize,
-    /// Bağlantılar arasındaki en yüksek gidiş-dönüş süresi.
+    /// The worst round-trip time across the connections.
     pub worst_rtt: Option<Duration>,
 }
 
@@ -61,7 +63,7 @@ impl LinkStatus {
     }
 }
 
-/// Ses mesh'inin dışarıya açılan yüzü.
+/// The voice mesh's public face.
 #[derive(Clone)]
 pub struct VoiceMesh {
     shared: Arc<Shared>,
@@ -69,7 +71,7 @@ pub struct VoiceMesh {
 }
 
 impl VoiceMesh {
-    /// Mesh'i kurar ve giden ses çerçevelerini dağıtan döngüyü başlatır.
+    /// Builds the mesh and starts the loop that distributes outgoing voice frames.
     pub fn start(
         endpoint: Endpoint,
         me: PeerId,
@@ -89,7 +91,7 @@ impl VoiceMesh {
             let mut datagram = vec![0u8; VoiceHeader::SIZE + 1500];
             while let Some(payload) = outgoing.recv().await {
                 let Some(channel) = *sender.channel.lock().await else {
-                    continue; // Ses kanalında değiliz; konuşulan bir yer yok.
+                    continue; // Not in a voice channel; there is nowhere to speak.
                 };
 
                 let seq = sender.seq.fetch_add(1, Ordering::Relaxed);
@@ -104,9 +106,9 @@ impl VoiceMesh {
 
                 let connections = sender.connections.lock().await;
                 for (peer, conn) in connections.iter() {
-                    // Datagram kaybı ses için normaldir; başarısızlık sessizce geçilir.
+                    // Datagram loss is normal for audio; failures pass quietly.
                     if let Err(err) = conn.send_datagram(frame.clone()) {
-                        debug!("{} peer'ına ses gönderilemedi: {err}", peer.short());
+                        debug!("could not send audio to peer {}: {err}", peer.short());
                     }
                 }
             }
@@ -115,20 +117,20 @@ impl VoiceMesh {
         Self { shared, endpoint }
     }
 
-    /// Gelen bir ses bağlantısını mesh'e katar.
+    /// Adds an incoming voice connection to the mesh.
     pub fn accept(&self, conn: Connection) {
         let peer = to_peer_id(conn.remote_id());
         let shared = self.shared.clone();
         tokio::spawn(async move {
-            debug!("{} ile ses bağlantısı kuruldu (gelen)", peer.short());
+            debug!("voice connection established with {} (incoming)", peer.short());
             shared.connections.lock().await.insert(peer, conn.clone());
             read_loop(shared.clone(), conn, peer).await;
             shared.connections.lock().await.remove(&peer);
         });
     }
 
-    /// Koordinatörden gelen roster'a göre mesh'i günceller: kendi kanalımızdaki
-    /// peer'larla bağlantı kurar, kanaldan çıkanlarla olan bağlantıyı kapatır.
+    /// Updates the mesh from the coordinator's roster: connects to the peers in our
+    /// channel and closes connections to those who left it.
     pub async fn set_membership(&self, channel: Option<ChannelId>, mut members: Vec<PeerId>) {
         *self.shared.channel.lock().await = channel;
         members.retain(|peer| *peer != self.shared.me);
@@ -138,7 +140,7 @@ impl VoiceMesh {
             HashSet::new()
         };
 
-        // Artık aynı kanalda olmayanları bırak.
+        // Drop everyone who is no longer in the same channel.
         let mut connections = self.shared.connections.lock().await;
         connections.retain(|peer, conn| {
             let keep = wanted.contains(peer);
@@ -151,7 +153,7 @@ impl VoiceMesh {
         drop(connections);
 
         for peer in wanted.difference(&existing) {
-            // Yalnızca kimliği küçük olan taraf bağlantıyı başlatır; diğeri bekler.
+            // Only the lower identity dials; the other side waits.
             if self.shared.me.0 > peer.0 {
                 continue;
             }
@@ -159,14 +161,14 @@ impl VoiceMesh {
         }
     }
 
-    /// Kurulu ses bağlantılarının kalitesini özetler.
+    /// Summarises the quality of the established voice connections.
     pub async fn link_status(&self) -> LinkStatus {
         let connections = self.shared.connections.lock().await;
         let mut status = LinkStatus::default();
 
         for conn in connections.values() {
             let paths = conn.paths();
-            // Aynı anda birden çok yol açık olabilir; trafiği taşıyan seçili olandır.
+            // Several paths can be open at once; the selected one carries the traffic.
             let Some(selected) = paths.iter().find(|path| path.is_selected()) else {
                 continue;
             };
@@ -190,21 +192,22 @@ impl VoiceMesh {
             };
             match endpoint.connect(target, proto::VOICE_ALPN).await {
                 Ok(conn) => {
-                    debug!("{} ile ses bağlantısı kuruldu (giden)", peer.short());
+                    debug!("voice connection established with {} (outgoing)", peer.short());
                     shared.connections.lock().await.insert(peer, conn.clone());
                     read_loop(shared.clone(), conn, peer).await;
                     shared.connections.lock().await.remove(&peer);
                 }
-                Err(err) => debug!("{} peer'ına ses bağlantısı kurulamadı: {err}", peer.short()),
+                Err(err) => debug!("could not open a voice connection to peer {}: {err}", peer.short()),
             }
         });
     }
 }
 
-/// Koordinatör olmayan peer'lar için gelen ses bağlantılarını karşılayan döngü.
+/// The loop that answers incoming voice connections on peers that are not the
+/// coordinator.
 ///
-/// Koordinatörde bu işi kontrol düzleminin accept döngüsü yapar: tek bir endpoint'i
-/// iki döngü birden dinleyemez.
+/// On the coordinator the control plane's accept loop does this instead: two loops
+/// cannot listen on a single endpoint.
 pub fn spawn_accept(endpoint: Endpoint, mesh: VoiceMesh) {
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
@@ -217,26 +220,26 @@ pub fn spawn_accept(endpoint: Endpoint, mesh: VoiceMesh) {
                     return;
                 };
                 if alpn != proto::VOICE_ALPN {
-                    debug!("ses dışı bağlantı geldi, yoksayılıyor");
+                    debug!("a non-voice connection arrived, ignoring it");
                     return;
                 }
                 match accepting.await {
                     Ok(conn) => mesh.accept(conn),
-                    Err(err) => debug!("ses bağlantısı kurulamadı: {err:#}"),
+                    Err(err) => debug!("a voice connection failed to establish: {err:#}"),
                 }
             });
         }
     });
 }
 
-/// Bir peer'dan gelen ses datagramlarını okur ve ses motoruna iletir.
+/// Reads voice datagrams from one peer and passes them to the audio engine.
 async fn read_loop(shared: Arc<Shared>, conn: Connection, peer: PeerId) {
     while let Ok(datagram) = conn.read_datagram().await {
         let Some((header, payload)) = VoiceHeader::parse(&datagram) else {
-            continue; // Bozuk paket: at, bağlantıyı koparma.
+            continue; // Corrupt packet: drop it, do not tear the connection down.
         };
 
-        // Bizim kanalımızdan değilse çalınmaz.
+        // If it is not from our channel, it is not played.
         if *shared.channel.lock().await != Some(header.channel) {
             continue;
         }
@@ -246,10 +249,10 @@ async fn read_loop(shared: Arc<Shared>, conn: Connection, peer: PeerId) {
             seq: header.seq,
             payload: payload.to_vec(),
         };
-        // Ses motoru yetişemiyorsa çerçeveyi düşürmek, kuyruk biriktirip
-        // gecikmeyi büyütmekten iyidir.
+        // If the audio engine cannot keep up, dropping the frame beats queueing it
+        // and growing the latency.
         if shared.incoming.try_send(frame).is_err() {
-            debug!("ses kuyruğu dolu, çerçeve düştü");
+            debug!("the audio queue is full, dropped a frame");
         }
     }
 }

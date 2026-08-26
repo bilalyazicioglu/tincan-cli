@@ -1,4 +1,4 @@
-//! tincan — terminalde çalışan, sunucusuz sesli sohbet.
+//! tincan — serverless voice chat that runs in your terminal.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -12,11 +12,11 @@ use tincan::proto::PeerId;
 use tincan::room::Room;
 use tincan::ui::{self, VoiceControl};
 
-/// Oda açılırken oluşturulan varsayılan kanallar.
-const DEFAULT_CHANNELS: &str = "genel,oyun,müzik";
+/// Channels created by default when a room is opened.
+const DEFAULT_CHANNELS: &str = "general,gaming,music";
 
 #[derive(Parser)]
-#[command(name = "tincan", version, about = "Terminalde sunucusuz sesli sohbet")]
+#[command(name = "tincan", version, about = "Serverless voice chat in your terminal")]
 struct Cli {
     #[command(subcommand)]
     command: Sub,
@@ -24,26 +24,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Sub {
-    /// Yeni bir oda açar ve davet kodunu basar.
+    /// Open a new room and print its invite code.
     Host {
-        /// Odada görünecek takma adınız.
+        /// The nickname you appear under in the room.
         #[arg(long, short)]
         name: Option<String>,
-        /// Oda parolası. Verilmezse kodu bilen herkes girebilir.
+        /// Room password. Without one, anyone who has the code can walk in.
         #[arg(long, short)]
         password: Option<String>,
-        /// Oda adı.
+        /// Room name.
         #[arg(long, default_value = "tincan")]
         room: String,
-        /// Virgülle ayrılmış kanal listesi.
+        /// Comma-separated list of channels.
         #[arg(long, default_value = DEFAULT_CHANNELS)]
         channels: String,
         #[command(flatten)]
         audio: AudioArgs,
     },
-    /// Davet koduyla var olan bir odaya katılır.
+    /// Join an existing room with an invite code.
     Join {
-        /// Host'un paylaştığı davet kodu.
+        /// The invite code the host shared.
         code: String,
         #[arg(long, short)]
         name: Option<String>,
@@ -52,30 +52,30 @@ enum Sub {
         #[command(flatten)]
         audio: AudioArgs,
     },
-    /// Ses cihazlarını listeler.
+    /// List the audio devices tincan can see.
     Devices,
 }
 
-/// Ses ile ilgili ortak bayraklar.
+/// Flags shared by the commands that use audio.
 #[derive(clap::Args, Clone)]
 struct AudioArgs {
-    /// Sesi hiç açma; yalnızca yazışma.
+    /// Skip audio entirely; text chat only.
     #[arg(long)]
     no_voice: bool,
-    /// Kullanılacak mikrofon (adın bir parçası yeter).
+    /// Microphone to use (a distinctive part of its name is enough).
     #[arg(long)]
     input: Option<String>,
-    /// Kullanılacak hoparlör (adın bir parçası yeter).
+    /// Speaker to use (a distinctive part of its name is enough).
     #[arg(long)]
     output: Option<String>,
-    /// Bas-konuş modu: mikrofon yalnızca F4 ile açılır.
+    /// Push-to-talk: the microphone only opens with F4.
     #[arg(long)]
     ptt: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Loglar arayüzü bozmasın diye yalnızca istenirse stderr'e gider:
+    // Logs only go to stderr when asked for, so they cannot scramble the interface:
     //   RUST_LOG=debug tincan host 2>tincan.log
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -120,7 +120,7 @@ async fn host(
         .collect();
     let room = Room::new(room_name, channels)?;
 
-    println!("ağa bağlanılıyor...");
+    println!("connecting to the network...");
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
@@ -134,10 +134,10 @@ async fn host(
     )
     .await?;
 
-    println!("\n  Oda açıldı. Davet kodunu arkadaşlarınıza gönderin:\n");
+    println!("\n  Room is open. Send the invite code to your friends:\n");
     println!("      {}\n", session.invite_code);
-    println!("  Onlar şunu çalıştıracak:  tincan join {}\n", session.invite_code);
-    println!("  Arayüz açılıyor...");
+    println!("  They will run:  tincan join {}\n", session.invite_code);
+    println!("  Opening the interface...");
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
 
     ui::run(session, control, audio.ptt).await
@@ -149,10 +149,10 @@ async fn join(
     password: Option<String>,
     audio: AudioArgs,
 ) -> Result<()> {
-    let key = invite::decode(&code).context("davet kodu okunamadı")?;
+    let key = invite::decode(&code).context("could not read the invite code")?;
     let coordinator = PeerId(key);
 
-    println!("odaya bağlanılıyor...");
+    println!("connecting to the room...");
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
@@ -170,10 +170,10 @@ async fn join(
     ui::run(session, control, audio.ptt).await
 }
 
-/// Ses donanımını ve mesh'i kurar.
+/// Brings up the audio hardware and the mesh.
 ///
-/// Ses açılamazsa (mikrofon izni yok, cihaz 48kHz değil) uygulama çökmemeli:
-/// yazışma tarafı çalışmaya devam eder, kullanıcı arayüzde nedeni görür.
+/// If audio cannot start (no microphone permission, device is not 48 kHz) the app must
+/// not die: text chat keeps working and the user sees the reason in the interface.
 fn setup_voice(
     endpoint: &Endpoint,
     me: PeerId,
@@ -200,16 +200,16 @@ fn setup_voice(
             (Some(mesh), Some(control))
         }
         Err(err) => {
-            eprintln!("\n  ⚠ ses açılamadı, yalnızca yazışma: {err:#}\n");
+            eprintln!("\n  ⚠ audio could not start, text chat only: {err:#}\n");
             std::thread::sleep(std::time::Duration::from_millis(2500));
             (None, None)
         }
     }
 }
 
-/// Takma ad verilmediyse sistem kullanıcı adına düşer.
+/// Falls back to the system username when no nickname is given.
 fn nickname(explicit: Option<String>) -> String {
     explicit
         .or_else(|| std::env::var("USER").ok())
-        .unwrap_or_else(|| "misafir".to_string())
+        .unwrap_or_else(|| "guest".to_string())
 }

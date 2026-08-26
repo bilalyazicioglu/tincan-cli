@@ -1,31 +1,35 @@
-//! Kontrol düzleminin tel üzerindeki tipleri.
+//! The control plane's on-the-wire types.
 //!
-//! Bu modül bilerek iroh'tan bağımsız: kimlikler ham `[u8; 32]` olarak taşınır, böylece
-//! protokol ağ katmanı olmadan test edilebilir. iroh tiplerine dönüşüm `net` katmanında.
+//! This module is deliberately independent of iroh: identities travel as raw
+//! `[u8; 32]`, so the protocol can be tested without the network layer. Conversion to
+//! iroh's types lives in `net`.
 //!
-//! Çerçeveleme: her mesaj `u32` (little-endian) uzunluk öneki + postcard gövdesi.
+//! Framing: every message is a `u32` little-endian length prefix + a postcard body.
 
 use serde::{Deserialize, Serialize};
 
-/// Kontrol akışında kullanılan ALPN.
+/// The ALPN used on the control stream.
 pub const ALPN: &[u8] = b"tincan/control/0";
 
-/// Ses mesh'inde kullanılan ALPN. Kontrol düzleminden ayrı: ses bağlantıları
-/// peer'lar arasında doğrudan kurulur, koordinatörden geçmez.
+/// The ALPN used in the voice mesh. Separate from the control plane: voice links are
+/// established directly between peers and never pass through the coordinator.
 pub const VOICE_ALPN: &[u8] = b"tincan/voice/0";
 
-/// Ses paketi başlığı — datagramın ilk baytları.
+/// Voice packet header — the first bytes of the datagram.
 ///
-/// Gönderenin kimliği pakete yazılmaz: ses datagramı zaten o peer'la kurulmuş,
-/// public key ile doğrulanmış bir QUIC bağlantısından gelir. Kimliği pakete yazmak
-/// hem yer israfı olurdu hem de yalan söylenebilir bir alan yaratırdı.
+/// The sender's identity is not written into the packet: a voice datagram already
+/// arrives over a QUIC connection established with that peer and verified by public
+/// key. Putting the identity in the packet would waste space and create a field that
+/// could lie.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoiceHeader {
-    /// Çerçeve sıra numarası; jitter buffer sıralama ve kayıp tespitinde kullanır.
-    /// 20ms'lik çerçevelerde `u32` yaklaşık 2.7 yıl sürer, sarma derdi yok.
+    /// Frame sequence number; the jitter buffer uses it to order frames and detect
+    /// loss. At 20 ms per frame a `u32` lasts about 2.7 years, so wrap-around is a
+    /// non-problem.
     pub seq: u32,
-    /// Hangi kanala konuşulduğu. Alıcı, kendi kanalından olmayan sesi çalmaz —
-    /// kanal değişimi ile roster güncellemesi arasındaki kısa boşlukta bile.
+    /// Which channel is being spoken into. The receiver will not play audio from a
+    /// channel other than its own — not even in the brief gap between a channel switch
+    /// and the roster update that announces it.
     pub channel: ChannelId,
 }
 
@@ -37,7 +41,7 @@ impl VoiceHeader {
         buffer[4] = self.channel.0;
     }
 
-    /// Datagramı başlık ve Opus yüküne ayırır.
+    /// Splits a datagram into its header and Opus payload.
     pub fn parse(datagram: &[u8]) -> Option<(Self, &[u8])> {
         if datagram.len() <= Self::SIZE {
             return None;
@@ -51,25 +55,26 @@ impl VoiceHeader {
     }
 }
 
-/// Tek bir kontrol mesajının kabul edilen en büyük boyutu.
-/// Chat satırları küçük; bu sınır bozuk/kötü niyetli uzunluk öneklerine karşı korumadır.
+/// The largest single control message that will be accepted.
+/// Chat lines are small; this limit guards against corrupt or malicious length
+/// prefixes.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
-/// Bir chat mesajının en fazla karakter sayısı.
+/// Maximum number of characters in a chat message.
 pub const MAX_CHAT_CHARS: usize = 2000;
 
-/// Takma adın en fazla karakter sayısı.
+/// Maximum number of characters in a nickname.
 pub const MAX_NAME_CHARS: usize = 24;
 
-/// Peer kimliği — iroh public key'inin ham hali.
+/// Peer identity — the raw form of an iroh public key.
 ///
-/// Kimlik ve kriptografik doğrulama aynı şey olduğu için ayrı bir kullanıcı hesabı yok:
-/// bir peer'ın kim olduğunu QUIC el sıkışması zaten kanıtlar.
+/// Because identity and cryptographic verification are the same thing here, there are
+/// no user accounts: the QUIC handshake already proves who a peer is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PeerId(pub [u8; 32]);
 
 impl PeerId {
-    /// Kullanıcı arayüzünde gösterilecek kısa biçim.
+    /// The short form shown in the interface.
     pub fn short(&self) -> String {
         self.0[..5].iter().map(|b| format!("{b:02x}")).collect()
     }
@@ -84,32 +89,32 @@ impl std::fmt::Display for PeerId {
     }
 }
 
-/// Kanal kimliği — oda oluşturulurken sabitlenen listedeki sıra numarası.
-/// MVP'de kanallar dinamik olarak eklenip silinmez.
+/// Channel identity — the index into the list fixed when the room was created.
+/// Channels are not added or removed at runtime in the MVP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ChannelId(pub u8);
 
-/// Bir peer'ın herkese açık durumu.
+/// A peer's publicly visible state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerInfo {
     pub id: PeerId,
     pub name: String,
-    /// `None` ise peer odada ama hiçbir ses kanalında değil (sadece metin).
+    /// `None` means the peer is in the room but in no voice channel (text only).
     pub channel: Option<ChannelId>,
-    /// Mikrofonu kapalı — kimse onu duymuyor.
+    /// Microphone off — nobody can hear them.
     pub muted: bool,
-    /// Kulaklığı kapalı — o kimseyi duymuyor. Karşı tarafın boşa konuşmaması için
-    /// bu da paylaşılıyor; yalnızca yerel tutulsaydı kimse fark edemezdi.
+    /// Headphones off — they cannot hear anyone. This is shared so that others do not
+    /// talk into the void; kept purely local, nobody would ever notice.
     pub deafened: bool,
 }
 
-/// Odaya yeni katılan bir peer'ın devraldığı tam durum.
+/// The complete state handed to a peer that has just joined the room.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomSnapshot {
     pub room_name: String,
     pub channels: Vec<String>,
     pub peers: Vec<PeerInfo>,
-    /// Kanal başına son mesajlar (sıralı, eski → yeni).
+    /// Recent messages per channel (ordered, oldest → newest).
     pub recent_chat: Vec<ChatLine>,
 }
 
@@ -118,47 +123,47 @@ pub struct ChatLine {
     pub channel: ChannelId,
     pub from: PeerId,
     pub text: String,
-    /// Unix epoch saniyesi — koordinatörün saatine göre, sıralama tek noktadan gelsin diye.
+    /// Unix epoch seconds, on the coordinator's clock, so ordering has one source.
     pub at: u64,
 }
 
-/// İstemci → koordinatör.
+/// Client → coordinator.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToCoordinator {
-    /// Challenge'a yanıt: takma ad + parola kanıtı.
+    /// Answer to the challenge: nickname + password proof.
     Hello { name: String, proof: [u8; 32] },
-    /// Ses kanalı değiştir; `None` = ses kanalından tamamen çık.
+    /// Switch voice channel; `None` means leave voice entirely.
     SwitchChannel { channel: Option<ChannelId> },
     Chat { channel: ChannelId, text: String },
     SetMuted { muted: bool },
     SetDeafened { deafened: bool },
-    /// Zarif ayrılma. Bu gelmezse koordinatör bağlantı kopmasından anlar.
+    /// A graceful goodbye. Without it, the coordinator finds out when the link drops.
     Leave,
 }
 
-/// Koordinatör → istemci.
+/// Coordinator → client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToPeer {
-    /// Bağlantı kurulur kurulmaz gönderilir; parola kanıtının tuzu.
+    /// Sent as soon as the connection is up; the salt for the password proof.
     Challenge { nonce: [u8; 16] },
     Welcome { you: PeerId, room: RoomSnapshot },
     Rejected { reason: String },
-    /// Üye listesinde herhangi bir değişiklik — tam liste gönderilir.
+    /// Any change to the roster — the full list is sent.
     ///
-    /// Fark (delta) göndermek yerine tam liste: 6 kişilik bir odada liste birkaç yüz
-    /// bayt, buna karşılık istemcilerin durumu asla ayrışamaz.
+    /// A full list rather than a delta: in a six-person room the list is a few hundred
+    /// bytes, and in exchange client state can never drift out of sync.
     Roster { peers: Vec<PeerInfo> },
     Chat(ChatLine),
-    /// "X odaya katıldı" gibi sistem satırları.
+    /// System lines such as "X joined the room".
     Notice { text: String },
 }
 
-/// Uzunluk önekli çerçeveyi kodlar.
+/// Encodes a length-prefixed frame.
 pub fn encode<T: Serialize>(message: &T) -> anyhow::Result<Vec<u8>> {
     let body = postcard::to_stdvec(message)?;
     anyhow::ensure!(
         body.len() <= MAX_MESSAGE_BYTES,
-        "mesaj çok büyük: {} bayt",
+        "message too large: {} bytes",
         body.len()
     );
     let mut framed = Vec::with_capacity(4 + body.len());
@@ -167,7 +172,7 @@ pub fn encode<T: Serialize>(message: &T) -> anyhow::Result<Vec<u8>> {
     Ok(framed)
 }
 
-/// Gövdeyi çözer (uzunluk öneki `net` katmanında okunmuş olur).
+/// Decodes a body (the length prefix has already been read in the `net` layer).
 pub fn decode<T: for<'de> Deserialize<'de>>(body: &[u8]) -> anyhow::Result<T> {
     Ok(postcard::from_bytes(body)?)
 }
@@ -179,14 +184,14 @@ mod tests {
     fn sample_peer(seed: u8) -> PeerInfo {
         PeerInfo {
             id: PeerId([seed; 32]),
-            name: format!("kullanıcı{seed}"),
+            name: format!("user{seed}"),
             channel: Some(ChannelId(1)),
             muted: false,
             deafened: false,
         }
     }
 
-    /// Çerçeveleme + postcard round-trip'i, protokolün her iki yönü için.
+    /// Framing + postcard round-trip, in both directions of the protocol.
     #[test]
     fn frames_round_trip() {
         let messages = vec![
@@ -194,25 +199,25 @@ mod tests {
             ToPeer::Welcome {
                 you: PeerId([1; 32]),
                 room: RoomSnapshot {
-                    room_name: "İstanbul".into(),
-                    channels: vec!["genel".into(), "oyun".into()],
+                    room_name: "lobby".into(),
+                    channels: vec!["general".into(), "gaming".into()],
                     peers: vec![sample_peer(1), sample_peer(2)],
                     recent_chat: vec![ChatLine {
                         channel: ChannelId(0),
                         from: PeerId([2; 32]),
-                        text: "merhaba dünya".into(),
+                        text: "hello world".into(),
                         at: 1_700_000_000,
                     }],
                 },
             },
             ToPeer::Roster { peers: vec![sample_peer(3)] },
-            ToPeer::Rejected { reason: "parola yanlış".into() },
+            ToPeer::Rejected { reason: "wrong password".into() },
         ];
 
         for message in messages {
             let framed = encode(&message).unwrap();
             let len = u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize;
-            assert_eq!(len, framed.len() - 4, "uzunluk öneki gövdeyle uyuşmalı");
+            assert_eq!(len, framed.len() - 4, "length prefix must match the body");
             let decoded: ToPeer = decode(&framed[4..]).unwrap();
             assert_eq!(decoded, message);
         }
@@ -221,10 +226,10 @@ mod tests {
     #[test]
     fn client_messages_round_trip() {
         let messages = vec![
-            ToCoordinator::Hello { name: "ahmet".into(), proof: [9; 32] },
+            ToCoordinator::Hello { name: "alice".into(), proof: [9; 32] },
             ToCoordinator::SwitchChannel { channel: Some(ChannelId(2)) },
             ToCoordinator::SwitchChannel { channel: None },
-            ToCoordinator::Chat { channel: ChannelId(0), text: "çok güzel".into() },
+            ToCoordinator::Chat { channel: ChannelId(0), text: "nice one".into() },
             ToCoordinator::SetMuted { muted: true },
             ToCoordinator::SetDeafened { deafened: true },
             ToCoordinator::Leave,
@@ -237,18 +242,19 @@ mod tests {
         }
     }
 
-    /// Türkçe karakterler ve emoji tel üzerinde bozulmamalı.
+    /// Multi-byte characters and emoji must survive the wire intact. The point of
+    /// this test is the non-ASCII text — keep it that way.
     #[test]
     fn preserves_non_ascii_text() {
         let line = ChatLine {
             channel: ChannelId(0),
             from: PeerId([1; 32]),
-            text: "şşğüöçİ 🎧 çalıyor".into(),
+            text: "größe 日本語 🎧 ok".into(),
             at: 42,
         };
         let framed = encode(&line).unwrap();
         let decoded: ChatLine = decode(&framed[4..]).unwrap();
-        assert_eq!(decoded.text, "şşğüöçİ 🎧 çalıyor");
+        assert_eq!(decoded.text, "größe 日本語 🎧 ok");
     }
 
     #[test]
@@ -277,12 +283,13 @@ mod tests {
         assert_eq!(body, payload);
     }
 
-    /// Bozuk ya da yüksüz datagram sessizce yoksayılmalı — ses yolunda panik olamaz.
+    /// A corrupt or payload-free datagram must be ignored quietly — the audio path
+    /// cannot panic.
     #[test]
     fn voice_header_rejects_undersized_datagrams() {
         assert!(VoiceHeader::parse(&[]).is_none());
         assert!(VoiceHeader::parse(&[1, 2, 3]).is_none());
-        // Tam başlık ama yük yok: çalınacak bir şey olmadığı için bu da geçersiz.
+        // A full header but no payload: nothing to play, so this is invalid too.
         assert!(VoiceHeader::parse(&[0; VoiceHeader::SIZE]).is_none());
     }
 

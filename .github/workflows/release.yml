@@ -1,0 +1,131 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      # audiopus_sys links Opus statically by default on macOS but *dynamically*
+      # on linux-gnu, which produced Linux binaries with an unresolved
+      # `libopus.so.0`. We ship a standalone binary, so demand static everywhere.
+      OPUS_STATIC: "1"
+      # Without this the vendored Opus is compiled against the runner's SDK and
+      # the binary refuses to start on anything older than the runner's macOS.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners per architecture: audiopus_sys builds Opus from C
+          # source with autotools, which makes cross-compiling far more fragile
+          # than it is worth. ubuntu-22.04 (glibc 2.35) keeps the Linux binaries
+          # usable on older distributions.
+          - target: aarch64-apple-darwin
+            runner: macos-15
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # audiopus_sys has no system Opus to find here, so it builds the vendored
+      # C source with autogen.sh -> configure -> make and links it statically.
+      # That is what we want for a distributable binary: no runtime libopus
+      # dependency. It does mean autotools must be present.
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config libasound2-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install autoconf automake libtool
+          # Homebrew installs GNU libtoolize as `glibtoolize`; autoreconf looks
+          # for `libtoolize`. The gnubin directory provides it under that name.
+          echo "$(brew --prefix)/opt/libtool/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Build
+        env:
+          # Opus's static objects have to be position-independent to link into
+          # Rust's PIE executables on Linux.
+          CFLAGS: ${{ runner.os == 'Linux' && '-fPIC' || '' }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The whole point of shipping a binary is that it runs with nothing else
+      # installed. Opus must be linked in, not loaded at runtime — if that ever
+      # regresses, fail here rather than handing users a binary that cannot start.
+      - name: Verify the binary is self-contained
+        run: |
+          BIN=target/${{ matrix.target }}/release/tincan
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            LINKS=$(otool -L "$BIN")
+            otool -l "$BIN" | grep -A3 LC_BUILD_VERSION | grep minos || true
+          else
+            LINKS=$(ldd "$BIN")
+          fi
+          echo "$LINKS"
+          if echo "$LINKS" | grep -qi 'libopus'; then
+            echo "::error::tincan links libopus dynamically; the released binary would not run without it"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          BIN=target/${{ matrix.target }}/release/tincan
+          strip "$BIN" || true
+          ASSET=tincan-${{ matrix.target }}.tar.gz
+          tar -czf "$ASSET" -C "$(dirname "$BIN")" tincan
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$ASSET" > "$ASSET.sha256"
+          else
+            shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tincan-${{ matrix.target }}
+          path: |
+            tincan-${{ matrix.target }}.tar.gz
+            tincan-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Idempotent, so re-running after a failed build replaces the assets
+      # instead of failing with "release already exists".
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" \
+              --generate-notes artifacts/*
+          fi

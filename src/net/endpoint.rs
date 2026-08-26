@@ -1,4 +1,4 @@
-//! iroh endpoint kurulumu ve kimlik dönüşümleri.
+//! iroh endpoint setup and identity conversions.
 
 use anyhow::{Context, Result};
 use iroh::address_lookup::MemoryLookup;
@@ -6,39 +6,40 @@ use iroh::{Endpoint, EndpointId, RelayMode, endpoint::presets};
 
 use crate::proto::{self, PeerId};
 
-/// Kontrol düzlemi için endpoint açar ve ağa hazır olmasını bekler.
+/// Opens the endpoint for the control plane and waits until it is ready.
 ///
-/// `presets::N0` delik açma için n0'ın public relay'lerini ve DNS keşfini getirir;
-/// bu sayede davet kodu tek başına (adres listesi olmadan) yeterli oluyor.
+/// `presets::N0` brings in n0's public relays for hole punching plus DNS discovery,
+/// which is what makes the invite code sufficient on its own — no address list needed.
 pub async fn bind() -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::N0)
         .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
         .relay_mode(RelayMode::Default)
         .bind()
         .await
-        .context("ağ arayüzü açılamadı")?;
+        .context("could not open the network interface")?;
     endpoint.online().await;
     Ok(endpoint)
 }
 
-/// Testler için endpoint: relay yok, keşif yok, dış ağa hiç çıkmaz.
+/// An endpoint for tests: no relays, no discovery, never reaches the outside network.
 ///
-/// Böylece kontrol düzlemi testleri internete ve n0'ın sunucularına bağımlı olmadan,
-/// saniyeler yerine milisaniyelerde koşar. Karşı tarafa bağlanmak için kimlik yetmez,
-/// tam `EndpointAddr` verilmelidir.
+/// This lets the control-plane tests run in milliseconds instead of seconds, without
+/// depending on the internet or on n0's servers. Identity alone is not enough to
+/// connect here — the full `EndpointAddr` has to be supplied.
 pub async fn bind_offline() -> Result<Endpoint> {
     Endpoint::builder(presets::Minimal)
         .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
         .bind()
         .await
-        .context("test endpoint'i açılamadı")
+        .context("could not open the test endpoint")
 }
 
-/// Testler için: keşif servisi yerine elle beslenen bir adres defteri olan endpoint.
+/// For tests: an endpoint with a hand-fed address book instead of a discovery service.
 ///
-/// Ses mesh'inde peer'lar birbirini kimlikten bulur; gerçekte bunu DNS keşfi yapar.
-/// Testte defteri kendimiz doldurup keşfi (ve interneti) devre dışı bırakıyoruz.
+/// In the voice mesh peers find each other from their identity, which in production is
+/// DNS discovery's job. In tests we fill the book ourselves and switch discovery (and
+/// the internet) off.
 pub async fn bind_offline_with_lookup() -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::default();
     let endpoint = Endpoint::builder(presets::Minimal)
@@ -47,7 +48,7 @@ pub async fn bind_offline_with_lookup() -> Result<(Endpoint, MemoryLookup)> {
         .address_lookup(lookup.clone())
         .bind()
         .await
-        .context("test endpoint'i açılamadı")?;
+        .context("could not open the test endpoint")?;
     Ok((endpoint, lookup))
 }
 
@@ -56,7 +57,7 @@ pub fn to_peer_id(id: EndpointId) -> PeerId {
 }
 
 pub fn to_endpoint_id(id: &PeerId) -> Result<EndpointId> {
-    EndpointId::from_bytes(&id.0).context("geçersiz peer kimliği")
+    EndpointId::from_bytes(&id.0).context("invalid peer identity")
 }
 
 #[cfg(test)]
@@ -64,8 +65,8 @@ mod tests {
     use super::*;
     use iroh::SecretKey;
 
-    /// Kimlik dönüşümü kayıpsız olmalı — protokoldeki ham baytlar ile iroh'un
-    /// public key'i arasında gidip gelmek roster'ın temeli.
+    /// The identity conversion must be lossless — moving between the protocol's raw
+    /// bytes and iroh's public key is the foundation the roster rests on.
     #[test]
     fn identity_conversion_round_trips() {
         let key = SecretKey::generate().public();
@@ -74,11 +75,11 @@ mod tests {
         assert_eq!(peer.to_string(), key.to_string());
     }
 
-    /// Doğru biçimli ama geçerli bir eğri noktası olmayan bir davet kodu — örneğin
-    /// yazım hatası içeren bir kod — panikle değil, hatayla karşılanmalı.
+    /// A well-formed invite code that is not a valid curve point — a code with a typo,
+    /// say — must produce an error rather than a panic.
     ///
-    /// Ed25519'da rastgele 32 baytın kabaca yarısı geçerli bir noktaya çözülür, bu
-    /// yüzden test tek bir sabit yerine geçersiz olanı arayarak ilerler.
+    /// Roughly half of all random 32-byte strings decode to a valid Ed25519 point, so
+    /// the test searches for an invalid one instead of hard-coding a single case.
     #[test]
     fn invalid_curve_points_are_rejected_not_panicked_on() {
         let invalid_count = (0u8..=255)
@@ -86,7 +87,7 @@ mod tests {
             .count();
         assert!(
             invalid_count > 0,
-            "hiçbir bayt dizisi reddedilmedi — doğrulama yapılmıyor olabilir"
+            "no byte string was rejected — validation may not be happening"
         );
     }
 }

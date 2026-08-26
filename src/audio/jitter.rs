@@ -1,47 +1,48 @@
-//! Peer başına jitter buffer.
+//! Per-peer jitter buffer.
 //!
-//! Ağ paketleri düzensiz aralıklarla, sırasız ve eksik gelir; ses kartı ise her 20ms'de
-//! bir çerçeve ister, gecikmeyi kabul etmez. Bu tampon ikisinin arasını kurar: küçük bir
-//! gecikme biriktirip (varsayılan 60ms) akışı düzleştirir.
+//! Network packets arrive at irregular intervals, out of order and incomplete; the
+//! sound card, meanwhile, wants one frame every 20 ms and tolerates no delay. This
+//! buffer bridges the two: it banks a small amount of latency (60 ms by default) and
+//! smooths the stream out.
 //!
-//! Üç durumu birbirinden ayırmak kritik:
+//! Telling three situations apart is what matters:
 //!
-//! * **Paket var** → çal.
-//! * **Paket kayıp** (sonrası geldi, kendisi gelmedi) → kodekten örtme (PLC) iste;
-//!   sessizlik koymak "tık" sesi yaratır.
-//! * **Kimse konuşmuyor** → gerçek sessizlik. Konuşmayan peer paket göndermediği için
-//!   (DTX) bu durum normaldir ve kayıp sayılmamalıdır.
+//! * **Packet present** → play it.
+//! * **Packet lost** (later ones arrived, this one never did) → ask the codec for
+//!   concealment (PLC); substituting silence produces an audible click.
+//! * **Nobody is talking** → real silence. A peer who is not speaking sends nothing
+//!   (DTX), so this is normal and must not be counted as loss.
 
 use std::collections::BTreeMap;
 
-/// Tampondan çıkan bir çerçeve.
+/// A frame coming out of the buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
-    /// Çalınacak Opus paketi.
+    /// An Opus packet to play.
     Packet(Vec<u8>),
-    /// Paket kayboldu; kodek örtme üretmeli.
+    /// The packet was lost; the codec should conceal it.
     Lost,
-    /// Karşı taraf konuşmuyor.
+    /// The other side is not talking.
     Silence,
 }
 
 pub struct JitterBuffer {
-    /// Çalmaya başlamadan önce biriktirilecek çerçeve sayısı.
+    /// How many frames to bank before playback starts.
     target: usize,
-    /// Bu sınırın üstünde birikirse gecikme kabul edilemez hale gelir; öne sarılır.
+    /// Past this depth the latency becomes unacceptable and the buffer fast-forwards.
     max_depth: usize,
-    /// Sırada beklenen çerçeve. `None` ise akış duraklamış demektir.
+    /// The frame expected next. `None` means the stream is paused.
     next_seq: Option<u32>,
     packets: BTreeMap<u32, Vec<u8>>,
-    /// Üst üste kaç kez boş çıkıldığı — akışın durduğuna karar vermek için.
+    /// How many empty pops in a row — used to decide the stream has stopped.
     starved: usize,
 }
 
-/// Akış durdu sayılmadan önce tolere edilen ardışık boş çerçeve sayısı.
+/// Consecutive empty frames tolerated before the stream counts as stopped.
 const STARVE_LIMIT: usize = 5;
 
 impl JitterBuffer {
-    /// `target` çerçeve cinsinden hedef gecikmedir (20ms'lik çerçevelerde 3 ≈ 60ms).
+    /// `target` is the latency goal in frames (at 20 ms per frame, 3 ≈ 60 ms).
     pub fn new(target: usize) -> Self {
         Self {
             target: target.max(1),
@@ -56,12 +57,13 @@ impl JitterBuffer {
         self.packets.len()
     }
 
-    /// Gelen paketi yerleştirir. Çok geç kalmış ya da tekrarlanan paketler için `false`.
+    /// Files an incoming packet. Returns `false` for packets that are too late or
+    /// duplicated.
     pub fn push(&mut self, seq: u32, payload: Vec<u8>) -> bool {
         if let Some(next) = self.next_seq
             && seq < next
         {
-            // Treni kaçırmış paket: çalınacağı an geçti, tutmanın anlamı yok.
+            // This packet missed its train: its moment has passed, no point keeping it.
             return false;
         }
         if self.packets.contains_key(&seq) {
@@ -69,7 +71,7 @@ impl JitterBuffer {
         }
         self.packets.insert(seq, payload);
 
-        // Aşırı birikme = aşırı gecikme. En eskileri atıp öne sarıyoruz.
+        // Excess backlog means excess latency. Drop the oldest and fast-forward.
         while self.packets.len() > self.max_depth {
             if let Some(&oldest) = self.packets.keys().next() {
                 self.packets.remove(&oldest);
@@ -79,14 +81,14 @@ impl JitterBuffer {
         true
     }
 
-    /// Ses kartına verilecek bir sonraki çerçeve.
+    /// The next frame to hand to the sound card.
     pub fn pop(&mut self) -> Frame {
         let Some(next) = self.next_seq else {
-            // Akış duraklamış: yeniden başlamak için yeterince paket birikmeli.
+            // The stream is paused: enough packets must bank up before it restarts.
             if self.packets.len() < self.target {
                 return Frame::Silence;
             }
-            let first = *self.packets.keys().next().expect("dolu olduğu kontrol edildi");
+            let first = *self.packets.keys().next().expect("checked to be non-empty");
             self.next_seq = Some(first);
             return self.pop();
         };
@@ -97,18 +99,18 @@ impl JitterBuffer {
             return Frame::Packet(payload);
         }
 
-        // Beklenen paket yok. Sonrasında paket varsa gerçekten kaybolmuş demektir.
+        // The expected packet is missing. If later ones are here, it really was lost.
         if !self.packets.is_empty() {
             self.next_seq = Some(next + 1);
             self.starved = 0;
             return Frame::Lost;
         }
 
-        // Tampon tamamen boş: ya ağ kesildi ya da karşı taraf susuyor.
+        // The buffer is completely empty: either the network died or they went quiet.
         self.starved += 1;
         if self.starved >= STARVE_LIMIT {
-            // Akışı duraklat; konuşma yeniden başladığında sıra numarası nereden
-            // devam ederse etsin yeniden senkron olunur.
+            // Pause the stream; when speech resumes we resynchronise no matter where
+            // the sequence number picks up.
             self.next_seq = None;
             self.starved = 0;
         } else {
@@ -126,22 +128,23 @@ mod tests {
         vec![n; 4]
     }
 
-    /// Tampon dolmadan çalmaya başlamamalı: hedef gecikme buna hizmet ediyor.
+    /// Playback must not start before the buffer fills: that is what the latency
+    /// target is for.
     #[test]
     fn waits_until_target_depth_before_playing() {
         let mut buffer = JitterBuffer::new(3);
         buffer.push(0, packet(0));
-        assert_eq!(buffer.pop(), Frame::Silence, "tek paketle başlamamalı");
+        assert_eq!(buffer.pop(), Frame::Silence, "must not start on a single packet");
         buffer.push(1, packet(1));
         assert_eq!(buffer.pop(), Frame::Silence);
         buffer.push(2, packet(2));
 
-        assert_eq!(buffer.pop(), Frame::Packet(packet(0)), "hedefe ulaşınca akmalı");
+        assert_eq!(buffer.pop(), Frame::Packet(packet(0)), "must flow once the target is met");
         assert_eq!(buffer.pop(), Frame::Packet(packet(1)));
         assert_eq!(buffer.pop(), Frame::Packet(packet(2)));
     }
 
-    /// Sırasız gelen paketler doğru sırayla çalınmalı.
+    /// Packets that arrive out of order must play in the right order.
     #[test]
     fn reorders_out_of_order_arrivals() {
         let mut buffer = JitterBuffer::new(3);
@@ -154,7 +157,7 @@ mod tests {
         assert_eq!(buffer.pop(), Frame::Packet(packet(2)));
     }
 
-    /// Kayıp paket, sessizlik değil örtme istemeli — aradaki fark duyulur.
+    /// A lost packet must ask for concealment, not silence — the difference is audible.
     #[test]
     fn reports_loss_when_a_gap_is_surrounded_by_data() {
         let mut buffer = JitterBuffer::new(2);
@@ -163,12 +166,13 @@ mod tests {
         buffer.push(3, packet(3));
 
         assert_eq!(buffer.pop(), Frame::Packet(packet(0)));
-        assert_eq!(buffer.pop(), Frame::Lost, "1 numaralı çerçeve kayıp");
+        assert_eq!(buffer.pop(), Frame::Lost, "frame 1 is missing");
         assert_eq!(buffer.pop(), Frame::Packet(packet(2)));
         assert_eq!(buffer.pop(), Frame::Packet(packet(3)));
     }
 
-    /// Karşı taraf sustuğunda kayıp raporlanmamalı — DTX sayesinde paket gelmemesi normal.
+    /// No loss may be reported when the other side goes quiet — with DTX, no packets
+    /// arriving is the normal case.
     #[test]
     fn silence_is_not_treated_as_loss() {
         let mut buffer = JitterBuffer::new(2);
@@ -178,12 +182,12 @@ mod tests {
         buffer.pop();
 
         for _ in 0..20 {
-            assert_eq!(buffer.pop(), Frame::Silence, "sessizlik kayıp sayılmamalı");
+            assert_eq!(buffer.pop(), Frame::Silence, "silence must not count as loss");
         }
     }
 
-    /// Uzun sessizlikten sonra konuşma yeniden başlarsa akış yeniden yakalanmalı,
-    /// sıra numarası nereden devam ederse etsin.
+    /// When speech resumes after a long pause the stream must be picked back up, no
+    /// matter where the sequence number continues from.
     #[test]
     fn resynchronises_after_a_long_pause() {
         let mut buffer = JitterBuffer::new(2);
@@ -195,14 +199,14 @@ mod tests {
             buffer.pop();
         }
 
-        // Konuşma çok sonra, çok ileri bir sıra numarasıyla yeniden başlıyor.
+        // Speech restarts much later, at a far higher sequence number.
         buffer.push(900, packet(9));
         buffer.push(901, packet(10));
         assert_eq!(buffer.pop(), Frame::Packet(packet(9)));
         assert_eq!(buffer.pop(), Frame::Packet(packet(10)));
     }
 
-    /// Çalınma anı geçmiş paket kabul edilmemeli.
+    /// A packet whose moment has passed must not be accepted.
     #[test]
     fn rejects_packets_that_arrive_too_late() {
         let mut buffer = JitterBuffer::new(1);
@@ -210,19 +214,20 @@ mod tests {
         buffer.push(6, packet(6));
         assert_eq!(buffer.pop(), Frame::Packet(packet(5)));
 
-        assert!(!buffer.push(5, packet(5)), "geçmiş çerçeve geri alınmamalı");
-        assert_eq!(buffer.pop(), Frame::Packet(packet(6)), "akış bozulmamalı");
+        assert!(!buffer.push(5, packet(5)), "a past frame must not be taken back");
+        assert_eq!(buffer.pop(), Frame::Packet(packet(6)), "the stream must be undisturbed");
     }
 
     #[test]
     fn rejects_duplicates() {
         let mut buffer = JitterBuffer::new(2);
         assert!(buffer.push(0, packet(0)));
-        assert!(!buffer.push(0, packet(0)), "aynı çerçeve iki kez alınmamalı");
+        assert!(!buffer.push(0, packet(0)), "the same frame must not be taken twice");
         assert_eq!(buffer.depth(), 1);
     }
 
-    /// Ağ toparlanınca biriken yığın gecikmeye dönüşmemeli: tampon öne sarmalı.
+    /// When the network recovers, the backlog must not turn into latency: the buffer
+    /// fast-forwards.
     #[test]
     fn drops_backlog_instead_of_accumulating_delay() {
         let mut buffer = JitterBuffer::new(3);
@@ -232,11 +237,11 @@ mod tests {
 
         assert!(
             buffer.depth() <= 12,
-            "gecikme sınırsız büyümemeli, derinlik: {}",
+            "latency must not grow without bound, depth: {}",
             buffer.depth()
         );
 
-        // Öne sarıldıktan sonra da düzgün akmaya devam etmeli.
+        // It must keep flowing properly after fast-forwarding, too.
         assert!(matches!(buffer.pop(), Frame::Packet(_)));
         assert!(matches!(buffer.pop(), Frame::Packet(_)));
     }

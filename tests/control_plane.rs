@@ -1,5 +1,5 @@
-//! Kontrol düzleminin uçtan uca testleri: iki gerçek iroh endpoint'i, gerçek QUIC
-//! bağlantısı, gerçek el sıkışma — ama relay ve keşif olmadan, tamamen yerel.
+//! End-to-end tests for the control plane: two real iroh endpoints, a real QUIC
+//! connection, a real handshake — but with no relays and no discovery, entirely local.
 
 use std::time::Duration;
 
@@ -10,14 +10,14 @@ use tincan::net::{Command, Event, Session};
 use tincan::proto::{ChannelId, PeerInfo};
 use tincan::room::Room;
 
-/// Olayları beklerken kullanılan üst sınır — testler asılı kalmasın.
+/// The upper bound used when waiting for events, so tests cannot hang.
 const PATIENCE: Duration = Duration::from_secs(10);
 
 fn test_room() -> Room {
-    Room::new("test odası", vec!["genel".into(), "oyun".into()]).unwrap()
+    Room::new("test room", vec!["general".into(), "gaming".into()]).unwrap()
 }
 
-/// Belirtilen koşulu sağlayan ilk olayı bekler, yolda gelen diğerlerini yutar.
+/// Waits for the first event matching a predicate, swallowing the others on the way.
 async fn wait_for<T>(
     session: &mut Session,
     what: &str,
@@ -27,8 +27,8 @@ async fn wait_for<T>(
     loop {
         let event = match tokio::time::timeout_at(deadline, session.events.recv()).await {
             Ok(Some(event)) => event,
-            Ok(None) => bail!("olay kanalı kapandı, beklenen: {what}"),
-            Err(_) => bail!("zaman aşımı, beklenen: {what}"),
+            Ok(None) => bail!("the event channel closed while waiting for: {what}"),
+            Err(_) => bail!("timed out waiting for: {what}"),
         };
         if let Event::Disconnected(reason) = &event {
             bail!("beklenmedik kopma ({reason}), beklenen: {what}");
@@ -40,7 +40,7 @@ async fn wait_for<T>(
 }
 
 async fn wait_for_roster(session: &mut Session, count: usize) -> Result<Vec<PeerInfo>> {
-    wait_for(session, &format!("{count} kişilik roster"), |event| match event {
+    wait_for(session, &format!("a roster of {count}"), |event| match event {
         Event::Roster(peers) if peers.len() == count => Some(peers),
         _ => None,
     })
@@ -56,75 +56,75 @@ async fn wait_for_chat(session: &mut Session, text: &str) -> Result<()> {
     .await
 }
 
-/// Host odayı açar, katılan bağlanır: her iki taraf da aynı odayı görmeli.
+/// The host opens a room and a guest connects: both sides must see the same room.
 #[tokio::test]
 async fn peer_joins_and_both_sides_converge() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), "parola".into(), "ahmet", None).await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), "password".into(), "alice", None).await?;
 
     let welcome = wait_for(&mut host, "host welcome", |e| match e {
         Event::Welcome { room, .. } => Some(room),
         _ => None,
     })
     .await?;
-    assert_eq!(welcome.peers.len(), 1, "host kendini odada görmeli");
-    assert_eq!(welcome.channels, vec!["genel", "oyun"]);
+    assert_eq!(welcome.peers.len(), 1, "the host must see itself in the room");
+    assert_eq!(welcome.channels, vec!["general", "gaming"]);
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "parola", "mehmet", None).await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "password", "bob", None).await?;
 
     let guest_welcome = wait_for(&mut guest, "guest welcome", |e| match e {
         Event::Welcome { room, .. } => Some(room),
         _ => None,
     })
     .await?;
-    assert_eq!(guest_welcome.room_name, "test odası");
+    assert_eq!(guest_welcome.room_name, "test room");
     assert_eq!(
         guest_welcome.peers.len(),
         2,
-        "katılan, kendisi dahil herkesi görmeli"
+        "the joiner must see everyone, itself included"
     );
 
-    // Host tarafı da yeni geleni görmeli.
+    // The host side must see the newcomer too.
     let roster = wait_for_roster(&mut host, 2).await?;
     let names: Vec<&str> = roster.iter().map(|p| p.name.as_str()).collect();
-    assert!(names.contains(&"ahmet") && names.contains(&"mehmet"), "{names:?}");
+    assert!(names.contains(&"alice") && names.contains(&"bob"), "{names:?}");
 
-    assert_ne!(host.me, guest.me, "kimlikler ayrı olmalı");
-    assert_eq!(host.invite_code, guest.invite_code, "aynı odanın kodu");
+    assert_ne!(host.me, guest.me, "the identities must differ");
+    assert_eq!(host.invite_code, guest.invite_code, "the same room means the same code");
     Ok(())
 }
 
-/// Yanlış parola ile bağlanma denemesi el sıkışmada reddedilmeli.
+/// An attempt with the wrong password must be rejected during the handshake.
 #[tokio::test]
 async fn wrong_password_is_refused() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let _host = Coordinator::spawn(host_ep, test_room(), "doğru-parola".into(), "ahmet", None).await?;
+    let _host = Coordinator::spawn(host_ep, test_room(), "right-password".into(), "alice", None).await?;
 
     let guest_ep = bind_offline().await?;
-    let result = Client::connect(guest_ep, host_addr, "yanlış-parola", "davetsiz", None).await;
+    let result = Client::connect(guest_ep, host_addr, "wrong-password", "uninvited", None).await;
 
-    let err = result.err().expect("yanlış parola kabul edilmemeli").to_string();
-    assert!(err.contains("parola"), "hata parolayı işaret etmeli: {err}");
+    let err = result.err().expect("a wrong password must not be accepted").to_string();
+    assert!(err.contains("password"), "the error must point at the password: {err}");
     Ok(())
 }
 
-/// Chat mesajı gönderene de, diğerlerine de aynı biçimde ulaşmalı.
+/// A chat message must reach the sender and everyone else in the same shape.
 #[tokio::test]
 async fn chat_reaches_everyone_including_the_sender() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "alice", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "bob", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
-    // Katılandan host'a.
+    // From the joiner to the host.
     guest
         .commands
         .send(Command::Chat {
@@ -135,27 +135,28 @@ async fn chat_reaches_everyone_including_the_sender() -> Result<()> {
     wait_for_chat(&mut host, "merhaba herkese").await?;
     wait_for_chat(&mut guest, "merhaba herkese").await?;
 
-    // Host'tan katılana — host'un kendi mesajı da aynı yoldan geçmeli.
+    // From the host to the joiner — the host's own message takes the same path.
     host.commands
         .send(Command::Chat {
             channel: ChannelId(1),
-            text: "hoş geldin".into(),
+            text: "welcome aboard".into(),
         })
         .await?;
-    wait_for_chat(&mut guest, "hoş geldin").await?;
+    wait_for_chat(&mut guest, "welcome aboard").await?;
     Ok(())
 }
 
-/// Kanal değişimi herkesin roster'ına yansımalı — Faz 2'de ses mesh'ini bu belirleyecek.
+/// A channel switch must show up in everyone's roster — this is what drives the
+/// voice mesh.
 #[tokio::test]
 async fn channel_switch_is_visible_to_everyone() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "alice", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "bob", None).await?;
     let guest_id = guest.me;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
@@ -171,14 +172,14 @@ async fn channel_switch_is_visible_to_everyone() -> Result<()> {
             .any(|p| p.id == guest_id && p.channel == Some(ChannelId(1)))
     };
 
-    let host_view = wait_for(&mut host, "host roster'ında kanal değişimi", |e| match e {
+    let host_view = wait_for(&mut host, "the channel switch in the host roster", |e| match e {
         Event::Roster(peers) if in_channel(&peers) => Some(peers),
         _ => None,
     })
     .await?;
     assert_eq!(host_view.len(), 2);
 
-    wait_for(&mut guest, "guest roster'ında kanal değişimi", |e| match e {
+    wait_for(&mut guest, "the channel switch in the guest roster", |e| match e {
         Event::Roster(peers) if in_channel(&peers) => Some(()),
         _ => None,
     })
@@ -186,16 +187,17 @@ async fn channel_switch_is_visible_to_everyone() -> Result<()> {
     Ok(())
 }
 
-/// Olmayan bir kanala geçme isteği odayı bozmamalı, bağlantı da kopmamalı.
+/// Asking to switch to a channel that does not exist must neither corrupt the room
+/// nor drop the connection.
 #[tokio::test]
 async fn invalid_channel_request_is_ignored_without_breaking_the_session() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "alice", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "bob", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
@@ -204,82 +206,83 @@ async fn invalid_channel_request_is_ignored_without_breaking_the_session() -> Re
         .send(Command::SwitchChannel(Some(ChannelId(99))))
         .await?;
 
-    // Oturum ayakta kalmalı: sonrasında gönderilen chat hâlâ çalışıyor olmalı.
+    // The session must survive: a chat sent afterwards must still work.
     guest
         .commands
         .send(Command::Chat {
             channel: ChannelId(0),
-            text: "hâlâ buradayım".into(),
+            text: "still here".into(),
         })
         .await?;
-    wait_for_chat(&mut host, "hâlâ buradayım").await?;
+    wait_for_chat(&mut host, "still here").await?;
     Ok(())
 }
 
-/// Katılan ayrılınca roster'dan düşmeli.
+/// When a joiner leaves it must drop out of the roster.
 #[tokio::test]
 async fn leaving_updates_the_roster() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "alice", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "mehmet", None).await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "bob", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
     guest.commands.send(Command::Quit).await?;
 
     let roster = wait_for_roster(&mut host, 1).await?;
-    assert_eq!(roster[0].name, "ahmet", "geriye sadece host kalmalı");
+    assert_eq!(roster[0].name, "alice", "only the host may remain");
     Ok(())
 }
 
-/// Aynı takma adla gelen ikinci kişi dışlanmamalı, ayırt edilmeli.
+/// A second person arriving under the same nickname must be disambiguated, not
+/// turned away.
 #[tokio::test]
 async fn duplicate_nicknames_are_disambiguated_over_the_wire() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "alice", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let guest_ep = bind_offline().await?;
-    let mut guest = Client::connect(guest_ep, host_addr, "", "ahmet", None).await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "alice", None).await?;
     wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
     let roster = wait_for_roster(&mut host, 2).await?;
     let names: Vec<&str> = roster.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names.len(), 2);
-    assert_ne!(names[0], names[1], "iki 'ahmet' ayırt edilebilmeli: {names:?}");
+    assert_ne!(names[0], names[1], "the two 'alice's must be distinguishable: {names:?}");
     Ok(())
 }
 
-/// Üç kişi: koordinatör, katılanlar arasındaki mesajları da doğru dağıtmalı.
+/// Three people: the coordinator must also relay messages between the joiners.
 #[tokio::test]
 async fn three_participants_stay_in_sync() -> Result<()> {
     let host_ep = bind_offline().await?;
     let host_addr = host_ep.addr();
-    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "ahmet", None).await?;
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "alice", None).await?;
     wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
 
-    let mut first = Client::connect(bind_offline().await?, host_addr.clone(), "", "mehmet", None).await?;
+    let mut first = Client::connect(bind_offline().await?, host_addr.clone(), "", "bob", None).await?;
     wait_for(&mut first, "welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 2).await?;
 
-    let mut second = Client::connect(bind_offline().await?, host_addr, "", "zeynep", None).await?;
+    let mut second = Client::connect(bind_offline().await?, host_addr, "", "carol", None).await?;
     wait_for(&mut second, "welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
     wait_for_roster(&mut host, 3).await?;
 
-    // Bir katılandan gönderilen mesaj, koordinatör üzerinden diğer katılana ulaşmalı.
+    // A message from one joiner must reach the other through the coordinator.
     first
         .commands
         .send(Command::Chat {
             channel: ChannelId(0),
-            text: "zeynep duyuyor musun".into(),
+            text: "carol can you hear me".into(),
         })
         .await?;
-    wait_for_chat(&mut second, "zeynep duyuyor musun").await?;
-    wait_for_chat(&mut host, "zeynep duyuyor musun").await?;
+    wait_for_chat(&mut second, "carol can you hear me").await?;
+    wait_for_chat(&mut host, "carol can you hear me").await?;
     Ok(())
 }

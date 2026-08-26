@@ -1,13 +1,13 @@
-//! Ses donanımı ile async dünya arasındaki köprü.
+//! The bridge between the audio hardware and the async world.
 //!
-//! cpal'ın callback'leri gerçek zamanlı bir bağlamda çalışır: içinde bellek ayırmak,
-//! kilit almak ya da `.await` etmek ses kesintisine (çıtırtı) yol açar. Bu yüzden
-//! callback'ler yalnızca kilitsiz ring buffer'a dokunur; kodlama, ağ ve miksaj
-//! normal task'lerde yapılır.
+//! cpal's callbacks run in a real-time context: allocating, taking a lock or awaiting
+//! inside one causes a dropout (a crackle). So the callbacks touch nothing but a
+//! lock-free ring buffer; encoding, networking and mixing all happen in ordinary
+//! tasks.
 //!
 //! ```text
-//! [mikrofon callback] → ring → [kodlayıcı task] → ağ
-//! ağ → [çözücü + mikser task] → ring → [hoparlör callback]
+//! [microphone callback] → ring → [encoder task] → network
+//! network → [decoder + mixer task] → ring → [speaker callback]
 //! ```
 
 use std::sync::Arc;
@@ -19,15 +19,15 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use super::{FRAME, SAMPLE_RATE};
 
-/// Ring buffer'ların tuttuğu ses miktarı (~200ms).
+/// How much audio the ring buffers hold (~200 ms).
 const RING_CAPACITY: usize = FRAME * 10;
 
-/// Gerçek zamanlı callback'lerin dışarı bildirdiği sayaçlar.
+/// Counters the real-time callbacks report to the outside world.
 #[derive(Default)]
 pub struct AudioHealth {
-    /// Hoparlör veri bulamadı → duyulabilir kesinti.
+    /// The speaker found no data → an audible dropout.
     pub underruns: AtomicU64,
-    /// Mikrofon verisi tamponu aştı → yakalanan ses düştü.
+    /// Microphone data overflowed the buffer → captured audio was dropped.
     pub overruns: AtomicU64,
 }
 
@@ -40,24 +40,25 @@ impl AudioHealth {
     }
 }
 
-/// `open()` sonucu: açık akışlar, mikrofon ucu, hoparlör ucu ve sağlık sayaçları.
+/// What `open()` returns: the live streams, the capture end, the playback end and
+/// the health counters.
 pub type OpenAudio = (AudioDevices, Consumer<f32>, Producer<f32>, Arc<AudioHealth>);
 
-/// Açık ses akışları. Düşürüldüğünde donanım serbest bırakılır.
+/// The open audio streams. Dropping this releases the hardware.
 pub struct AudioDevices {
     _input: cpal::Stream,
     _output: cpal::Stream,
 }
 
-/// Hangi cihazın kullanılacağı. `None` = sistemin varsayılanı.
+/// Which device to use. `None` means the system default.
 #[derive(Debug, Clone, Default)]
 pub struct DeviceChoice {
     pub input: Option<String>,
     pub output: Option<String>,
 }
 
-/// İsme göre cihaz seçer. Eşleşme büyük/küçük harf duyarsız ve kısmi:
-/// kullanıcı `tincan devices` çıktısındaki adın ayırt edici bir parçasını yazabilsin.
+/// Picks a device by name. Matching is case-insensitive and partial, so the user can
+/// type any distinctive part of a name from the `tincan devices` output.
 fn pick(mut devices: impl Iterator<Item = cpal::Device>, wanted: &str) -> Option<cpal::Device> {
     let wanted = wanted.to_lowercase();
     devices.find(|d| {
@@ -67,29 +68,34 @@ fn pick(mut devices: impl Iterator<Item = cpal::Device>, wanted: &str) -> Option
     })
 }
 
-/// Mikrofon ve hoparlörü açar; yakalama ve çalma uçlarını döndürür.
+/// Opens the microphone and speaker and returns the capture and playback ends.
 pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
     let host = cpal::default_host();
 
     let input = match &choice.input {
         Some(name) => pick(host.input_devices()?, name)
-            .with_context(|| format!("'{name}' adında bir mikrofon yok (tincan devices ile listeleyin)"))?,
-        None => host.default_input_device().context("mikrofon bulunamadı")?,
+            .with_context(|| {
+                format!("no microphone named '{name}' (list them with: tincan devices)")
+            })?,
+        None => host.default_input_device().context("no microphone found")?,
     };
     let output = match &choice.output {
         Some(name) => pick(host.output_devices()?, name)
-            .with_context(|| format!("'{name}' adında bir hoparlör yok (tincan devices ile listeleyin)"))?,
-        None => host.default_output_device().context("hoparlör bulunamadı")?,
+            .with_context(|| {
+                format!("no speaker named '{name}' (list them with: tincan devices)")
+            })?,
+        None => host.default_output_device().context("no speaker found")?,
     };
 
-    let in_cfg = input.default_input_config().context("mikrofon ayarı okunamadı")?;
-    let out_cfg = output.default_output_config().context("hoparlör ayarı okunamadı")?;
+    let in_cfg = input.default_input_config().context("could not read the microphone config")?;
+    let out_cfg = output.default_output_config().context("could not read the speaker config")?;
 
-    // MVP'de yeniden örnekleme yok. Sessizce bozuk ses üretmektense açıkça söylüyoruz.
+    // There is no resampling in the MVP. Better to say so plainly than to produce
+    // broken audio in silence.
     if in_cfg.sample_rate() != SAMPLE_RATE || out_cfg.sample_rate() != SAMPLE_RATE {
         bail!(
-            "ses cihazları 48kHz olmalı (mikrofon {} Hz, hoparlör {} Hz). \
-             Ses ayarlarından 48000 Hz seçebilirsiniz.",
+            "audio devices must run at 48 kHz (microphone {} Hz, speaker {} Hz). \
+             You can select 48000 Hz in your sound settings.",
             in_cfg.sample_rate(),
             out_cfg.sample_rate()
         );
@@ -114,10 +120,10 @@ pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
                     }
                 }
             },
-            |err| tracing::warn!("mikrofon hatası: {err}"),
+            |err| tracing::warn!("microphone error: {err}"),
             None,
         )
-        .context("mikrofon akışı açılamadı")?;
+        .context("could not open the microphone stream")?;
 
     let playback_health = health.clone();
     let output_stream = output
@@ -132,17 +138,17 @@ pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
                             0.0
                         }
                     };
-                    // Mono kaynağı tüm kanallara dağıt.
+                    // Spread the mono source across every channel.
                     chunk.fill(sample);
                 }
             },
-            |err| tracing::warn!("hoparlör hatası: {err}"),
+            |err| tracing::warn!("speaker error: {err}"),
             None,
         )
-        .context("hoparlör akışı açılamadı")?;
+        .context("could not open the speaker stream")?;
 
-    input_stream.play().context("mikrofon başlatılamadı")?;
-    output_stream.play().context("hoparlör başlatılamadı")?;
+    input_stream.play().context("could not start the microphone")?;
+    output_stream.play().context("could not start the speaker")?;
 
     Ok((
         AudioDevices {
@@ -155,7 +161,7 @@ pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
     ))
 }
 
-/// Sistemdeki ses cihazlarını listeler (`tincan devices`).
+/// Lists the system's audio devices (`tincan devices`).
 pub fn describe_devices() -> Result<String> {
     let host = cpal::default_host();
     let mut report = String::new();
@@ -167,15 +173,15 @@ pub fn describe_devices() -> Result<String> {
         .default_output_device()
         .and_then(|d| d.description().ok().map(|d| d.name().to_string()));
 
-    report.push_str("\n  Mikrofonlar:\n");
+    report.push_str("\n  Microphones:\n");
     for device in host.input_devices()? {
         report.push_str(&line(&device, &default_in, true));
     }
-    report.push_str("\n  Hoparlörler:\n");
+    report.push_str("\n  Speakers:\n");
     for device in host.output_devices()? {
         report.push_str(&line(&device, &default_out, false));
     }
-    report.push_str("\n  Not: tincan şu an yalnızca 48000 Hz cihazlarla çalışır.\n");
+    report.push_str("\n  Note: tincan currently works only with 48000 Hz devices.\n");
     Ok(report)
 }
 
@@ -183,15 +189,15 @@ fn line(device: &cpal::Device, default: &Option<String>, input: bool) -> String 
     let name = device
         .description()
         .map(|d| d.name().to_string())
-        .unwrap_or_else(|_| "(isimsiz)".into());
+        .unwrap_or_else(|_| "(unnamed)".into());
     let config = if input {
         device.default_input_config().ok()
     } else {
         device.default_output_config().ok()
     };
     let rate = config
-        .map(|c| format!("{} Hz, {} kanal", c.sample_rate(), c.channels()))
-        .unwrap_or_else(|| "ayar okunamadı".into());
+        .map(|c| format!("{} Hz, {} ch", c.sample_rate(), c.channels()))
+        .unwrap_or_else(|| "config unreadable".into());
     let mark = if Some(&name) == default.as_ref() { " ←" } else { "" };
     format!("    • {name}  [{rate}]{mark}\n")
 }

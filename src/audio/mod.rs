@@ -1,4 +1,4 @@
-//! Ses düzlemi: yakalama, kodlama, jitter tamponu, miksaj, çalma.
+//! The voice plane: capture, encoding, jitter buffering, mixing, playback.
 
 pub mod codec;
 pub mod device;
@@ -20,22 +20,22 @@ use jitter::{Frame, JitterBuffer};
 use mixer::Mixer;
 use vad::Vad;
 
-/// Opus'un doğal çalışma oranı; tüm zincir bunun üzerine kurulu.
+/// Opus's native rate; the whole chain is built on it.
 pub const SAMPLE_RATE: u32 = 48_000;
-/// 20ms'lik çerçeve. Gecikme ile paket başı ek yük arasındaki standart denge.
+/// A 20 ms frame. The standard balance between latency and per-packet overhead.
 pub const FRAME: usize = 960;
-/// Kişi başı hedef bit hızı. 6 kişilik mesh'te ~160 kbps upload demek.
+/// Target bitrate per person. In a six-person mesh that means ~160 kbps upload.
 pub const BITRATE: i32 = 32_000;
-/// Çerçeve süresi.
+/// Frame duration.
 pub const FRAME_DURATION: Duration = Duration::from_millis(20);
-/// Jitter tamponunun hedef derinliği (3 çerçeve ≈ 60ms).
+/// The jitter buffer's target depth (3 frames ≈ 60 ms).
 const JITTER_TARGET: usize = 3;
-/// Hoparlör tamponunda tutulmaya çalışılan çerçeve sayısı.
+/// How many frames we try to keep queued in the speaker buffer.
 const PLAYBACK_TARGET_FRAMES: usize = 3;
-/// Bir peer bu süre boyunca hiç paket göndermezse kaynakları serbest bırakılır.
+/// If a peer sends nothing for this long, its resources are released.
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ağdan gelen bir ses çerçevesi.
+/// A voice frame arriving from the network.
 #[derive(Debug, Clone)]
 pub struct Incoming {
     pub from: PeerId,
@@ -43,25 +43,26 @@ pub struct Incoming {
     pub payload: Vec<u8>,
 }
 
-/// Ses motorunun dış dünyaya açılan uçları.
+/// The audio engine's connections to the outside world.
 pub struct VoiceIo {
-    /// Kodlanmış kendi sesimiz — ağ katmanı bunları mesh'e dağıtır.
+    /// Our own encoded voice — the network layer distributes these to the mesh.
     pub outgoing: mpsc::Receiver<Vec<u8>>,
-    /// Ağdan gelen çerçeveler buraya yazılır.
+    /// Frames arriving from the network are written here.
     pub incoming: mpsc::Sender<Incoming>,
-    /// O anda konuşanlar (kendimiz dahil) — arayüzdeki gösterge bunu dinler.
+    /// Who is currently speaking (ourselves included) — the interface indicator
+    /// listens to this.
     pub speaking: watch::Receiver<HashSet<PeerId>>,
-    /// Mikrofon açık mı — susturma ve bas-konuş kararlarının **sonucu**.
-    /// Arayüz bu tek bayrağı hesaplar, motor yalnızca ona bakar.
+    /// Whether the microphone is open — the **result** of the mute and push-to-talk
+    /// decisions. The interface computes this one flag and the engine only reads it.
     pub mic_open: Arc<AtomicBool>,
-    /// Karşı tarafları duyuyor muyuz (sağırlaştırma kapalıysa `true`).
+    /// Whether we can hear the others (`true` unless deafened).
     pub hearing: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
-    /// Hayatta tutulduğu sürece ses donanımı açık kalır.
+    /// The audio hardware stays open for as long as this is kept alive.
     pub devices: AudioDevices,
 }
 
-/// Mikrofonu ve hoparlörü açar, ses döngülerini başlatır.
+/// Opens the microphone and speaker and starts the audio loops.
 pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let (devices, mut capture, mut playback, health) = device::open(choice)?;
 
@@ -71,14 +72,14 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let mic_open = Arc::new(AtomicBool::new(true));
     let hearing = Arc::new(AtomicBool::new(true));
 
-    // ── Yakalama: mikrofon → VAD → Opus → ağ ────────────────────────────────
+    // ── Capture: microphone → VAD → Opus → network ──────────────────────────
     let capture_mic = mic_open.clone();
     let capture_speaking = speaking_tx.clone();
     tokio::spawn(async move {
         let mut encoder = match codec::Encoder::new() {
             Ok(encoder) => encoder,
             Err(err) => {
-                tracing::error!("kodlayıcı başlatılamadı: {err:#}");
+                tracing::error!("could not start the encoder: {err:#}");
                 return;
             }
         };
@@ -90,14 +91,16 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         loop {
             ticker.tick().await;
 
-            // Biriken tüm tam çerçeveleri işle: bir tick kaçarsa gecikme büyümesin.
+            // Process every whole frame that has piled up, so a missed tick does not
+            // turn into growing latency.
             while capture.slots() >= FRAME {
                 for slot in pcm.iter_mut() {
                     *slot = capture.pop().unwrap_or(0.0);
                 }
 
-                // Mikrofon kapalıyken de VAD'i besliyoruz ki tekrar açılınca
-                // hangover durumu tutarlı olsun; ama paket göndermiyoruz.
+                // Keep feeding the VAD even while the microphone is closed, so that
+                // the hangover state is consistent when it opens again — but send
+                // nothing.
                 let active = detector.update(&pcm) && capture_mic.load(Ordering::Relaxed);
 
                 capture_speaking.send_if_modified(|speakers| {
@@ -113,17 +116,17 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                 }
                 match encoder.encode(&pcm) {
                     Ok(packet) => {
-                        // Ağ yetişemiyorsa çerçeveyi düşürmek, kuyrukta
-                        // bekletip gecikme biriktirmekten iyidir.
+                        // If the network cannot keep up, dropping the frame beats
+                        // queueing it and accumulating latency.
                         let _ = outgoing_tx.try_send(packet.to_vec());
                     }
-                    Err(err) => tracing::warn!("kodlama hatası: {err:#}"),
+                    Err(err) => tracing::warn!("encoding error: {err:#}"),
                 }
             }
         }
     });
 
-    // ── Çalma: ağ → jitter → Opus çözme → miksaj → hoparlör ─────────────────
+    // ── Playback: network → jitter → Opus decode → mixing → speaker ─────────
     let playback_hearing = hearing.clone();
     tokio::spawn(async move {
         let mut streams: HashMap<PeerId, PeerStream> = HashMap::new();
@@ -142,7 +145,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                         None => match PeerStream::new() {
                             Ok(stream) => streams.entry(packet.from).or_insert(stream),
                             Err(err) => {
-                                tracing::warn!("çözücü açılamadı: {err:#}");
+                                tracing::warn!("could not open a decoder: {err:#}");
                                 continue;
                             }
                         },
@@ -152,8 +155,8 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                 }
 
                 _ = ticker.tick() => {
-                    // Hoparlör tamponunu hedef doluluğa kadar besle. Doluluğa
-                    // bakmak, tick kaymalarını kendiliğinden telafi eder.
+                    // Feed the speaker buffer up to its target fill. Looking at the
+                    // fill level compensates for tick drift on its own.
                     let capacity_frames = 4;
                     for _ in 0..capacity_frames {
                         if playback.slots() < FRAME {
@@ -176,23 +179,24 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                                     sources.push(decoded[..written].to_vec());
                                 }
                                 Ok(_) => {}
-                                Err(err) => tracing::warn!("çözme hatası: {err:#}"),
+                                Err(err) => tracing::warn!("decoding error: {err:#}"),
                             }
                         }
 
                         let refs: Vec<&[f32]> = sources.iter().map(|s| s.as_slice()).collect();
                         mixer.mix(&refs, &mut mixed);
 
-                        // Sağırlaştırmada akışı durdurmuyoruz, sessizlik besliyoruz:
-                        // hoparlör tamponu boşalırsa underrun sayacı yanlış yere şişer.
+                        // When deafened we do not stop the stream, we feed silence:
+                        // letting the speaker buffer drain would inflate the underrun
+                        // counter for the wrong reason.
                         let hearing_now = playback_hearing.load(Ordering::Relaxed);
                         for sample in mixed.iter() {
                             let _ = playback.push(if hearing_now { *sample } else { 0.0 });
                         }
 
                         speaking_tx.send_if_modified(|speakers| {
-                            // Kendi konuşma durumumuzu yakalama tarafı yönetiyor;
-                            // burada yalnızca karşı tarafları güncelliyoruz.
+                            // The capture side owns our own speaking state; here we
+                            // only update the others.
                             let mine = speakers.contains(&me);
                             let mut next = active.clone();
                             if mine {
@@ -224,7 +228,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     })
 }
 
-/// Bir peer'dan gelen sesin durumu.
+/// The state of one peer's incoming audio.
 struct PeerStream {
     buffer: JitterBuffer,
     decoder: codec::Decoder,

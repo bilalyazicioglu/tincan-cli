@@ -1,20 +1,20 @@
-//! Birden fazla peer'ın sesini tek çıkışta birleştirme.
+//! Combining several peers' audio into a single output.
 //!
-//! Mesh'te herkes kendi sesini ayrı bir akış olarak gönderir; hoparlöre giden tek bir
-//! sinyal olduğu için bunları toplamak gerekir. Naif toplama, iki kişi aynı anda
-//! konuştuğunda genliği taşırır ve sert kırpılma (bozulma) duyulur.
+//! In the mesh everyone sends their voice as a separate stream, and since only one
+//! signal reaches the speaker they have to be summed. Naive summing overflows the
+//! amplitude when two people talk at once, and hard clipping (distortion) is audible.
 //!
-//! Çözüm: toplamı sınırın üstüne çıktığında yumuşakça bastıran bir limitleyici.
-//! Kazanç ani değişmesin diye (bu da "pompalama" olarak duyulur) hedefe doğru
-//! kademeli yaklaşır.
+//! The fix is a limiter that gently pushes the sum down when it rises above the
+//! ceiling. So the gain does not jump around — which is itself audible, as "pumping" —
+//! it approaches its target gradually.
 
-/// Toplam bu değeri aşarsa limitleyici devreye girer.
+/// The limiter engages once the sum exceeds this value.
 const CEILING: f32 = 0.95;
-/// Kazancın çerçeve başına toparlanma hızı.
+/// How fast the gain recovers, per frame.
 const RECOVERY: f32 = 0.05;
 
 pub struct Mixer {
-    /// O anki bastırma katsayısı; 1.0 = bastırma yok.
+    /// The current attenuation factor; 1.0 means no attenuation.
     gain: f32,
 }
 
@@ -25,8 +25,8 @@ impl Default for Mixer {
 }
 
 impl Mixer {
-    /// Kaynakları `out` üzerine toplar. `out` çağrıdan önce sıfırlanmış olmalı değil —
-    /// fonksiyon kendisi temizler.
+    /// Sums the sources into `out`. `out` need not be zeroed beforehand — the
+    /// function clears it itself.
     pub fn mix(&mut self, sources: &[&[f32]], out: &mut [f32]) {
         out.fill(0.0);
         for source in sources {
@@ -37,8 +37,9 @@ impl Mixer {
 
         let peak = out.iter().fold(0f32, |max, s| max.max(s.abs()));
 
-        // Tepe tavanı aşıyorsa kazancı hemen indir (bozulmayı önlemek acildir),
-        // aşmıyorsa yavaşça geri tırman (ani yükseliş pompalama sesi yapar).
+        // If the peak is over the ceiling, drop the gain at once (preventing
+        // distortion is urgent); otherwise climb back slowly, because a sudden rise
+        // sounds like pumping.
         let needed = if peak > CEILING { CEILING / peak } else { 1.0 };
         if needed < self.gain {
             self.gain = needed;
@@ -67,7 +68,7 @@ mod tests {
         let mut mixer = Mixer::default();
         let mut out = vec![7.0; 8];
         mixer.mix(&[], &mut out);
-        assert!(out.iter().all(|s| *s == 0.0), "önceki içerik temizlenmeli");
+        assert!(out.iter().all(|s| *s == 0.0), "previous content must be cleared");
     }
 
     #[test]
@@ -89,7 +90,7 @@ mod tests {
         assert!(out.iter().all(|s| (*s - 0.5).abs() < 1e-6), "{out:?}");
     }
 
-    /// Asıl mesele: kalabalık kanalda ses bozulmamalı.
+    /// The whole point: audio must not distort in a crowded channel.
     #[test]
     fn loud_sources_are_limited_not_clipped() {
         let mut mixer = Mixer::default();
@@ -100,13 +101,13 @@ mod tests {
         mixer.mix(&refs, &mut out);
 
         let peak = out.iter().fold(0f32, |m, s| m.max(s.abs()));
-        assert!(peak <= 1.0, "çıkış taşmamalı, tepe: {peak}");
-        assert!(peak > 0.5, "ses duyulur seviyede kalmalı, tepe: {peak}");
-        // Hepsi aynı işaretli olduğu için sinyal biçimi korunmalı (düz kırpılma yok).
-        assert!(out.iter().all(|s| (*s - out[0]).abs() < 1e-6), "sinyal bozulmamalı");
+        assert!(peak <= 1.0, "the output must not overflow, peak: {peak}");
+        assert!(peak > 0.5, "audio must stay audible, peak: {peak}");
+        // They all share a sign, so the waveform must be preserved (no flat clipping).
+        assert!(out.iter().all(|s| (*s - out[0]).abs() < 1e-6), "the signal must not distort");
     }
 
-    /// Gürültü geçtikten sonra kazanç geri gelmeli, yoksa ses kısık kalır.
+    /// The gain must return once the loud passage is over, or everything stays quiet.
     #[test]
     fn gain_recovers_after_the_loud_passage() {
         let mut mixer = Mixer::default();
@@ -114,17 +115,17 @@ mod tests {
         let refs: Vec<&[f32]> = loud.iter().map(|s| s.as_slice()).collect();
         let mut out = vec![0.0; 8];
         mixer.mix(&refs, &mut out);
-        assert!(mixer.gain < 0.5, "yüksek seste bastırılmalı");
+        assert!(mixer.gain < 0.5, "loud audio must be attenuated");
 
         let quiet = constant(0.1, 8);
         for _ in 0..100 {
             mixer.mix(&[&quiet], &mut out);
         }
-        assert!((mixer.gain - 1.0).abs() < 1e-6, "kazanç geri dönmeli");
-        assert!((out[0] - 0.1).abs() < 1e-6, "sessiz sinyal kısılmamalı");
+        assert!((mixer.gain - 1.0).abs() < 1e-6, "the gain must come back");
+        assert!((out[0] - 0.1).abs() < 1e-6, "a quiet signal must not be turned down");
     }
 
-    /// Kaynaklar farklı uzunlukta olabilir (kayıp çerçeve, kısa örtme) — panik olmamalı.
+    /// Sources may differ in length (a lost frame, a short concealment) — no panics.
     #[test]
     fn tolerates_sources_shorter_than_the_output() {
         let mut mixer = Mixer::default();
@@ -134,7 +135,7 @@ mod tests {
 
         mixer.mix(&[&short, &full], &mut out);
 
-        assert!((out[0] - 0.6).abs() < 1e-6, "kısa kaynak başta duyulmalı");
-        assert!((out[7] - 0.1).abs() < 1e-6, "bittiği yerden sonrası bozulmamalı");
+        assert!((out[0] - 0.6).abs() < 1e-6, "the short source must be audible at the start");
+        assert!((out[7] - 0.1).abs() < 1e-6, "past its end nothing may be disturbed");
     }
 }
