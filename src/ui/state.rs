@@ -110,6 +110,25 @@ impl App {
         }
     }
 
+    /// Puts the full invite code back on screen.
+    ///
+    /// The footer only has room for the first group, so without this the code is
+    /// unreachable once the interface has taken over — and the code is the one
+    /// thing a host has to hand to somebody else.
+    ///
+    /// Whether it also reached the clipboard is passed in rather than attempted
+    /// here: this module stays a pure state machine, and spawning a process is
+    /// the terminal layer's business.
+    pub fn show_invite_code(&mut self, copied: bool) {
+        let text = if copied {
+            format!("invite code (copied to clipboard): {}", self.invite_code)
+        } else {
+            format!("invite code: {}", self.invite_code)
+        };
+        let at = crate::net::now();
+        self.push(Line::Notice { text, at });
+    }
+
     fn push(&mut self, line: Line) {
         self.lines.push(line);
         if self.lines.len() > VISIBLE_HISTORY {
@@ -394,6 +413,29 @@ mod tests {
         assert_eq!(app.name_of(PeerId([9; 32])), PeerId([9; 32]).short());
     }
 
+
+    /// The code must be recoverable after the interface has covered the screen,
+    /// and it must come back whole — a truncated one is useless to paste.
+    #[test]
+    fn invite_code_can_be_brought_back_in_full() {
+        let mut app = App::new(PeerId([1; 32]), "n73w-kuqc-uog2-abcd".into());
+        app.channels = vec!["general".into()];
+
+        app.show_invite_code(false);
+        let shown = last_notice(&app);
+        assert!(shown.contains("n73w-kuqc-uog2-abcd"), "{shown}");
+        assert!(!shown.contains("clipboard"), "{shown}");
+
+        app.show_invite_code(true);
+        assert!(last_notice(&app).contains("clipboard"));
+    }
+
+    fn last_notice(app: &App) -> String {
+        match app.visible_lines().last().unwrap() {
+            Line::Notice { text, .. } => text.clone(),
+            other => panic!("expected a notice, got {other:?}"),
+        }
+    }
     /// When someone leaves, their old messages on screen must still show their name —
     /// otherwise the chat history becomes unreadable as people come and go.
     #[test]

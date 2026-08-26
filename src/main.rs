@@ -1,9 +1,13 @@
 //! tincan — serverless voice chat that runs in your terminal.
 
+use std::io::Write as _;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use iroh::Endpoint;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tincan::audio;
+use tincan::clipboard;
 use tincan::invite;
 use tincan::net::control::{Client, Coordinator};
 use tincan::net::voice::VoiceMesh;
@@ -136,9 +140,18 @@ async fn host(
 
     println!("\n  Room is open. Send the invite code to your friends:\n");
     println!("      {}\n", session.invite_code);
+    if clipboard::copy(&session.invite_code) {
+        println!("  It is on your clipboard — just paste it.\n");
+    }
     println!("  They will run:  tincan join {}\n", session.invite_code);
-    println!("  Opening the interface...");
-    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    // Wait for the user rather than a timer. The interface takes over the whole
+    // screen, and a 63-character code is not something anyone can copy against a
+    // countdown. F1 brings it back once the interface is up.
+    print!("  Press Enter to open the interface (F1 shows the code again)...");
+    std::io::stdout().flush().ok();
+    let mut answer = String::new();
+    BufReader::new(tokio::io::stdin()).read_line(&mut answer).await.ok();
 
     ui::run(session, control, audio.ptt).await
 }

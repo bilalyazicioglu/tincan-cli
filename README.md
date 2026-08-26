@@ -17,7 +17,7 @@ the world. No VPN, no port forwarding, no accounts.
 └────────────────────────┘┌──────────────────────────────────────────────────┐
                           │#general ▏                                        │
                           └──────────────────────────────────────────────────┘
-Tab channel · F2 voice · F3 mute · Ctrl+C quit    🔊 general  code: n73w-kuqc…
+Tab channel · F2 voice · F3 mute · Ctrl+C quit 🔊 general  F1 code: n73w-kuqc…
 ```
 
 ## Install
@@ -60,7 +60,12 @@ terminal app running tincan (Terminal, iTerm, VS Code…), not from tincan itsel
 tincan host --name alice --room lobby --password secret
 ```
 
-It prints an invite code. Send it to your friends — copy and paste, 63 characters.
+It prints an invite code, puts it on your clipboard, and waits for you to press Enter
+before taking over the screen. Send it to your friends — copy and paste, 63 characters.
+
+Once the interface is up the footer only has room for the first group of the code. Press
+`F1` to print the whole thing into the chat pane and copy it again, so you can invite
+someone without restarting the room.
 
 **Join a room:**
 
@@ -96,6 +101,7 @@ tincan devices
 | `F3` (or `Ctrl+T`)   | Mute / unmute your microphone                   |
 | `F4`                 | Push-to-talk (only in `--ptt` mode)             |
 | `F5`                 | Deafen: hear nobody (also closes your mic)      |
+| `F1`                 | Show the full invite code (and copy it)         |
 | `Enter`              | Send the message                                |
 | `Ctrl+C`             | Quit                                            |
 

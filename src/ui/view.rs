@@ -182,7 +182,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let right = TextLine::from(vec![
         Span::styled(voice, Style::default().fg(ACCENT)),
         Span::styled(
-            format!("  code: {}", short_code(&app.invite_code)),
+            format!("  F1 code: {}", short_code(&app.invite_code)),
             Style::default().fg(DIM),
         ),
     ]);
@@ -259,7 +259,7 @@ fn clock(at: u64) -> String {
 }
 
 /// The invite code is 63 characters in full; the footer shows only its first groups,
-/// as a reminder that the code exists.
+/// next to the key that puts the whole thing back on screen.
 fn short_code(code: &str) -> String {
     let head: String = code.chars().take(9).collect();
     format!("{head}…")
