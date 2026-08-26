@@ -18,16 +18,49 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .areas(frame.area());
     let [sidebar, main] = Layout::horizontal([Constraint::Length(26), Constraint::Min(20)])
         .areas(body);
-    let [channels, people] = Layout::vertical([Constraint::Length(3 + app.channels.len() as u16), Constraint::Min(3)])
-        .areas(sidebar);
+    let [logo_area, channels, people] = Layout::vertical([
+        Constraint::Length(8),
+        Constraint::Length(3 + app.channels.len() as u16),
+        Constraint::Min(3),
+    ])
+    .areas(sidebar);
     let [chat, input] = Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
         .areas(main);
 
+    draw_logo(frame, logo_area);
     draw_channels(frame, channels, app);
     draw_people(frame, people, app);
     draw_chat(frame, chat, app);
     draw_input(frame, input, app);
     draw_footer(frame, footer, app);
+}
+
+fn draw_logo(frame: &mut Frame, area: Rect) {
+    if area.height < 4 {
+        return;
+    }
+    let logo_text = vec![
+        TextLine::from(Span::styled("       ( o )       ", Style::default().fg(Color::Yellow))),
+        TextLine::from(Span::styled("      /=====\\      ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
+        TextLine::from(vec![
+            Span::styled("     | ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled("tincan", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(" |", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        ]),
+        TextLine::from(vec![
+            Span::styled("     |  ", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled("/\\", Style::default().fg(Color::Yellow)),
+            Span::styled("   |", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        ]),
+        TextLine::from(Span::styled("      \\=====/", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
+        TextLine::from(Span::styled("         S         ", Style::default().fg(Color::Yellow))),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(logo_text)
+            .block(Block::default().borders(Borders::ALL).title(" tincan ")),
+        area,
+    );
 }
 
 fn draw_channels(frame: &mut Frame, area: Rect, app: &App) {
