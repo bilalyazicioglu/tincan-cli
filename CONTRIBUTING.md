@@ -46,3 +46,4 @@ Browse the [GitHub Issues](https://github.com/bilalyazicioglu/tincan-cli/issues)
 - **Error Handling**: Use `anyhow` for top-level error propagation and specific error enums for library modules.
 - **Async Runtime**: Use `tokio` multi-threaded runtime.
 - **Audio Code Style**: Keep lock-free audio ring buffers isolated from async/blocking calls to guarantee real-time audio safety.
+

@@ -1,11 +1,23 @@
-# tincan
+<p align="center">
+  <img src="assets/logo.png" width="180" alt="tincan logo">
+</p>
 
-Serverless voice chat that runs in your terminal. It does what Discord does, without
-needing anyone's server: the first person to open the app creates the room, sends the
-invite code it prints to their friends, and they connect with that code from anywhere in
-the world. No VPN, no port forwarding, no accounts.
+<h1 align="center">tincan</h1>
 
-Developer Blog (Turkish): <https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet>
+<p align="center">
+  <b>Serverless peer-to-peer voice and text chat for your terminal.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/bilalyazicioglu/tincan-cli/actions"><img src="https://img.shields.io/github/actions/workflow/status/bilalyazicioglu/tincan-cli/release.yml?style=flat-square&logo=github&label=build" alt="Build Status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
+  <a href="docs/WIKI.md"><img src="https://img.shields.io/badge/wiki-architecture-orange?style=flat-square" alt="Wiki"></a>
+  <a href="https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet"><img src="https://img.shields.io/badge/blog-developer%20story-purple?style=flat-square" alt="Developer Blog"></a>
+</p>
+
+<p align="center">
+  tincan does what Discord does, without needing anyone's server: the first person to open the app creates the room, sends the invite code it prints to their friends, and they connect with that code from anywhere in the world. No VPN, no port forwarding, no accounts.
+</p>
 
 ```
 ┌ channels ──────────────┐┌ #general · lobby ────────────────────────────────┐

@@ -11,6 +11,7 @@
 pub mod auth;
 pub mod clipboard;
 pub mod invite;
+pub mod logo;
 pub mod proto;
 pub mod room;
 

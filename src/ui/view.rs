@@ -111,29 +111,38 @@ fn draw_people(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
-    let lines: Vec<TextLine> = app
-        .visible_lines()
-        .iter()
-        .map(|line| match line {
-            Line::Chat(chat) => {
-                let mine = chat.from == app.me;
-                let name_style = if mine {
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().add_modifier(Modifier::BOLD)
-                };
-                TextLine::from(vec![
-                    Span::styled(format!("{} ", clock(chat.at)), Style::default().fg(DIM)),
-                    Span::styled(format!("{}: ", app.name_of(chat.from)), name_style),
-                    Span::raw(chat.text.clone()),
-                ])
-            }
-            Line::Notice { text, at } => TextLine::from(vec![
-                Span::styled(format!("{} ", clock(*at)), Style::default().fg(DIM)),
-                Span::styled(format!("— {text}"), Style::default().fg(DIM).add_modifier(Modifier::ITALIC)),
-            ]),
-        })
-        .collect();
+    let visible = app.visible_lines();
+    let mut lines: Vec<TextLine> = if visible.is_empty() {
+        let mut logo = crate::logo::tui_logo_lines();
+        logo.push(TextLine::from(""));
+        logo.push(TextLine::from(Span::styled(
+            format!("  Welcome to #{}! Press F2 to join voice chat.", app.channel_name(app.viewing)),
+            Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+        )));
+        logo
+    } else {
+        Vec::new()
+    };
+
+    lines.extend(visible.iter().map(|line| match line {
+        Line::Chat(chat) => {
+            let mine = chat.from == app.me;
+            let name_style = if mine {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().add_modifier(Modifier::BOLD)
+            };
+            TextLine::from(vec![
+                Span::styled(format!("{} ", clock(chat.at)), Style::default().fg(DIM)),
+                Span::styled(format!("{}: ", app.name_of(chat.from)), name_style),
+                Span::raw(chat.text.clone()),
+            ])
+        }
+        Line::Notice { text, at } => TextLine::from(vec![
+            Span::styled(format!("{} ", clock(*at)), Style::default().fg(DIM)),
+            Span::styled(format!("— {text}"), Style::default().fg(DIM).add_modifier(Modifier::ITALIC)),
+        ]),
+    }));
 
     // Newest messages sit at the bottom: older lines that do not fit are clipped.
     let height = area.height.saturating_sub(2) as usize;

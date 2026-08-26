@@ -117,6 +117,7 @@ async fn host(
     channels: String,
     audio: AudioArgs,
 ) -> Result<()> {
+    tincan::logo::print_banner();
     let channels: Vec<String> = channels
         .split(',')
         .map(|c| c.trim().to_string())
@@ -162,6 +163,7 @@ async fn join(
     password: Option<String>,
     audio: AudioArgs,
 ) -> Result<()> {
+    tincan::logo::print_banner();
     let key = invite::decode(&code).context("could not read the invite code")?;
     let coordinator = PeerId(key);
 

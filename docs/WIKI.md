@@ -107,3 +107,4 @@ cargo clippy --all-targets
 ## 6. Community & Contributing
 
 We welcome contributions from developers worldwide! Check out our open issues, read `CONTRIBUTING.md`, and join the discussion.
+
