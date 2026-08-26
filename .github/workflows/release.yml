@@ -17,6 +17,9 @@ jobs:
       # on linux-gnu, which produced Linux binaries with an unresolved
       # `libopus.so.0`. We ship a standalone binary, so demand static everywhere.
       OPUS_STATIC: "1"
+      # Without this the vendored Opus is compiled against the runner's SDK and
+      # the binary refuses to start on anything older than the runner's macOS.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     strategy:
       fail-fast: false
       matrix:
@@ -71,7 +74,12 @@ jobs:
       - name: Verify the binary is self-contained
         run: |
           BIN=target/${{ matrix.target }}/release/tincan
-          if [ "${{ runner.os }}" = "macOS" ]; then LINKS=$(otool -L "$BIN"); else LINKS=$(ldd "$BIN"); fi
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            LINKS=$(otool -L "$BIN")
+            otool -l "$BIN" | grep -A3 LC_BUILD_VERSION | grep minos || true
+          else
+            LINKS=$(ldd "$BIN")
+          fi
           echo "$LINKS"
           if echo "$LINKS" | grep -qi 'libopus'; then
             echo "::error::tincan links libopus dynamically; the released binary would not run without it"
@@ -107,13 +115,17 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # Idempotent, so re-running after a failed build replaces the assets
+      # instead of failing with "release already exists".
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --title "$TAG" \
-            --generate-notes \
-            artifacts/*
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/* --repo "$REPO" --clobber
+          else
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" \
+              --generate-notes artifacts/*
+          fi
