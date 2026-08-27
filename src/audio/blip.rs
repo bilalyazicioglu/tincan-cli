@@ -55,7 +55,7 @@ mod tests {
 
         for &sample in &samples {
             assert!(
-                sample >= -0.6 && sample <= 0.6,
+                (-0.6..=0.6).contains(&sample),
                 "blip amplitude must be within pleasant bounds [-0.6, 0.6], got {sample}"
             );
         }
