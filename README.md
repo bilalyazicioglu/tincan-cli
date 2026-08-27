@@ -235,6 +235,12 @@ decisions and are not used in the product.
 - **The first second of a connection flows through a relay** before switching to a direct
   link. You may notice the latency in the first moments after joining.
 
+## Contributing
+
+Bug reports and feature requests are welcome! Please use the
+[issue templates](.github/ISSUE_TEMPLATE) when opening an issue, and review the
+[pull request checklist](.github/PULL_REQUEST_TEMPLATE.md) before submitting a PR.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
