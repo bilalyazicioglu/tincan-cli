@@ -28,8 +28,15 @@ pub struct VoiceControl {
     /// Whether we can hear the others.
     pub hearing: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
+    pub blip_tx: mpsc::Sender<()>,
     /// The audio hardware stays open for as long as this is kept alive.
     pub _devices: AudioDevices,
+}
+
+impl VoiceControl {
+    pub fn play_blip(&self) {
+        let _ = self.blip_tx.try_send(());
+    }
 }
 
 /// Wires the session to the screen and runs until the user quits.
@@ -56,9 +63,15 @@ pub async fn run(
                     Some(event) => {
                         let membership_changed =
                             matches!(event, Event::Roster(_) | Event::Welcome { .. });
+                        let prev_voice = app.voice;
                         app.apply(event);
                         if membership_changed {
                             sync_voice(&app, voice.as_ref()).await;
+                            if app.voice.is_some() && app.voice != prev_voice {
+                                if let Some(v) = voice.as_ref() {
+                                    v.play_blip();
+                                }
+                            }
                         }
                     }
                     None => break,

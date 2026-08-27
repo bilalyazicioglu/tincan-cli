@@ -1,5 +1,6 @@
 //! The voice plane: capture, encoding, jitter buffering, mixing, playback.
 
+pub mod blip;
 pub mod codec;
 pub mod device;
 pub mod jitter;
@@ -58,6 +59,7 @@ pub struct VoiceIo {
     /// Whether we can hear the others (`true` unless deafened).
     pub hearing: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
+    pub blip_tx: mpsc::Sender<()>,
     /// The audio hardware stays open for as long as this is kept alive.
     pub devices: AudioDevices,
 }
@@ -68,6 +70,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
 
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<Incoming>(256);
+    let (blip_tx, mut blip_rx) = mpsc::channel::<()>(16);
     let (speaking_tx, speaking_rx) = watch::channel(HashSet::new());
     let mic_open = Arc::new(AtomicBool::new(true));
     let hearing = Arc::new(AtomicBool::new(true));
@@ -136,9 +139,14 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
 
         let mut decoded = vec![0f32; FRAME];
         let mut mixed = vec![0f32; FRAME];
+        let mut blip_samples: Vec<f32> = Vec::new();
 
         loop {
             tokio::select! {
+                Some(_) = blip_rx.recv() => {
+                    blip_samples.extend(blip::generate_blip());
+                }
+
                 Some(packet) = incoming_rx.recv() => {
                     let stream = match streams.get_mut(&packet.from) {
                         Some(stream) => stream,
@@ -155,6 +163,10 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                 }
 
                 _ = ticker.tick() => {
+                    while blip_rx.try_recv().is_ok() {
+                        blip_samples.extend(blip::generate_blip());
+                    }
+
                     // Feed the speaker buffer up to its target fill. Looking at the
                     // fill level compensates for tick drift on its own.
                     let capacity_frames = 4;
@@ -185,6 +197,13 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
 
                         let refs: Vec<&[f32]> = sources.iter().map(|s| s.as_slice()).collect();
                         mixer.mix(&refs, &mut mixed);
+
+                        if !blip_samples.is_empty() {
+                            let take = std::cmp::min(blip_samples.len(), mixed.len());
+                            for (i, sample) in blip_samples.drain(..take).enumerate() {
+                                mixed[i] += sample;
+                            }
+                        }
 
                         // When deafened we do not stop the stream, we feed silence:
                         // letting the speaker buffer drain would inflate the underrun
@@ -224,6 +243,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         mic_open,
         hearing,
         health,
+        blip_tx,
         devices,
     })
 }

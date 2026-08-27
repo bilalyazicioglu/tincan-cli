@@ -228,6 +228,7 @@ fn setup_voice(
                 mic_open: io.mic_open,
                 hearing: io.hearing,
                 health: io.health,
+                blip_tx: io.blip_tx,
                 _devices: io.devices,
             };
             (Some(mesh), Some(control))
