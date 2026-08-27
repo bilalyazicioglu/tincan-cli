@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, watch};
 use crate::audio::device::{AudioDevices, AudioHealth};
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
-use crate::proto::PeerId;
+use crate::proto::{ChannelId, PeerId};
 use state::App;
 
 /// Where the interface holds on to the audio side. Never built if audio failed to
@@ -39,6 +39,37 @@ impl VoiceControl {
     }
 }
 
+/// Decides when the welcome chime should sound.
+///
+/// Two occasions, and both are read off the roster rather than off a keypress: a
+/// keypress is only a *request* to join, while the roster is the room confirming it.
+///
+/// * somebody new turned up — everyone already in the room hears it;
+/// * we ourselves landed in a voice channel.
+#[derive(Default)]
+struct JoinChime {
+    /// Everyone we have already seen. Seeded from the first roster, so walking into a
+    /// busy room does not fire one chime per person already sitting there.
+    known: HashSet<PeerId>,
+    seeded: bool,
+}
+
+impl JoinChime {
+    fn on_roster(&mut self, app: &App, prev_voice: Option<ChannelId>) -> bool {
+        let newcomer = app
+            .peers
+            .iter()
+            .any(|p| p.id != app.me && !self.known.contains(&p.id));
+        self.known = app.peers.iter().map(|p| p.id).collect();
+
+        let announce = newcomer && self.seeded;
+        self.seeded = true;
+
+        let joined_channel = app.voice.is_some() && app.voice != prev_voice;
+        announce || joined_channel
+    }
+}
+
 /// Wires the session to the screen and runs until the user quits.
 pub async fn run(
     mut session: Session,
@@ -50,6 +81,7 @@ pub async fn run(
     app.ptt_mode = ptt_mode && app.voice_available;
     let mut terminal = ratatui::init();
     let mut keys = spawn_key_reader();
+    let mut chime = JoinChime::default();
     // Link quality is something you watch, not something instantaneous: once a
     // second is plenty.
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -67,10 +99,10 @@ pub async fn run(
                         app.apply(event);
                         if membership_changed {
                             sync_voice(&app, voice.as_ref()).await;
-                            if app.voice.is_some() && app.voice != prev_voice {
-                                if let Some(v) = voice.as_ref() {
-                                    v.play_blip();
-                                }
+                            if chime.on_roster(&app, prev_voice)
+                                && let Some(v) = voice.as_ref()
+                            {
+                                v.play_blip();
                             }
                         }
                     }
@@ -90,7 +122,7 @@ pub async fn run(
 
                 key = keys.recv() => match key {
                     Some(key) => {
-                        if handle_key(&mut app, key, &session.commands, voice.as_ref()).await? {
+                        if handle_key(&mut app, key, &session.commands).await? {
                             break;
                         }
                         apply_local_audio_state(&app, voice.as_ref());
@@ -143,7 +175,6 @@ async fn handle_key(
     app: &mut App,
     key: KeyEvent,
     commands: &mpsc::Sender<Command>,
-    voice: Option<&VoiceControl>,
 ) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -189,11 +220,6 @@ async fn handle_key(
             Some(app.viewing)
         };
         let _ = commands.send(Command::SwitchChannel(target)).await;
-        if target.is_some() {
-            if let Some(v) = voice {
-                v.play_blip();
-            }
-        }
         return Ok(false);
     }
     if toggle_mute {
@@ -275,6 +301,7 @@ async fn next_speakers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::PeerInfo;
     use std::time::Duration;
 
     fn speaker(seed: u8) -> HashSet<PeerId> {
@@ -313,5 +340,111 @@ mod tests {
     async fn never_returns_when_voice_is_off() {
         let result = tokio::time::timeout(Duration::from_millis(100), next_speakers(None));
         assert!(result.await.is_err());
+    }
+
+    // ── The welcome chime ───────────────────────────────────────────────────
+
+    fn peer(seed: u8, channel: Option<u8>) -> PeerInfo {
+        PeerInfo {
+            id: PeerId([seed; 32]),
+            name: format!("peer{seed}"),
+            channel: channel.map(ChannelId),
+            muted: false,
+            deafened: false,
+        }
+    }
+
+    /// `me` is peer 1 throughout, sitting in no channel unless stated.
+    fn room(peers: Vec<PeerInfo>) -> App {
+        let mut app = App::new(PeerId([1; 32]), "code".into());
+        app.voice = peers
+            .iter()
+            .find(|p| p.id == PeerId([1; 32]))
+            .and_then(|p| p.channel);
+        app.peers = peers;
+        app
+    }
+
+    /// Walking into a room that already has people in it must stay silent —
+    /// otherwise you get one chime per person already sitting there.
+    #[test]
+    fn first_roster_is_silent() {
+        let mut chime = JoinChime::default();
+        let app = room(vec![peer(1, None), peer(2, None), peer(3, None)]);
+        assert!(!chime.on_roster(&app, None));
+    }
+
+    /// The point of the whole feature: everybody already in the room hears the
+    /// newcomer arrive.
+    #[test]
+    fn every_newcomer_chimes_for_everyone_present() {
+        let mut chime = JoinChime::default();
+        let app = room(vec![peer(1, None)]);
+        chime.on_roster(&app, None);
+
+        let app = room(vec![peer(1, None), peer(2, None)]);
+        assert!(chime.on_roster(&app, None), "second peer arriving must chime");
+
+        let app = room(vec![peer(1, None), peer(2, None), peer(3, None)]);
+        assert!(chime.on_roster(&app, None), "third peer arriving must chime too");
+    }
+
+    /// A roster that only reports a mute/channel change is not an arrival.
+    #[test]
+    fn unchanged_membership_is_silent() {
+        let mut chime = JoinChime::default();
+        let app = room(vec![peer(1, None), peer(2, None)]);
+        chime.on_roster(&app, None);
+
+        let app = room(vec![peer(1, None), peer(2, Some(3))]);
+        assert!(!chime.on_roster(&app, None), "a peer switching channel is not an arrival");
+    }
+
+    /// Someone leaving is not an arrival, and must not re-arm a chime for the
+    /// people who stayed.
+    #[test]
+    fn departure_is_silent() {
+        let mut chime = JoinChime::default();
+        let app = room(vec![peer(1, None), peer(2, None), peer(3, None)]);
+        chime.on_roster(&app, None);
+
+        let app = room(vec![peer(1, None), peer(2, None)]);
+        assert!(!chime.on_roster(&app, None));
+    }
+
+    /// A peer who leaves and comes back is a fresh arrival.
+    #[test]
+    fn rejoining_peer_chimes_again() {
+        let mut chime = JoinChime::default();
+        let app = room(vec![peer(1, None), peer(2, None)]);
+        chime.on_roster(&app, None);
+        let app = room(vec![peer(1, None)]);
+        chime.on_roster(&app, None);
+
+        let app = room(vec![peer(1, None), peer(2, None)]);
+        assert!(chime.on_roster(&app, None));
+    }
+
+    /// Our own F2 arrival, confirmed by the roster rather than guessed at the
+    /// keypress.
+    #[test]
+    fn own_channel_entry_chimes() {
+        let mut chime = JoinChime::default();
+        let app = room(vec![peer(1, None)]);
+        chime.on_roster(&app, None);
+
+        let app = room(vec![peer(1, Some(0))]);
+        assert!(chime.on_roster(&app, None), "entering a channel must chime");
+    }
+
+    /// Leaving the channel again is not an entry.
+    #[test]
+    fn own_channel_exit_is_silent() {
+        let mut chime = JoinChime::default();
+        let app = room(vec![peer(1, Some(0))]);
+        chime.on_roster(&app, None);
+
+        let app = room(vec![peer(1, None)]);
+        assert!(!chime.on_roster(&app, Some(ChannelId(0))));
     }
 }
