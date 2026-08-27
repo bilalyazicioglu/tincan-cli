@@ -90,7 +90,7 @@ pub async fn run(
 
                 key = keys.recv() => match key {
                     Some(key) => {
-                        if handle_key(&mut app, key, &session.commands).await? {
+                        if handle_key(&mut app, key, &session.commands, voice.as_ref()).await? {
                             break;
                         }
                         apply_local_audio_state(&app, voice.as_ref());
@@ -143,6 +143,7 @@ async fn handle_key(
     app: &mut App,
     key: KeyEvent,
     commands: &mpsc::Sender<Command>,
+    voice: Option<&VoiceControl>,
 ) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -188,6 +189,11 @@ async fn handle_key(
             Some(app.viewing)
         };
         let _ = commands.send(Command::SwitchChannel(target)).await;
+        if target.is_some() {
+            if let Some(v) = voice {
+                v.play_blip();
+            }
+        }
         return Ok(false);
     }
     if toggle_mute {
