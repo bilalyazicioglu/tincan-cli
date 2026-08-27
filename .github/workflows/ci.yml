@@ -43,3 +43,25 @@ jobs:
 
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+
+  # The branch ruleset needs one status check whose name never moves. The matrix
+  # jobs report as `test (ubuntu-latest)` / `test (macos-14)`, so requiring those
+  # directly would break the rule the moment the matrix gains or renames an OS.
+  # This job is that fixed name, and it is nothing but a verdict on the matrix.
+  gate:
+    name: build/test/ci
+    runs-on: ubuntu-latest
+    needs: [test]
+    # Without `always()` a failed or skipped matrix would skip the gate too, and a
+    # skipped required check counts as satisfied — the rule would wave through
+    # exactly what it exists to stop.
+    if: always()
+    steps:
+      - name: Require the test matrix to have passed
+        run: |
+          result='${{ needs.test.result }}'
+          if [ "$result" != "success" ]; then
+            echo "test matrix did not pass: $result"
+            exit 1
+          fi
+          echo "test matrix passed"
