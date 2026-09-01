@@ -60,6 +60,10 @@ pub struct AudioDevices {
     capture_tx: Arc<std::sync::Mutex<Producer<f32>>>,
     playback_rx: Arc<std::sync::Mutex<Consumer<f32>>>,
     health: Arc<AudioHealth>,
+    /// The devices actually in use. `switch_*` resolves a partial name or a default
+    /// into a real one, and the interface needs to show what it landed on.
+    active_input: Arc<std::sync::Mutex<Option<String>>>,
+    active_output: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl AudioDevices {
@@ -175,7 +179,18 @@ impl AudioDevices {
             Err(poisoned) => poisoned.into_inner(),
         };
         *lock = Some(stream);
+        remember(&self.active_input, &dev_name);
         Ok(dev_name)
+    }
+
+    /// The microphone currently open.
+    pub fn active_input(&self) -> Option<String> {
+        read(&self.active_input)
+    }
+
+    /// The speaker currently open.
+    pub fn active_output(&self) -> Option<String> {
+        read(&self.active_output)
     }
 
     /// Switches the output device dynamically at runtime.
@@ -338,7 +353,25 @@ impl AudioDevices {
             Err(poisoned) => poisoned.into_inner(),
         };
         *lock = Some(stream);
+        remember(&self.active_output, &dev_name);
         Ok(dev_name)
+    }
+}
+
+/// A poisoned lock here means another thread panicked mid-switch; the name it was
+/// writing is worth less than staying up, so the guard is taken either way.
+fn remember(slot: &Arc<std::sync::Mutex<Option<String>>>, name: &str) {
+    let mut lock = match slot.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *lock = Some(name.to_string());
+}
+
+fn read(slot: &Arc<std::sync::Mutex<Option<String>>>) -> Option<String> {
+    match slot.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
     }
 }
 
@@ -436,6 +469,8 @@ pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
         capture_tx: Arc::new(std::sync::Mutex::new(capture_tx)),
         playback_rx: Arc::new(std::sync::Mutex::new(playback_rx)),
         health: health.clone(),
+        active_input: Arc::new(std::sync::Mutex::new(None)),
+        active_output: Arc::new(std::sync::Mutex::new(None)),
     };
 
     devices
@@ -460,15 +495,15 @@ pub fn describe_devices() -> Result<String> {
         .default_output_device()
         .and_then(|d| d.description().ok().map(|d| d.name().to_string()));
 
-    report.push_str("\n  Microphones:\n");
+    report.push_str("\n  MICROPHONES\n");
     for device in host.input_devices()? {
         report.push_str(&line(&device, &default_in, true));
     }
-    report.push_str("\n  Speakers:\n");
+    report.push_str("\n  SPEAKERS\n");
     for device in host.output_devices()? {
         report.push_str(&line(&device, &default_out, false));
     }
-    report.push_str("\n  All sample rates (16 kHz Bluetooth, 44.1 kHz, 48 kHz, etc.) are resampled automatically.\n");
+    report.push_str("\n  Every rate is resampled — 16 kHz Bluetooth headsets included.\n");
     Ok(report)
 }
 
@@ -483,8 +518,10 @@ fn line(device: &cpal::Device, default: &Option<String>, input: bool) -> String 
         device.default_output_config().ok()
     };
     let rate = config
-        .map(|c| format!("{} Hz, {} ch", c.sample_rate(), c.channels()))
-        .unwrap_or_else(|| "config unreadable".into());
-    let mark = if Some(&name) == default.as_ref() { " ←" } else { "" };
-    format!("    • {name}  [{rate}]{mark}\n")
+        .map(|c| format!("{} kHz · {} ch", c.sample_rate() / 1000, c.channels()))
+        .unwrap_or_else(|| "reports no format".into());
+    let mark = if Some(&name) == default.as_ref() { "default" } else { "" };
+    // One column for the name, one for what it runs at, one for whether it is the
+    // one you get by default.
+    format!("    {name:<38}  {rate:<16}  {mark}\n")
 }

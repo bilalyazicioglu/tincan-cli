@@ -36,6 +36,11 @@ const JITTER_TARGET: usize = 3;
 const PLAYBACK_TARGET_FRAMES: usize = 3;
 /// If a peer sends nothing for this long, its resources are released.
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The smallest change worth redrawing for: finer than the widest meter we draw.
+const METER_STEP: f32 = 1.0 / 64.0;
+/// How much of a meter survives each 20 ms frame once its peer goes quiet. A meter
+/// that stops dead looks frozen; one that falls looks like someone stopped talking.
+const LEVEL_RELEASE: f32 = 0.75;
 
 /// A voice frame arriving from the network.
 #[derive(Debug, Clone)]
@@ -61,6 +66,10 @@ pub struct VoiceIo {
     pub hearing: Arc<AtomicBool>,
     /// Live microphone volume level (0.0 to 1.0) for VU meter visualization.
     pub mic_level: watch::Receiver<f32>,
+    /// How loud each peer sounds right now, already quantised to the five steps the
+    /// interface can draw. Quantising here is what lets the interface sleep: it
+    /// wakes only when a bar would actually change, not fifty times a second.
+    pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
     /// Whether the microphone loopback test is active (hearing own voice).
     pub mic_loopback: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
@@ -78,6 +87,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let (blip_tx, mut blip_rx) = mpsc::channel::<()>(16);
     let (speaking_tx, speaking_rx) = watch::channel(HashSet::new());
     let (mic_level_tx, mic_level_rx) = watch::channel(0.0f32);
+    let (peer_levels_tx, peer_levels_rx) = watch::channel(HashMap::new());
     let (loopback_tx, mut loopback_rx) = mpsc::channel::<Vec<f32>>(16);
 
     let mic_open = Arc::new(AtomicBool::new(true));
@@ -111,13 +121,18 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                     *slot = capture.pop().unwrap_or(0.0);
                 }
 
-                // Compute real-time RMS audio level with logarithmic dB scaling for VU meter.
-                let sum_sq: f32 = pcm.iter().map(|&s| s * s).sum();
-                let rms = (sum_sq / pcm.len() as f32).sqrt();
-                // Map dB range [-50 dB (noise floor) .. -6 dB (peak)] to [0.0 .. 1.0]
-                let db = 20.0 * (rms + 1e-5).log10();
-                let level = ((db + 50.0) / 44.0).clamp(0.0, 1.0);
-                let _ = mic_level_tx.send(level);
+                // Only publish a level the meter could actually draw differently.
+                // Sending every frame would redraw the whole interface fifty times a
+                // second for a bar that never moved.
+                let level = loudness(&pcm);
+                mic_level_tx.send_if_modified(|shown| {
+                    if (level - *shown).abs() < METER_STEP {
+                        false
+                    } else {
+                        *shown = level;
+                        true
+                    }
+                });
 
                 // If loopback test is active, pipe local mic audio to speaker side.
                 if capture_loopback.load(Ordering::Relaxed) {
@@ -156,6 +171,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let playback_hearing = hearing.clone();
     tokio::spawn(async move {
         let mut streams: HashMap<PeerId, PeerStream> = HashMap::new();
+        let mut levels: HashMap<PeerId, f32> = HashMap::new();
         let mut mixer = Mixer::default();
         let mut ticker = tokio::time::interval(FRAME_DURATION);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -191,6 +207,14 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                 }
 
                 _ = ticker.tick() => {
+                    // Every meter falls a little each frame and is pushed back up by
+                    // the audio actually decoded below. That gives an instant attack
+                    // and a soft release, which is how a meter reads as a voice
+                    // rather than as a flickering light.
+                    for level in levels.values_mut() {
+                        *level *= LEVEL_RELEASE;
+                    }
+
                     while blip_rx.try_recv().is_ok() {
                         blip_samples.extend(blip::generate_blip());
                     }
@@ -219,6 +243,9 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                             match stream.decoder.decode(&frame, &mut decoded) {
                                 Ok(written) if speaking => {
                                     active.insert(*peer);
+                                    let heard = loudness(&decoded[..written]);
+                                    let level = levels.entry(*peer).or_insert(0.0);
+                                    *level = level.max(heard);
                                     sources.push(decoded[..written].to_vec());
                                 }
                                 Ok(_) => {}
@@ -270,6 +297,20 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                         });
                     }
 
+                    levels.retain(|peer, level| *level > 0.01 && streams.contains_key(peer));
+                    let bars: HashMap<PeerId, u8> = levels
+                        .iter()
+                        .map(|(peer, level)| (*peer, bar(*level)))
+                        .collect();
+                    peer_levels_tx.send_if_modified(|shown| {
+                        if *shown == bars {
+                            false
+                        } else {
+                            *shown = bars;
+                            true
+                        }
+                    });
+
                     streams.retain(|_, stream| stream.last_packet.elapsed() < PEER_IDLE_TIMEOUT);
                 }
             }
@@ -283,6 +324,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         mic_open,
         hearing,
         mic_level: mic_level_rx,
+        peer_levels: peer_levels_rx,
         mic_loopback,
         health,
         blip_tx,
@@ -304,5 +346,78 @@ impl PeerStream {
             decoder: codec::Decoder::new()?,
             last_packet: Instant::now(),
         })
+    }
+}
+
+/// Loudness on the scale the meters draw: 0.0 at the noise floor, 1.0 at a shout.
+///
+/// The ear works in decibels, so a linear RMS bar spends most of its travel doing
+/// nothing at all. The window here is -50 dB (a quiet room) to -6 dB (a loud voice).
+pub fn loudness(pcm: &[f32]) -> f32 {
+    if pcm.is_empty() {
+        return 0.0;
+    }
+    let sum_squares: f32 = pcm.iter().map(|sample| sample * sample).sum();
+    let rms = (sum_squares / pcm.len() as f32).sqrt();
+    let db = 20.0 * (rms + 1e-5).log10();
+    ((db + 50.0) / 44.0).clamp(0.0, 1.0)
+}
+
+/// Which of the five steps of the three-cell meter a loudness lands on.
+pub fn bar(level: f32) -> u8 {
+    (level.clamp(0.0, 1.0) * 4.0).round() as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tone(amplitude: f32) -> Vec<f32> {
+        (0..FRAME)
+            .map(|i| amplitude * (i as f32 * 0.1).sin())
+            .collect()
+    }
+
+    #[test]
+    fn silence_reads_as_nothing() {
+        assert_eq!(loudness(&vec![0.0; FRAME]), 0.0);
+        assert_eq!(bar(loudness(&vec![0.0; FRAME])), 0, "silence must draw an empty meter");
+    }
+
+    #[test]
+    fn an_empty_frame_does_not_divide_by_zero() {
+        assert_eq!(loudness(&[]), 0.0);
+    }
+
+    #[test]
+    fn louder_audio_reads_higher() {
+        let quiet = loudness(&tone(0.01));
+        let talking = loudness(&tone(0.2));
+        let shouting = loudness(&tone(0.9));
+        assert!(quiet < talking, "{quiet} < {talking}");
+        assert!(talking < shouting, "{talking} < {shouting}");
+        assert!(shouting <= 1.0, "the meter must not run off its scale");
+    }
+
+    #[test]
+    fn a_normal_speaking_voice_lands_in_the_middle_of_the_meter() {
+        let step = bar(loudness(&tone(0.2)));
+        assert!((1..=3).contains(&step), "a speaking voice drew step {step} of 4");
+    }
+
+    #[test]
+    fn a_shout_fills_the_meter() {
+        assert_eq!(bar(loudness(&tone(1.0))), 4);
+    }
+
+    #[test]
+    fn a_quiet_peer_falls_silent_within_a_fifth_of_a_second() {
+        let mut level = 1.0f32;
+        let frames = (0.2 / FRAME_DURATION.as_secs_f32()) as usize;
+        for _ in 0..frames {
+            level *= LEVEL_RELEASE;
+        }
+        assert!(level < 0.125, "the meter still showed {level} after 200 ms of silence");
+        assert_eq!(bar(level), 0);
     }
 }

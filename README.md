@@ -20,19 +20,43 @@
 </p>
 
 ```
-┌ channels ──────────────┐┌ #general · lobby ────────────────────────────────┐
-│>  🔊 general   2       ││23:56 — bob joined the room                       │
-│      gaming            ││23:56 bob: hey, bob here                          │
-│      music             ││                                                  │
-└────────────────────────┘│                                                  │
-┌ people (2) ────────────┐│                                                  │
-│● alice · general       ││                                                  │
-│● bob (you) · general   │└──────────────────────────────────────────────────┘
-└────────────────────────┘┌──────────────────────────────────────────────────┐
-                          │#general ▏                                        │
-                          └──────────────────────────────────────────────────┘
-Tab channel · F2 voice · F3 mute · Ctrl+C quit 🔊 general  F1 code: n73w-kuqc…
+ TINCAN  lobby #general                                       DIRECT  18ms
+ CHANNELS                   ⟩ 01:13   bob  hey, bob here
+ ▸ ● general             2  │              can you hear me alright?
+     gaming              1  │ 01:14 alice  loud and clear
+     music                  │ 01:14   bob  oh that is the round trip time
+                            │              on the string?
+ ON THE LINE · 3            │ 01:15 alice  yes, and the pulse speed is the
+ ▁·· alice you     general  │              latency
+ ▃▅▇ bob           general  │ 01:15   cem  cem here, joining from gaming
+ ▁·· cem            gaming  │ 01:16   bob  nice
+                            │ 01:16 alice  it frays when audio drops out
+                            │              too
+ AUDIO · F6                 │ 01:17   bob  and the meters move with each
+ mic  MacBook Pro Microph…  │              voice
+ out  AirPods Pro           │ 01:17 alice  that is the whole idea
+                            │  #general the names hug the messages now▏
+tab channel · f2 talk · f3 mute · f6 audio · ctrl+c     f1 code n73w-kuqc…
 ```
+
+The palette is metal: a brown tin ground, brass for the string and the invite code,
+and the two greens copper actually turns — bright patina for what is live, deeper
+verdigris for a link that is holding.
+
+The line down the middle is the connection. It runs taut when everyone is reached
+directly, sags into a dashed line when someone is coming through a relay, and frays
+when audio starts dropping. While anyone is talking a pulse travels down it, at the
+speed of the round trip — so a slow link is something you see rather than read. The
+meters beside each name move with that person's voice.
+
+Before anyone has joined, the chat pane draws the same thing full size: your can, the
+string, their can, with the latency written on it and your invite code underneath. It
+stays up there while the conversation is short enough to leave the room for it, so a
+full-screen terminal is never a wall of nothing.
+
+Set `NO_COLOR` for a colourless interface, `TINCAN_ASCII=1` if your terminal has no
+box-drawing, `TINCAN_NO_MOTION=1` to hold the string still, and `TINCAN_THEME=light`
+for the same palette on a light background.
 
 ## Install
 

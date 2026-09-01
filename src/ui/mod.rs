@@ -1,9 +1,10 @@
 //! The terminal interface.
 
 pub mod state;
+pub mod theme;
 mod view;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,6 +18,7 @@ use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
 use crate::proto::{ChannelId, PeerId};
 use state::{App, SettingsSection, ViewMode};
+use theme::Theme;
 
 /// Where the interface holds on to the audio side. Never built if audio failed to
 /// start.
@@ -30,6 +32,8 @@ pub struct VoiceControl {
     pub hearing: Arc<AtomicBool>,
     /// Live microphone volume level (0.0 to 1.0) for VU meter visualization.
     pub mic_level: watch::Receiver<f32>,
+    /// How loud each of the others is, 0-4, for the meters in the roster.
+    pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
     /// Whether the microphone loopback test is active.
     pub mic_loopback: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
@@ -54,7 +58,20 @@ impl VoiceControl {
     pub fn set_loopback(&self, active: bool) {
         self.mic_loopback.store(active, Ordering::Relaxed);
     }
+
+    pub fn active_input(&self) -> Option<String> {
+        self.devices.active_input()
+    }
+
+    pub fn active_output(&self) -> Option<String> {
+        self.devices.active_output()
+    }
 }
+
+/// How often the interface redraws itself while something on screen is moving.
+/// Roughly 14 frames a second: enough for a pulse to read as travel, cheap enough to
+/// leave a laptop alone.
+const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(70);
 
 /// Decides when the welcome chime should sound.
 #[derive(Default)]
@@ -85,9 +102,18 @@ pub async fn run(
     voice: Option<VoiceControl>,
     ptt_mode: bool,
 ) -> Result<()> {
+    let theme = Theme::from_env();
     let mut app = App::new(session.me, session.invite_code.clone());
     app.voice_available = voice.is_some();
     app.ptt_mode = ptt_mode && app.voice_available;
+    app.motion = theme.motion;
+    if let Some(voice) = voice.as_ref() {
+        // The rail names the microphone and speaker in use from the first frame, so
+        // it has to ask the engine what it actually opened rather than wait for the
+        // user to visit the settings screen.
+        app.active_input_name = voice.active_input();
+        app.active_output_name = voice.active_output();
+    }
     let mut terminal = ratatui::init();
     let mut keys = spawn_key_reader();
     let mut chime = JoinChime::default();
@@ -95,10 +121,11 @@ pub async fn run(
 
     let mut speaking_rx = voice.as_ref().map(|v| v.speaking.clone());
     let mut mic_level_rx = voice.as_ref().map(|v| v.mic_level.clone());
+    let mut peer_levels_rx = voice.as_ref().map(|v| v.peer_levels.clone());
 
     let result = async {
         loop {
-            terminal.draw(|frame| view::draw(frame, &app))?;
+            terminal.draw(|frame| view::draw(frame, &app, &theme))?;
 
             tokio::select! {
                 event = session.events.recv() => match event {
@@ -124,21 +151,27 @@ pub async fn run(
                     app.speaking = changed;
                 }
 
-                // Live microphone level for Settings VU meter.
+                // Live microphone level: our own meter and the settings screen.
                 level = next_mic_level(mic_level_rx.as_mut()) => {
                     app.mic_level = level;
+                }
+
+                // How loud everyone else is, for the meters in the roster.
+                levels = next_peer_levels(peer_levels_rx.as_mut()) => {
+                    app.peer_levels = levels;
                 }
 
                 _ = quality_tick.tick() => {
                     if let Some(voice) = voice.as_ref() {
                         app.link = voice.mesh.link_status().await;
-                        app.audio_dropouts = voice.health.underruns();
+                        app.note_dropouts(voice.health.underruns());
                     }
                 }
 
-                _ = tokio::time::sleep(std::time::Duration::from_millis(60)), if app.is_transitioning() => {
-                    // Wakes up event loop to re-render after glow pulse finishes
-                }
+                // The only self-driven redraw: while the string is carrying a pulse
+                // or a mode change is settling. With nothing moving the interface
+                // sleeps until the network, the audio or a key wakes it.
+                _ = tokio::time::sleep(FRAME_INTERVAL), if app.needs_animation() => {}
 
                 key = keys.recv() => match key {
                     Some(key) => {
@@ -153,7 +186,7 @@ pub async fn run(
 
             if let Some(reason) = app.ended.clone() {
                 app.status = Some(reason);
-                terminal.draw(|frame| view::draw(frame, &app))?;
+                terminal.draw(|frame| view::draw(frame, &app, &theme))?;
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                 break;
             }
@@ -260,9 +293,10 @@ async fn handle_key(
                         if let Some(dev) = app.selected_input_device() {
                             let name = dev.name.clone();
                             if !dev.is_supported {
+                                // Any rate is resampled; a device only fails here
+                                // when it will not report a rate at all.
                                 app.settings_error = Some(format!(
-                                    "'{}' runs at {} Hz, but 48000 Hz is required",
-                                    name, dev.sample_rate
+                                    "{name} is not reporting a format, so it cannot be opened"
                                 ));
                             } else if let Some(v) = voice {
                                 match v.switch_input(Some(&name)) {
@@ -274,7 +308,7 @@ async fn handle_key(
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
-                                        app.settings_error = Some(format!("Microphone switch failed: {err:#}"));
+                                        app.settings_error = Some(format!("could not switch the microphone: {err:#}"));
                                     }
                                 }
                             }
@@ -284,9 +318,10 @@ async fn handle_key(
                         if let Some(dev) = app.selected_output_device() {
                             let name = dev.name.clone();
                             if !dev.is_supported {
+                                // Any rate is resampled; a device only fails here
+                                // when it will not report a rate at all.
                                 app.settings_error = Some(format!(
-                                    "'{}' runs at {} Hz, but 48000 Hz is required",
-                                    name, dev.sample_rate
+                                    "{name} is not reporting a format, so it cannot be opened"
                                 ));
                             } else if let Some(v) = voice {
                                 match v.switch_output(Some(&name)) {
@@ -298,7 +333,7 @@ async fn handle_key(
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
-                                        app.settings_error = Some(format!("Speaker switch failed: {err:#}"));
+                                        app.settings_error = Some(format!("could not switch the speaker: {err:#}"));
                                     }
                                 }
                             }
@@ -420,6 +455,22 @@ async fn next_speakers(
     }
 }
 
+/// Waits for the next change in anyone else's level.
+async fn next_peer_levels(
+    levels: Option<&mut watch::Receiver<HashMap<PeerId, u8>>>,
+) -> HashMap<PeerId, u8> {
+    match levels {
+        Some(levels) => {
+            if levels.changed().await.is_ok() {
+                levels.borrow_and_update().clone()
+            } else {
+                std::future::pending().await
+            }
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Waits for the next microphone volume level update.
 async fn next_mic_level(
     mic_level: Option<&mut watch::Receiver<f32>>,
@@ -472,6 +523,25 @@ mod tests {
     async fn never_returns_when_voice_is_off() {
         let result = tokio::time::timeout(Duration::from_millis(100), next_speakers(None));
         assert!(result.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn peer_levels_reach_the_roster() {
+        let (tx, mut rx) = watch::channel(HashMap::new());
+        tx.send(HashMap::from([(PeerId([2; 32]), 3u8)])).unwrap();
+
+        let levels = next_peer_levels(Some(&mut rx)).await;
+        assert_eq!(levels.get(&PeerId([2; 32])), Some(&3));
+    }
+
+    #[tokio::test]
+    async fn peer_levels_do_not_spin_when_nobody_moves() {
+        let (tx, mut rx) = watch::channel(HashMap::new());
+        tx.send(HashMap::from([(PeerId([2; 32]), 3u8)])).unwrap();
+        next_peer_levels(Some(&mut rx)).await;
+
+        let again = tokio::time::timeout(Duration::from_millis(150), next_peer_levels(Some(&mut rx)));
+        assert!(again.await.is_err(), "an unchanged meter must not redraw the screen");
     }
 
     #[tokio::test]

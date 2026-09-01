@@ -14,6 +14,9 @@ use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
 /// The most lines kept in the chat pane.
 const VISIBLE_HISTORY: usize = 500;
 
+/// How long a dropout keeps being reported after the audio recovers.
+const DROPOUT_MEMORY: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// A line in the chat pane: either someone's message or a system notice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
@@ -64,12 +67,22 @@ pub struct App {
     /// Who is currently speaking — comes from the audio engine, shown in the people
     /// list.
     pub speaking: HashSet<PeerId>,
+    /// How loud each of the others is, 0-4, for the meters beside their names.
+    pub peer_levels: HashMap<PeerId, u8>,
+    /// Whether the string may animate. Off under reduced motion.
+    pub motion: bool,
+    /// When the interface opened. The string's pulse runs on this clock, so it keeps
+    /// travelling at the same speed no matter how often the screen is redrawn.
+    pub started: std::time::Instant,
     /// Whether the audio hardware came up. If it did not, the interface must say so.
     pub voice_available: bool,
     /// The quality of the voice connections; refreshed periodically.
     pub link: LinkStatus,
-    /// Audio dropout counter — above zero means the user heard a crackle.
+    /// Audio dropout counter — above zero means the user heard a crackle. It only
+    /// ever climbs, so on its own it cannot say whether the trouble is now or was an
+    /// hour ago; `dropped_at` is what answers that.
     pub audio_dropouts: u64,
+    dropped_at: Option<std::time::Instant>,
     pub status: Option<String>,
     /// Filled with a reason when the session ends; the interface closes once it is set.
     pub ended: Option<String>,
@@ -107,9 +120,13 @@ impl App {
             ptt_active: false,
             input: String::new(),
             speaking: HashSet::new(),
+            peer_levels: HashMap::new(),
+            motion: true,
+            started: std::time::Instant::now(),
             voice_available: false,
             link: LinkStatus::default(),
             audio_dropouts: 0,
+            dropped_at: None,
             status: None,
             ended: None,
 
@@ -245,6 +262,43 @@ impl App {
                 self.settings_error = None;
             }
         }
+    }
+
+    /// Takes the engine's running dropout count and notes when it last moved.
+    pub fn note_dropouts(&mut self, total: u64) {
+        if total > self.audio_dropouts {
+            self.dropped_at = Some(std::time::Instant::now());
+        }
+        self.audio_dropouts = total;
+    }
+
+    /// Whether audio has broken up recently enough to still be worth reporting. A
+    /// string that frays once and stays frayed for the rest of the call reports the
+    /// past, not the present.
+    pub fn recently_dropped(&self) -> bool {
+        self.dropped_at
+            .is_some_and(|at| at.elapsed() < DROPOUT_MEMORY)
+    }
+
+    /// The meter step, 0-4, to draw beside someone's name.
+    ///
+    /// Our own comes from the microphone rather than the network — we never hear
+    /// ourselves come back — and reads zero whenever the microphone is shut, because
+    /// a meter that moves while you are muted is a lie.
+    pub fn level_of(&self, peer: PeerId) -> u8 {
+        if peer == self.me {
+            if !self.mic_open() {
+                return 0;
+            }
+            return crate::audio::bar(self.mic_level);
+        }
+        self.peer_levels.get(&peer).copied().unwrap_or(0)
+    }
+
+    /// Whether anything on screen is still moving. The event loop asks before waking
+    /// itself, so an idle room costs nothing.
+    pub fn needs_animation(&self) -> bool {
+        self.is_transitioning() || (self.motion && !self.speaking.is_empty())
     }
 
     /// Returns true if a mode switch happened recently (< 180 ms).
@@ -552,6 +606,57 @@ mod tests {
             app.apply(Event::Notice(format!("bildirim {i}")));
         }
         assert_eq!(app.lines.len(), VISIBLE_HISTORY);
+    }
+
+    #[test]
+    fn a_dropout_is_reported_now_and_not_forever() {
+        let mut app = welcomed();
+        assert!(!app.recently_dropped());
+
+        app.note_dropouts(3);
+        assert!(app.recently_dropped(), "a fresh dropout must show");
+        assert_eq!(app.audio_dropouts, 3);
+
+        app.note_dropouts(3);
+        assert!(
+            app.recently_dropped(),
+            "an unchanged total is the same dropout, still inside its window"
+        );
+
+        app.dropped_at = Some(std::time::Instant::now() - DROPOUT_MEMORY * 2);
+        assert!(!app.recently_dropped(), "old trouble must stop being reported");
+    }
+
+    #[test]
+    fn our_own_meter_reads_the_microphone_and_falls_silent_when_muted() {
+        let mut app = welcomed();
+        app.mic_level = 1.0;
+        assert_eq!(app.level_of(app.me), 4);
+
+        app.muted = true;
+        assert_eq!(app.level_of(app.me), 0, "a muted meter must not move");
+    }
+
+    #[test]
+    fn everyone_elses_meter_comes_from_the_audio_engine() {
+        let mut app = welcomed();
+        let bob = PeerId([2; 32]);
+        assert_eq!(app.level_of(bob), 0, "someone we have not heard is quiet");
+
+        app.peer_levels.insert(bob, 3);
+        assert_eq!(app.level_of(bob), 3);
+    }
+
+    #[test]
+    fn a_still_room_asks_for_no_redraws() {
+        let mut app = welcomed();
+        assert!(!app.needs_animation(), "nothing is moving, so nothing should wake the loop");
+
+        app.speaking.insert(PeerId([2; 32]));
+        assert!(app.needs_animation(), "a travelling pulse needs frames");
+
+        app.motion = false;
+        assert!(!app.needs_animation(), "reduced motion must stop the frames, not just the pulse");
     }
 
     #[test]
