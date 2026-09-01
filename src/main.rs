@@ -8,6 +8,7 @@ use iroh::Endpoint;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tincan::audio;
 use tincan::clipboard;
+use tincan::config::Config;
 use tincan::invite;
 use tincan::net::control::{Client, Coordinator};
 use tincan::net::voice::VoiceMesh;
@@ -167,7 +168,7 @@ async fn host(
     // Wait for the user rather than a timer. The interface takes over the whole
     // screen, and a 63-character code is not something anyone can copy against a
     // countdown. F1 brings it back once the interface is up.
-    print!("  Press Enter to open the interface (F1 shows the code again)...");
+    print!("  Press Enter to open the interface (F1 shows the code again, F6 for Settings)...");
     std::io::stdout().flush().ok();
     let mut answer = String::new();
     BufReader::new(tokio::io::stdin()).read_line(&mut answer).await.ok();
@@ -215,9 +216,10 @@ fn setup_voice(
     if args.no_voice {
         return (None, None);
     }
+    let config = Config::load();
     let choice = audio::device::DeviceChoice {
-        input: args.input.clone(),
-        output: args.output.clone(),
+        input: args.input.clone().or(config.input_device),
+        output: args.output.clone().or(config.output_device),
     };
     match audio::start(me, &choice) {
         Ok(io) => {
@@ -227,9 +229,11 @@ fn setup_voice(
                 speaking: io.speaking,
                 mic_open: io.mic_open,
                 hearing: io.hearing,
+                mic_level: io.mic_level,
+                mic_loopback: io.mic_loopback,
                 health: io.health,
                 blip_tx: io.blip_tx,
-                _devices: io.devices,
+                devices: io.devices,
             };
             (Some(mesh), Some(control))
         }

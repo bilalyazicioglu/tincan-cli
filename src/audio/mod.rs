@@ -5,6 +5,7 @@ pub mod codec;
 pub mod device;
 pub mod jitter;
 pub mod mixer;
+pub mod resample;
 pub mod vad;
 
 use std::collections::{HashMap, HashSet};
@@ -58,6 +59,10 @@ pub struct VoiceIo {
     pub mic_open: Arc<AtomicBool>,
     /// Whether we can hear the others (`true` unless deafened).
     pub hearing: Arc<AtomicBool>,
+    /// Live microphone volume level (0.0 to 1.0) for VU meter visualization.
+    pub mic_level: watch::Receiver<f32>,
+    /// Whether the microphone loopback test is active (hearing own voice).
+    pub mic_loopback: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
     pub blip_tx: mpsc::Sender<()>,
     /// The audio hardware stays open for as long as this is kept alive.
@@ -72,12 +77,17 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<Incoming>(256);
     let (blip_tx, mut blip_rx) = mpsc::channel::<()>(16);
     let (speaking_tx, speaking_rx) = watch::channel(HashSet::new());
+    let (mic_level_tx, mic_level_rx) = watch::channel(0.0f32);
+    let (loopback_tx, mut loopback_rx) = mpsc::channel::<Vec<f32>>(16);
+
     let mic_open = Arc::new(AtomicBool::new(true));
     let hearing = Arc::new(AtomicBool::new(true));
+    let mic_loopback = Arc::new(AtomicBool::new(false));
 
     // ── Capture: microphone → VAD → Opus → network ──────────────────────────
     let capture_mic = mic_open.clone();
     let capture_speaking = speaking_tx.clone();
+    let capture_loopback = mic_loopback.clone();
     tokio::spawn(async move {
         let mut encoder = match codec::Encoder::new() {
             Ok(encoder) => encoder,
@@ -99,6 +109,19 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
             while capture.slots() >= FRAME {
                 for slot in pcm.iter_mut() {
                     *slot = capture.pop().unwrap_or(0.0);
+                }
+
+                // Compute real-time RMS audio level with logarithmic dB scaling for VU meter.
+                let sum_sq: f32 = pcm.iter().map(|&s| s * s).sum();
+                let rms = (sum_sq / pcm.len() as f32).sqrt();
+                // Map dB range [-50 dB (noise floor) .. -6 dB (peak)] to [0.0 .. 1.0]
+                let db = 20.0 * (rms + 1e-5).log10();
+                let level = ((db + 50.0) / 44.0).clamp(0.0, 1.0);
+                let _ = mic_level_tx.send(level);
+
+                // If loopback test is active, pipe local mic audio to speaker side.
+                if capture_loopback.load(Ordering::Relaxed) {
+                    let _ = loopback_tx.try_send(pcm.clone());
                 }
 
                 // Keep feeding the VAD even while the microphone is closed, so that
@@ -140,11 +163,16 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         let mut decoded = vec![0f32; FRAME];
         let mut mixed = vec![0f32; FRAME];
         let mut blip_samples: Vec<f32> = Vec::new();
+        let mut loopback_samples: Vec<f32> = Vec::new();
 
         loop {
             tokio::select! {
                 Some(_) = blip_rx.recv() => {
                     blip_samples.extend(blip::generate_blip());
+                }
+
+                Some(pcm_loop) = loopback_rx.recv() => {
+                    loopback_samples.extend(pcm_loop);
                 }
 
                 Some(packet) = incoming_rx.recv() => {
@@ -165,6 +193,9 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                 _ = ticker.tick() => {
                     while blip_rx.try_recv().is_ok() {
                         blip_samples.extend(blip::generate_blip());
+                    }
+                    while let Ok(pcm_loop) = loopback_rx.try_recv() {
+                        loopback_samples.extend(pcm_loop);
                     }
 
                     // Feed the speaker buffer up to its target fill. Looking at the
@@ -198,9 +229,18 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                         let refs: Vec<&[f32]> = sources.iter().map(|s| s.as_slice()).collect();
                         mixer.mix(&refs, &mut mixed);
 
+                        // Mix in UI blips
                         if !blip_samples.is_empty() {
                             let take = std::cmp::min(blip_samples.len(), mixed.len());
                             for (i, sample) in blip_samples.drain(..take).enumerate() {
+                                mixed[i] += sample;
+                            }
+                        }
+
+                        // Mix in local mic loopback test
+                        if !loopback_samples.is_empty() {
+                            let take = std::cmp::min(loopback_samples.len(), mixed.len());
+                            for (i, sample) in loopback_samples.drain(..take).enumerate() {
                                 mixed[i] += sample;
                             }
                         }
@@ -242,6 +282,8 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         speaking: speaking_rx,
         mic_open,
         hearing,
+        mic_level: mic_level_rx,
+        mic_loopback,
         health,
         blip_tx,
         devices,

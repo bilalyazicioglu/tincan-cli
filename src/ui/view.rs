@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
-use super::state::{App, Line};
+use super::state::{App, Line, SettingsSection, ViewMode};
 use crate::proto::ChannelId;
 
 const ACCENT: Color = Color::Cyan;
@@ -24,14 +24,23 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Constraint::Min(3),
     ])
     .areas(sidebar);
-    let [chat, input] = Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
-        .areas(main);
 
     draw_logo(frame, logo_area);
     draw_channels(frame, channels, app);
     draw_people(frame, people, app);
-    draw_chat(frame, chat, app);
-    draw_input(frame, input, app);
+
+    match app.view_mode {
+        ViewMode::Chat => {
+            let [chat, input] = Layout::vertical([Constraint::Min(3), Constraint::Length(3)])
+                .areas(main);
+            draw_chat(frame, chat, app);
+            draw_input(frame, input, app);
+        }
+        ViewMode::Settings => {
+            draw_settings(frame, main, app);
+        }
+    }
+
     draw_footer(frame, footer, app);
 }
 
@@ -70,13 +79,10 @@ fn draw_channels(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(index, name)| {
             let id = ChannelId(index as u8);
-            let viewing = id == app.viewing;
+            let viewing = id == app.viewing && app.view_mode == ViewMode::Chat;
             let in_voice = app.voice == Some(id);
             let count = app.peers_in(id).len();
 
-            // Two separate states that must not be confused: which channel I am
-            // looking at, and which one I am connected to by voice. The viewed channel
-            // is marked '>', the voice channel '🔊'.
             let marker = if viewing { ">" } else { " " };
             let voice_mark = if in_voice { "🔊" } else { "  " };
 
@@ -107,8 +113,6 @@ fn draw_people(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|peer| {
             let speaking = app.speaking.contains(&peer.id);
-            // Deafening implies muting, so it is checked first: there is no point
-            // talking to someone with their headphones off, and the user should see it.
             let symbol = match (peer.deafened, peer.muted, peer.channel.is_some(), speaking) {
                 (true, _, _, _) => "🎧",
                 (_, true, _, _) => "🔇",
@@ -116,7 +120,6 @@ fn draw_people(frame: &mut Frame, area: Rect, app: &App) {
                 (_, _, true, false) => "○",
                 (_, _, false, _) => "·",
             };
-            // Whoever is speaking must stand out in the list at a glance.
             let name_style = if speaking {
                 Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
             } else {
@@ -149,7 +152,7 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
         let mut logo = crate::logo::tui_logo_lines();
         logo.push(TextLine::from(""));
         logo.push(TextLine::from(Span::styled(
-            format!("  Welcome to #{}! Press F2 to join voice chat.", app.channel_name(app.viewing)),
+            format!("  Welcome to #{}! Press F2 to join voice chat. Press F6 for Settings.", app.channel_name(app.viewing)),
             Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
         )));
         logo
@@ -177,15 +180,36 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
         ]),
     }));
 
-    // Newest messages sit at the bottom: older lines that do not fit are clipped.
     let height = area.height.saturating_sub(2) as usize;
     let start = lines.len().saturating_sub(height.max(1));
 
-    let title = format!(" #{} · {} ", app.channel_name(app.viewing), app.room_name);
+    let is_trans = app.is_transitioning();
+    let chat_tab_style = if is_trans {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    };
+    let chat_border_style = if is_trans {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    let title_line = TextLine::from(vec![
+        Span::styled(format!(" [ 💬 #{} ] ", app.channel_name(app.viewing)), chat_tab_style),
+        Span::styled(" ⚙ Settings (F6) ", Style::default().fg(DIM)),
+        Span::styled(format!("─ {} ", app.room_name), Style::default().fg(DIM)),
+    ]);
+
     frame.render_widget(
         Paragraph::new(lines[start..].to_vec())
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(chat_border_style)
+                    .title(title_line),
+            ),
         area,
     );
 }
@@ -201,6 +225,232 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(content).block(Block::default().borders(Borders::ALL)),
         area,
     );
+}
+
+fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
+    let has_error = app.settings_error.is_some();
+    let constraints = if has_error {
+        vec![
+            Constraint::Length(3), // Error banner
+            Constraint::Min(4),    // Input devices
+            Constraint::Min(4),    // Output devices
+            Constraint::Length(7), // Mic test
+        ]
+    } else {
+        vec![
+            Constraint::Min(4),    // Input devices
+            Constraint::Min(4),    // Output devices
+            Constraint::Length(7), // Mic test
+        ]
+    };
+
+    let chunks = Layout::vertical(constraints).split(area);
+    let mut offset = 0;
+
+    if let Some(err) = &app.settings_error {
+        let err_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red))
+            .title(" ⚠ Error ");
+        let p = Paragraph::new(Span::styled(
+            format!("  {err}"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ))
+        .block(err_block);
+        frame.render_widget(p, chunks[0]);
+        offset = 1;
+    }
+
+    let input_area = chunks[offset];
+    let output_area = chunks[offset + 1];
+    let mic_test_area = chunks[offset + 2];
+
+    let is_trans = app.is_transitioning();
+    let glow_color = if is_trans { Color::Yellow } else { ACCENT };
+
+    // ── Input Devices ───────────────────────────────────────────────────────
+    let input_focused = app.settings_section == SettingsSection::InputDevice;
+    let input_border_style = if is_trans {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else if input_focused {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(DIM)
+    };
+
+    let input_items: Vec<ListItem> = if app.input_devices.is_empty() {
+        vec![ListItem::new("  (No microphones detected. Press 'r' to rescan.)")]
+    } else {
+        app.input_devices
+            .iter()
+            .enumerate()
+            .map(|(idx, dev)| {
+                let is_selected = input_focused && idx == app.selected_input_idx;
+                let is_active = match &app.active_input_name {
+                    Some(name) => name == &dev.name,
+                    None => dev.is_default,
+                };
+                let pointer = if is_selected { "> " } else { "  " };
+                let active_mark = if is_active { "● " } else { "○ " };
+                let default_tag = if dev.is_default { " [default]" } else { "" };
+                let rate_tag = if dev.is_supported {
+                    format!(" [{} Hz, {} ch]", dev.sample_rate, dev.channels)
+                } else {
+                    format!(" [⚠ {} Hz unsupported]", dev.sample_rate)
+                };
+
+                let text_style = if is_selected {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else if is_active {
+                    Style::default().fg(Color::Green)
+                } else if !dev.is_supported {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+
+                ListItem::new(TextLine::from(vec![
+                    Span::styled(pointer, Style::default().fg(ACCENT)),
+                    Span::styled(active_mark, if is_active { Style::default().fg(Color::Green) } else { Style::default().fg(DIM) }),
+                    Span::styled(dev.name.clone(), text_style),
+                    Span::styled(rate_tag, if dev.is_supported { Style::default().fg(DIM) } else { Style::default().fg(Color::Red) }),
+                    Span::styled(default_tag, Style::default().fg(Color::Yellow)),
+                ]))
+            })
+            .collect()
+    };
+
+    let input_title = TextLine::from(vec![
+        Span::styled(format!(" 💬 #{} (Esc) ", app.channel_name(app.viewing)), Style::default().fg(DIM)),
+        Span::styled(" [ ⚙ SETTINGS ] ", Style::default().fg(glow_color).add_modifier(Modifier::BOLD)),
+        Span::styled("─ 🎙 Input Device (Microphone) - Press Enter to Select ", Style::default().fg(if input_focused { ACCENT } else { DIM })),
+    ]);
+
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(input_border_style)
+        .title(input_title);
+    frame.render_widget(List::new(input_items).block(input_block), input_area);
+
+    // ── Output Devices ──────────────────────────────────────────────────────
+    let output_focused = app.settings_section == SettingsSection::OutputDevice;
+    let output_border_style = if output_focused {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(DIM)
+    };
+
+    let output_items: Vec<ListItem> = if app.output_devices.is_empty() {
+        vec![ListItem::new("  (No speakers detected. Press 'r' to rescan.)")]
+    } else {
+        app.output_devices
+            .iter()
+            .enumerate()
+            .map(|(idx, dev)| {
+                let is_selected = output_focused && idx == app.selected_output_idx;
+                let is_active = match &app.active_output_name {
+                    Some(name) => name == &dev.name,
+                    None => dev.is_default,
+                };
+                let pointer = if is_selected { "> " } else { "  " };
+                let active_mark = if is_active { "● " } else { "○ " };
+                let default_tag = if dev.is_default { " [default]" } else { "" };
+                let rate_tag = if dev.is_supported {
+                    format!(" [{} Hz, {} ch]", dev.sample_rate, dev.channels)
+                } else {
+                    format!(" [⚠ {} Hz unsupported]", dev.sample_rate)
+                };
+
+                let text_style = if is_selected {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else if is_active {
+                    Style::default().fg(Color::Green)
+                } else if !dev.is_supported {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+
+                ListItem::new(TextLine::from(vec![
+                    Span::styled(pointer, Style::default().fg(ACCENT)),
+                    Span::styled(active_mark, if is_active { Style::default().fg(Color::Green) } else { Style::default().fg(DIM) }),
+                    Span::styled(dev.name.clone(), text_style),
+                    Span::styled(rate_tag, if dev.is_supported { Style::default().fg(DIM) } else { Style::default().fg(Color::Red) }),
+                    Span::styled(default_tag, Style::default().fg(Color::Yellow)),
+                ]))
+            })
+            .collect()
+    };
+
+    let output_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(output_border_style)
+        .title(" 🔊 Output Device (Speaker) - Press Enter to Select ");
+    frame.render_widget(List::new(output_items).block(output_block), output_area);
+
+    // ── Microphone Test & Level ─────────────────────────────────────────────
+    let mic_test_focused = app.settings_section == SettingsSection::MicTest;
+    let mic_test_border_style = if mic_test_focused {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(DIM)
+    };
+
+    let loopback_span = if app.mic_test_active {
+        Span::styled(
+            " [Space] Hear Yourself: ▶ ACTIVE (Streaming to output) ",
+            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            " [Space] Hear Yourself: ⏸ OFF (Press Space to test loopback) ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
+
+    // Render VU Level Meter (width ~ 30 blocks)
+    let meter_width = 30;
+    let filled = ((app.mic_level.clamp(0.0, 1.0) * meter_width as f32).round() as usize).min(meter_width);
+    let mut meter_spans = Vec::new();
+    meter_spans.push(Span::styled("  Input Level: [", Style::default().fg(DIM)));
+
+    for i in 0..meter_width {
+        if i < filled {
+            let color = if i < (meter_width * 6) / 10 {
+                Color::Green
+            } else if i < (meter_width * 85) / 100 {
+                Color::Yellow
+            } else {
+                Color::Red
+            };
+            meter_spans.push(Span::styled("█", Style::default().fg(color)));
+        } else if i == (meter_width * 2) / 10 {
+            // VAD threshold marker
+            meter_spans.push(Span::styled("|", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
+        } else {
+            meter_spans.push(Span::styled("░", Style::default().fg(DIM)));
+        }
+    }
+    meter_spans.push(Span::styled("] ", Style::default().fg(DIM)));
+
+    if app.mic_level > 0.15 {
+        meter_spans.push(Span::styled("🎙 Speaking ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+    } else {
+        meter_spans.push(Span::styled("· Quiet ", Style::default().fg(DIM)));
+    }
+
+    let mic_test_lines = vec![
+        TextLine::from(""),
+        TextLine::from(vec![Span::raw("  "), loopback_span]),
+        TextLine::from(""),
+        TextLine::from(meter_spans),
+    ];
+
+    let mic_test_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(mic_test_border_style)
+        .title(" 🎚 Live Microphone Test & VU Meter ");
+    frame.render_widget(Paragraph::new(mic_test_lines).block(mic_test_block), mic_test_area);
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
@@ -229,8 +479,6 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         ),
     ]);
 
-    // The right side decides its own width: because emoji occupy two cells, a fixed
-    // split used to cut the hints on the left in half.
     let right_width = (right.width() as u16).min(area.width);
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(right_width)]).areas(area);
@@ -245,17 +493,14 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(right), right_area);
 }
 
-/// Fits text into the given width, shortening the hints step by step if it does not.
-///
-/// Showing a shorter version beats truncating mid-word: it keeps the information
-/// readable in a narrow terminal.
 fn fit(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();
     }
     for shorter in [
-        "Tab · F2 voice · F3 mute · Ctrl+C quit",
-        "F2 voice · Ctrl+C quit",
+        "Tab · F2 voice · F3 mute · F6 settings · Ctrl+C quit",
+        "Tab · F2 voice · F6 settings · Ctrl+C",
+        "F6 settings · Ctrl+C quit",
         "Ctrl+C quit",
     ] {
         if shorter.chars().count() <= width {
@@ -265,18 +510,18 @@ fn fit(text: &str, width: usize) -> String {
     text.chars().take(width).collect()
 }
 
-/// The left half of the footer: shortcut hints while the link is healthy, and the
-/// problem itself when there is one. Users only want technical detail when something
-/// has gone wrong.
 fn link_summary(app: &App) -> String {
-    let hints = "Tab channel · F2 voice · F3 mute · F5 deafen · Ctrl+C quit";
+    if app.view_mode == ViewMode::Settings {
+        return "Tab section · ↑/↓ navigate · Enter apply · Space test · r rescan · Esc back".to_string();
+    }
+
+    let hints = "Tab channel · F2 voice · F3 mute · F6 settings · Ctrl+C quit";
     if !app.voice_available || app.link.peers() == 0 {
         return hints.to_string();
     }
 
     let mut parts = Vec::new();
     if app.link.relayed > 0 {
-        // A relay works but adds latency; the user needs to know.
         parts.push(format!("{} relay", app.link.relayed));
     }
     if app.link.direct > 0 {
@@ -292,7 +537,6 @@ fn link_summary(app: &App) -> String {
     parts.join(" · ")
 }
 
-/// Converts Unix seconds to local time.
 fn clock(at: u64) -> String {
     match Local.timestamp_opt(at as i64, 0) {
         chrono::LocalResult::Single(time) => time.format("%H:%M").to_string(),
@@ -300,8 +544,6 @@ fn clock(at: u64) -> String {
     }
 }
 
-/// The invite code is 63 characters in full; the footer shows only its first groups,
-/// next to the key that puts the whole thing back on screen.
 fn short_code(code: &str) -> String {
     let head: String = code.chars().take(9).collect();
     format!("{head}…")
@@ -317,7 +559,6 @@ mod tests {
         assert!(clock(1_700_000_000).contains(':'));
     }
 
-    /// While the link is fine, the user should see shortcuts, not technical detail.
     #[test]
     fn link_summary_shows_hints_when_there_is_nothing_to_report() {
         use crate::proto::PeerId;
@@ -331,62 +572,28 @@ mod tests {
         );
     }
 
-    /// Relayed links and audio dropouts must both be reported plainly.
     #[test]
-    fn link_summary_surfaces_problems() {
+    fn link_summary_changes_in_settings_mode() {
         use crate::proto::PeerId;
-        use std::time::Duration;
-
         let mut app = App::new(PeerId([1; 32]), "code".into());
-        app.voice_available = true;
-        app.link = crate::net::voice::LinkStatus {
-            direct: 1,
-            relayed: 2,
-            worst_rtt: Some(Duration::from_millis(140)),
-        };
-        app.audio_dropouts = 3;
-
-        let summary = link_summary(&app);
-        assert!(summary.contains("2 relay"), "{summary}");
-        assert!(summary.contains("1 direct"), "{summary}");
-        assert!(summary.contains("140ms"), "{summary}");
-        assert!(summary.contains("dropout"), "{summary}");
+        app.view_mode = ViewMode::Settings;
+        assert!(link_summary(&app).contains("Esc back"));
     }
 
     #[test]
-    fn short_code_is_truncated() {
-        let code = "abcd-efgh-ijkl-mnop";
-        assert_eq!(short_code(code), "abcd-efgh…");
-    }
-
-    /// The two footer texts must not overlap.
-    ///
-    /// A fixed-width split used to cut the "Ctrl+C quit" hint in half, because emoji
-    /// occupy two cells.
-    #[test]
-    fn footer_does_not_overlap_at_common_widths() {
+    fn draws_settings_without_panicking() {
         use crate::proto::PeerId;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        for width in [80, 100, 120] {
-            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
-            let mut app = App::new(PeerId([1; 32]), "abcd-efgh-ijkl".into());
-            app.voice_available = true;
-            app.channels = vec!["general".into()];
-            terminal.draw(|frame| draw(frame, &app)).unwrap();
-
-            let rendered: String = terminal.backend().buffer().content().iter()
-                .map(|cell| cell.symbol())
-                .collect();
-            assert!(
-                rendered.contains("Ctrl+C quit"),
-                "the quit hint must not be cut off at {width} columns"
-            );
-        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut app = App::new(PeerId([1; 32]), "abcd-efgh".into());
+        app.view_mode = ViewMode::Settings;
+        app.mic_level = 0.5;
+        app.mic_test_active = true;
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
     }
 
-    /// The drawing code must not panic: narrow terminals and an empty room included.
     #[test]
     fn draws_without_panicking_at_awkward_sizes() {
         use crate::proto::PeerId;

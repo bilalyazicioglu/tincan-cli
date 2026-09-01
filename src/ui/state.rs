@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::audio::device::AudioDeviceInfo;
 use crate::net::Event;
 use crate::net::voice::LinkStatus;
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
@@ -18,6 +19,23 @@ const VISIBLE_HISTORY: usize = 500;
 pub enum Line {
     Chat(ChatLine),
     Notice { text: String, at: u64 },
+}
+
+/// The active top-level screen mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Chat,
+    Settings,
+}
+
+/// Focusable section within the Settings screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsSection {
+    #[default]
+    InputDevice,
+    OutputDevice,
+    MicTest,
 }
 
 pub struct App {
@@ -55,6 +73,20 @@ pub struct App {
     pub status: Option<String>,
     /// Filled with a reason when the session ends; the interface closes once it is set.
     pub ended: Option<String>,
+
+    // ── Settings & Audio Device State ───────────────────────────────────────
+    pub view_mode: ViewMode,
+    pub settings_section: SettingsSection,
+    pub input_devices: Vec<AudioDeviceInfo>,
+    pub output_devices: Vec<AudioDeviceInfo>,
+    pub selected_input_idx: usize,
+    pub selected_output_idx: usize,
+    pub active_input_name: Option<String>,
+    pub active_output_name: Option<String>,
+    pub mic_level: f32,
+    pub mic_test_active: bool,
+    pub settings_error: Option<String>,
+    pub mode_transition_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -80,6 +112,19 @@ impl App {
             audio_dropouts: 0,
             status: None,
             ended: None,
+
+            view_mode: ViewMode::Chat,
+            settings_section: SettingsSection::InputDevice,
+            input_devices: Vec::new(),
+            output_devices: Vec::new(),
+            selected_input_idx: 0,
+            selected_output_idx: 0,
+            active_input_name: None,
+            active_output_name: None,
+            mic_level: 0.0,
+            mic_test_active: false,
+            settings_error: None,
+            mode_transition_at: None,
         }
     }
 
@@ -111,14 +156,6 @@ impl App {
     }
 
     /// Puts the full invite code back on screen.
-    ///
-    /// The footer only has room for the first group, so without this the code is
-    /// unreachable once the interface has taken over — and the code is the one
-    /// thing a host has to hand to somebody else.
-    ///
-    /// Whether it also reached the clipboard is passed in rather than attempted
-    /// here: this module stays a pure state machine, and spawning a process is
-    /// the terminal layer's business.
     pub fn show_invite_code(&mut self, copied: bool) {
         let text = if copied {
             format!("invite code (copied to clipboard): {}", self.invite_code)
@@ -151,8 +188,7 @@ impl App {
         }
     }
 
-    /// The lines belonging to the channel on screen. Notices show in every channel —
-    /// "X joined the room" is not tied to one.
+    /// The lines belonging to the channel on screen. Notices show in every channel.
     pub fn visible_lines(&self) -> Vec<&Line> {
         self.lines
             .iter()
@@ -194,12 +230,120 @@ impl App {
         });
     }
 
-    /// Whether the microphone is open right now — the resultant of the mute and
-    /// push-to-talk decisions.
-    ///
-    /// The audio engine reads a single flag. Rather than combining two states down
-    /// there, the decision is made here, so the logic lives in one place and can be
-    /// tested.
+    /// Toggles between Chat and Settings views.
+    pub fn toggle_settings(&mut self) {
+        self.mode_transition_at = Some(std::time::Instant::now());
+        match self.view_mode {
+            ViewMode::Chat => {
+                self.view_mode = ViewMode::Settings;
+                self.settings_error = None;
+                self.refresh_devices();
+            }
+            ViewMode::Settings => {
+                self.view_mode = ViewMode::Chat;
+                self.mic_test_active = false;
+                self.settings_error = None;
+            }
+        }
+    }
+
+    /// Returns true if a mode switch happened recently (< 180 ms).
+    pub fn is_transitioning(&self) -> bool {
+        self.mode_transition_at
+            .map(|at| at.elapsed().as_millis() < 180)
+            .unwrap_or(false)
+    }
+
+    /// Refreshes the cached list of audio devices from the host system.
+    pub fn refresh_devices(&mut self) {
+        if let Ok(inputs) = crate::audio::device::list_input_devices() {
+            self.input_devices = inputs;
+            if !self.input_devices.is_empty() {
+                if let Some(active) = &self.active_input_name {
+                    if let Some(idx) = self.input_devices.iter().position(|d| d.name == *active) {
+                        self.selected_input_idx = idx;
+                    }
+                } else if let Some(default_idx) = self.input_devices.iter().position(|d| d.is_default) {
+                    self.selected_input_idx = default_idx;
+                }
+                if self.selected_input_idx >= self.input_devices.len() {
+                    self.selected_input_idx = 0;
+                }
+            }
+        }
+
+        if let Ok(outputs) = crate::audio::device::list_output_devices() {
+            self.output_devices = outputs;
+            if !self.output_devices.is_empty() {
+                if let Some(active) = &self.active_output_name {
+                    if let Some(idx) = self.output_devices.iter().position(|d| d.name == *active) {
+                        self.selected_output_idx = idx;
+                    }
+                } else if let Some(default_idx) = self.output_devices.iter().position(|d| d.is_default) {
+                    self.selected_output_idx = default_idx;
+                }
+                if self.selected_output_idx >= self.output_devices.len() {
+                    self.selected_output_idx = 0;
+                }
+            }
+        }
+    }
+
+    /// Cycles through sections in the Settings view.
+    pub fn settings_next_section(&mut self, forward: bool) {
+        self.settings_section = match (self.settings_section, forward) {
+            (SettingsSection::InputDevice, true) => SettingsSection::OutputDevice,
+            (SettingsSection::OutputDevice, true) => SettingsSection::MicTest,
+            (SettingsSection::MicTest, true) => SettingsSection::InputDevice,
+
+            (SettingsSection::InputDevice, false) => SettingsSection::MicTest,
+            (SettingsSection::OutputDevice, false) => SettingsSection::InputDevice,
+            (SettingsSection::MicTest, false) => SettingsSection::OutputDevice,
+        };
+        self.settings_error = None;
+    }
+
+    /// Navigates items within the active settings section.
+    pub fn settings_navigate_item(&mut self, forward: bool) {
+        match self.settings_section {
+            SettingsSection::InputDevice => {
+                if !self.input_devices.is_empty() {
+                    let len = self.input_devices.len();
+                    self.selected_input_idx = if forward {
+                        (self.selected_input_idx + 1) % len
+                    } else {
+                        (self.selected_input_idx + len - 1) % len
+                    };
+                }
+            }
+            SettingsSection::OutputDevice => {
+                if !self.output_devices.is_empty() {
+                    let len = self.output_devices.len();
+                    self.selected_output_idx = if forward {
+                        (self.selected_output_idx + 1) % len
+                    } else {
+                        (self.selected_output_idx + len - 1) % len
+                    };
+                }
+            }
+            SettingsSection::MicTest => {
+                self.settings_next_section(forward);
+            }
+        }
+        self.settings_error = None;
+    }
+
+    /// Returns the currently highlighted input device.
+    pub fn selected_input_device(&self) -> Option<&AudioDeviceInfo> {
+        self.input_devices.get(self.selected_input_idx)
+    }
+
+    /// Returns the currently highlighted output device.
+    pub fn selected_output_device(&self) -> Option<&AudioDeviceInfo> {
+        self.output_devices.get(self.selected_output_idx)
+    }
+
+    /// Whether the microphone is open right now.
     pub fn mic_open(&self) -> bool {
         if self.muted {
             return false;
@@ -210,8 +354,7 @@ impl App {
         true
     }
 
-    /// Takes the typed message and clears the input field; `None` if there is
-    /// nothing to send.
+    /// Takes the typed message and clears the input field.
     pub fn take_input(&mut self) -> Option<String> {
         let text = self.input.trim().to_string();
         self.input.clear();
@@ -258,7 +401,64 @@ mod tests {
         assert_eq!(app.voice, None, "sese otomatik girilmemeli");
     }
 
-    /// A user must be able to read one channel's chat while talking in another.
+    #[test]
+    fn settings_toggle_and_navigation() {
+        let mut app = welcomed();
+        assert_eq!(app.view_mode, ViewMode::Chat);
+
+        app.toggle_settings();
+        assert_eq!(app.view_mode, ViewMode::Settings);
+        assert_eq!(app.settings_section, SettingsSection::InputDevice);
+
+        app.settings_next_section(true);
+        assert_eq!(app.settings_section, SettingsSection::OutputDevice);
+
+        app.settings_next_section(true);
+        assert_eq!(app.settings_section, SettingsSection::MicTest);
+
+        app.settings_next_section(true);
+        assert_eq!(app.settings_section, SettingsSection::InputDevice);
+
+        app.settings_next_section(false);
+        assert_eq!(app.settings_section, SettingsSection::MicTest);
+
+        app.toggle_settings();
+        assert_eq!(app.view_mode, ViewMode::Chat);
+        assert!(!app.mic_test_active);
+    }
+
+    #[test]
+    fn settings_item_navigation() {
+        let mut app = welcomed();
+        app.input_devices = vec![
+            AudioDeviceInfo {
+                name: "Mic 1".into(),
+                sample_rate: 48000,
+                channels: 1,
+                is_default: true,
+                is_supported: true,
+            },
+            AudioDeviceInfo {
+                name: "Mic 2".into(),
+                sample_rate: 48000,
+                channels: 2,
+                is_default: false,
+                is_supported: true,
+            },
+        ];
+        app.settings_section = SettingsSection::InputDevice;
+        assert_eq!(app.selected_input_idx, 0);
+
+        app.settings_navigate_item(true);
+        assert_eq!(app.selected_input_idx, 1);
+
+        app.settings_navigate_item(true);
+        assert_eq!(app.selected_input_idx, 0);
+
+        app.settings_navigate_item(false);
+        assert_eq!(app.selected_input_idx, 1);
+    }
+
     #[test]
     fn viewing_and_voice_channels_are_independent() {
         let mut app = welcomed();
@@ -366,13 +566,11 @@ mod tests {
         app.muted = true;
         assert!(!app.mic_open());
 
-        // Even with push-to-talk engaged, muting overrides everything.
         app.ptt_mode = true;
         app.ptt_active = true;
         assert!(!app.mic_open(), "mute must override push-to-talk");
     }
 
-    /// Push-to-talk mode must default to silence; the key is the only way to open it.
     #[test]
     fn push_to_talk_keeps_the_microphone_shut_until_pressed() {
         let mut app = welcomed();
@@ -409,13 +607,9 @@ mod tests {
     fn unknown_sender_falls_back_to_short_id() {
         let app = welcomed();
         assert_eq!(app.name_of(PeerId([2; 32])), "user2");
-        // For an identity we have never seen, we have no name.
         assert_eq!(app.name_of(PeerId([9; 32])), PeerId([9; 32]).short());
     }
 
-
-    /// The code must be recoverable after the interface has covered the screen,
-    /// and it must come back whole — a truncated one is useless to paste.
     #[test]
     fn invite_code_can_be_brought_back_in_full() {
         let mut app = App::new(PeerId([1; 32]), "n73w-kuqc-uog2-abcd".into());
@@ -436,8 +630,7 @@ mod tests {
             other => panic!("expected a notice, got {other:?}"),
         }
     }
-    /// When someone leaves, their old messages on screen must still show their name —
-    /// otherwise the chat history becomes unreadable as people come and go.
+
     #[test]
     fn names_survive_after_a_peer_leaves() {
         let mut app = welcomed();
@@ -449,7 +642,6 @@ mod tests {
         }));
         assert_eq!(app.name_of(PeerId([2; 32])), "user2");
 
-        // user2 left: no longer in the roster.
         app.apply(Event::Roster(vec![peer(1, None)]));
 
         assert_eq!(
