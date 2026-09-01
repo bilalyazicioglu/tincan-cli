@@ -136,6 +136,10 @@ pub async fn run(
                     }
                 }
 
+                _ = tokio::time::sleep(std::time::Duration::from_millis(60)), if app.is_transitioning() => {
+                    // Wakes up event loop to re-render after glow pulse finishes
+                }
+
                 key = keys.recv() => match key {
                     Some(key) => {
                         if handle_key(&mut app, key, &session.commands, voice.as_ref()).await? {
@@ -205,6 +209,7 @@ async fn handle_key(
     if toggle_settings_key {
         app.toggle_settings();
         if let Some(v) = voice {
+            v.play_blip();
             v.set_loopback(app.mic_test_active);
         }
         return Ok(false);
@@ -216,6 +221,7 @@ async fn handle_key(
             KeyCode::Esc => {
                 app.toggle_settings();
                 if let Some(v) = voice {
+                    v.play_blip();
                     v.set_loopback(false);
                 }
                 return Ok(false);

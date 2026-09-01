@@ -183,11 +183,33 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
     let height = area.height.saturating_sub(2) as usize;
     let start = lines.len().saturating_sub(height.max(1));
 
-    let title = format!(" #{} · {} (F6 Settings) ", app.channel_name(app.viewing), app.room_name);
+    let is_trans = app.is_transitioning();
+    let chat_tab_style = if is_trans {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    };
+    let chat_border_style = if is_trans {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
+    let title_line = TextLine::from(vec![
+        Span::styled(format!(" [ 💬 #{} ] ", app.channel_name(app.viewing)), chat_tab_style),
+        Span::styled(" ⚙ Settings (F6) ", Style::default().fg(DIM)),
+        Span::styled(format!("─ {} ", app.room_name), Style::default().fg(DIM)),
+    ]);
+
     frame.render_widget(
         Paragraph::new(lines[start..].to_vec())
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(chat_border_style)
+                    .title(title_line),
+            ),
         area,
     );
 }
@@ -243,9 +265,14 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
     let output_area = chunks[offset + 1];
     let mic_test_area = chunks[offset + 2];
 
+    let is_trans = app.is_transitioning();
+    let glow_color = if is_trans { Color::Yellow } else { ACCENT };
+
     // ── Input Devices ───────────────────────────────────────────────────────
     let input_focused = app.settings_section == SettingsSection::InputDevice;
-    let input_border_style = if input_focused {
+    let input_border_style = if is_trans {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else if input_focused {
         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(DIM)
@@ -293,10 +320,16 @@ fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
+    let input_title = TextLine::from(vec![
+        Span::styled(format!(" 💬 #{} (Esc) ", app.channel_name(app.viewing)), Style::default().fg(DIM)),
+        Span::styled(" [ ⚙ SETTINGS ] ", Style::default().fg(glow_color).add_modifier(Modifier::BOLD)),
+        Span::styled("─ 🎙 Input Device (Microphone) - Press Enter to Select ", Style::default().fg(if input_focused { ACCENT } else { DIM })),
+    ]);
+
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_style(input_border_style)
-        .title(" 🎙 Input Device (Microphone) - Press Enter to Select ");
+        .title(input_title);
     frame.render_widget(List::new(input_items).block(input_block), input_area);
 
     // ── Output Devices ──────────────────────────────────────────────────────

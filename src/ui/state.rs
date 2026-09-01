@@ -86,6 +86,7 @@ pub struct App {
     pub mic_level: f32,
     pub mic_test_active: bool,
     pub settings_error: Option<String>,
+    pub mode_transition_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -123,6 +124,7 @@ impl App {
             mic_level: 0.0,
             mic_test_active: false,
             settings_error: None,
+            mode_transition_at: None,
         }
     }
 
@@ -230,6 +232,7 @@ impl App {
 
     /// Toggles between Chat and Settings views.
     pub fn toggle_settings(&mut self) {
+        self.mode_transition_at = Some(std::time::Instant::now());
         match self.view_mode {
             ViewMode::Chat => {
                 self.view_mode = ViewMode::Settings;
@@ -242,6 +245,13 @@ impl App {
                 self.settings_error = None;
             }
         }
+    }
+
+    /// Returns true if a mode switch happened recently (< 180 ms).
+    pub fn is_transitioning(&self) -> bool {
+        self.mode_transition_at
+            .map(|at| at.elapsed().as_millis() < 180)
+            .unwrap_or(false)
     }
 
     /// Refreshes the cached list of audio devices from the host system.
