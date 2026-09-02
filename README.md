@@ -20,19 +20,67 @@
 </p>
 
 ```
-┌ channels ──────────────┐┌ #general · lobby ────────────────────────────────┐
-│>  🔊 general   2       ││23:56 — bob joined the room                       │
-│      gaming            ││23:56 bob: hey, bob here                          │
-│      music             ││                                                  │
-└────────────────────────┘│                                                  │
-┌ people (2) ────────────┐│                                                  │
-│● alice · general       ││                                                  │
-│● bob (you) · general   │└──────────────────────────────────────────────────┘
-└────────────────────────┘┌──────────────────────────────────────────────────┐
-                          │#general ▏                                        │
-                          └──────────────────────────────────────────────────┘
-Tab channel · F2 voice · F3 mute · Ctrl+C quit 🔊 general  F1 code: n73w-kuqc…
+ TINCAN  lobby #general                                       DIRECT  18ms
+ CHANNELS                   ⟩ 01:13   bob  hey, bob here
+ ▸ ● general             2  │              can you hear me alright?
+     gaming              1  │ 01:14 alice  loud and clear
+     music                  │ 01:14   bob  oh that is the round trip time
+                            │              on the string?
+ ON THE LINE · 3            │ 01:15 alice  yes, and the pulse speed is the
+ ▁·· alice you     general  │              latency
+ ▃▅▇ bob           general  │ 01:15   cem  cem here, joining from gaming
+ ▁·· cem            gaming  │ 01:16   bob  nice
+                            │ 01:16 alice  it frays when audio drops out
+                            │              too
+ AUDIO · F6                 │ 01:17   bob  and the meters move with each
+ mic  MacBook Pro Microph…  │              voice
+ out  AirPods Pro           │ 01:17 alice  that is the whole idea
+                            │  #general the names hug the messages now▏
+tab channel · f2 talk · f3 mute · f6 audio · ctrl+c     f1 code n73w-kuqc…
 ```
+
+The palette is metal: a brown tin ground, brass for the string and the invite code,
+and the two greens copper actually turns — bright patina for what is live, deeper
+verdigris for a link that is holding.
+
+The line down the middle is the connection. It runs taut when everyone is reached
+directly, sags into a dashed line when someone is coming through a relay, and frays
+when audio starts dropping. While anyone is talking a pulse travels down it, at the
+speed of the round trip — so a slow link is something you see rather than read. The
+meters beside each name move with that person's voice.
+
+Before anyone has joined, the chat pane draws the same thing full size: your can, the
+string, their can, with the latency written on it and your invite code underneath. It
+stays up there while the conversation is short enough to leave the room for it, so a
+full-screen terminal is never a wall of nothing.
+
+`F6` opens the audio screen: which microphone and speaker are in use, a way to hear
+yourself, and the level meter with your noise floor marked on it. Anything
+quieter than that mark never leaves your machine, which is how a fan or a noisy room
+stays out of the call. `←`/`→` move the floor a step at a time, and `a` listens to the
+room for a second and a half and sets it just above whatever it hears. It is remembered
+per microphone, because a laptop microphone and a headset do not share a noise floor.
+
+A channel with something said in it since you last looked turns brass in the rail, so
+the list tells you where to go without a count or a badge. Every message makes a sound
+— one short note, the same whether you sent it or it arrived, deliberately the only
+single note in a set of two-note gestures.
+
+`space` records three seconds and plays them back. It records and plays in separate
+stages rather than monitoring live, because on a laptop the microphone can hear the
+speakers, and anything that opens both at once closes a loop between them that grows
+until it clips. `m` gives you live monitoring anyway for when you are on headphones,
+and cuts itself off if it starts feeding back.
+
+Under `TYPING` the keyboard can be given a voice: a short burst of noise per key, off
+until you ask for it and adjustable with `←`/`→`. Each key is seeded from the character
+itself, so the same key always sounds the same and two keys never sound alike — a
+keyboard rather than a random generator. The spacebar is lower and longer, and
+backspace is duller.
+
+Set `NO_COLOR` for a colourless interface, `TINCAN_ASCII=1` if your terminal has no
+box-drawing, `TINCAN_NO_MOTION=1` to hold the string still, and `TINCAN_THEME=light`
+for the same palette on a light background.
 
 ## Install
 

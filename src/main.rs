@@ -10,6 +10,8 @@ use tincan::audio;
 use tincan::clipboard;
 use tincan::config::Config;
 use tincan::invite;
+use tincan::audio::device::Wanted;
+use tincan::net::Command;
 use tincan::net::control::{Client, Coordinator};
 use tincan::net::voice::VoiceMesh;
 use tincan::net::endpoint;
@@ -20,25 +22,12 @@ use tincan::ui::{self, VoiceControl};
 /// Channels created by default when a room is opened.
 const DEFAULT_CHANNELS: &str = "general,gaming,music";
 
-const BANNER: &str = r#"
-       ( o )
-      /=====\
-     | tincan|
-     |  /\   |
-     | /  \  |
-     | \  /  |
-      \=====/
-         ~
-        S
-       ~
-"#;
-
 #[derive(Parser)]
 #[command(
     name = "tincan",
     version,
     about = "Serverless voice chat in your terminal",
-    before_help = BANNER
+    before_help = tincan::logo::BANNER
 )]
 struct Cli {
     #[command(subcommand)]
@@ -144,12 +133,12 @@ async fn host(
         .collect();
     let room = Room::new(room_name, channels)?;
 
-    println!("connecting to the network...");
+    println!("{}", tincan::logo::heading("  connecting to the network…"));
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
 
-    let session = Coordinator::spawn(
+    let mut session = Coordinator::spawn(
         endpoint,
         room,
         password.unwrap_or_default(),
@@ -158,20 +147,38 @@ async fn host(
     )
     .await?;
 
-    println!("\n  Room is open. Send the invite code to your friends:\n");
-    println!("      {}\n", session.invite_code);
-    if clipboard::copy(&session.invite_code) {
-        println!("  It is on your clipboard — just paste it.\n");
+    let copied = clipboard::copy(&session.invite_code);
+    println!("\n{}", tincan::logo::heading("  the room is open. send this code to whoever you want in it:"));
+    println!("\n    {}\n", tincan::logo::code(&session.invite_code));
+    if copied {
+        println!("{}", tincan::logo::heading("  it is on your clipboard already."));
     }
-    println!("  They will run:  tincan join {}\n", session.invite_code);
+    println!("{}", tincan::logo::heading(&format!("  they run:  tincan join {}", session.invite_code)));
 
     // Wait for the user rather than a timer. The interface takes over the whole
     // screen, and a 63-character code is not something anyone can copy against a
     // countdown. F1 brings it back once the interface is up.
-    print!("  Press Enter to open the interface (F1 shows the code again, F6 for Settings)...");
+    print!("\n{}", tincan::logo::heading("  press enter to open the room. f1 brings the code back, f6 is audio."));
     std::io::stdout().flush().ok();
     let mut answer = String::new();
-    BufReader::new(tokio::io::stdin()).read_line(&mut answer).await.ok();
+    let mut input = BufReader::new(tokio::io::stdin());
+
+    tokio::select! {
+        _ = input.read_line(&mut answer) => {}
+        // Leaving from the prompt is still leaving. Without this the process dies
+        // holding an open endpoint, which iroh rightly complains about, and the room
+        // is never told it closed.
+        _ = tokio::signal::ctrl_c() => {
+            println!();
+            let _ = session.commands.send(Command::Quit).await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                session.events.recv(),
+            )
+            .await;
+            return Ok(());
+        }
+    }
 
     ui::run(session, control, audio.ptt).await
 }
@@ -186,7 +193,7 @@ async fn join(
     let key = invite::decode(&code).context("could not read the invite code")?;
     let coordinator = PeerId(key);
 
-    println!("connecting to the room...");
+    println!("{}", tincan::logo::heading("  connecting to the room…"));
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
@@ -218,8 +225,8 @@ fn setup_voice(
     }
     let config = Config::load();
     let choice = audio::device::DeviceChoice {
-        input: args.input.clone().or(config.input_device),
-        output: args.output.clone().or(config.output_device),
+        input: Wanted::pick(args.input.clone(), config.input_device),
+        output: Wanted::pick(args.output.clone(), config.output_device),
     };
     match audio::start(me, &choice) {
         Ok(io) => {
@@ -230,7 +237,9 @@ fn setup_voice(
                 mic_open: io.mic_open,
                 hearing: io.hearing,
                 mic_level: io.mic_level,
-                mic_loopback: io.mic_loopback,
+                peer_levels: io.peer_levels,
+                mic_test: io.mic_test,
+                gate: io.gate,
                 health: io.health,
                 blip_tx: io.blip_tx,
                 devices: io.devices,
@@ -238,7 +247,7 @@ fn setup_voice(
             (Some(mesh), Some(control))
         }
         Err(err) => {
-            eprintln!("\n  ⚠ audio could not start, text chat only: {err:#}\n");
+            eprintln!("\n  audio could not start, so this is a text-only session: {err:#}\n");
             std::thread::sleep(std::time::Duration::from_millis(2500));
             (None, None)
         }

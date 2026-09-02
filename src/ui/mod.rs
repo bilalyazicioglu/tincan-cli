@@ -1,22 +1,26 @@
 //! The terminal interface.
 
 pub mod state;
+pub mod theme;
 mod view;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use anyhow::Result;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::{mpsc, watch};
 
-use crate::audio::device::{AudioDevices, AudioHealth};
+use crate::audio::MicTest;
+use crate::audio::blip::Blip;
+use crate::audio::device::{AudioDevices, AudioHealth, Recovered};
 use crate::config::Config;
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
 use crate::proto::{ChannelId, PeerId};
-use state::{App, SettingsSection, ViewMode};
+use state::{App, GATE_STEP, SettingsSection, VOLUME_STEP, ViewMode};
+use theme::Theme;
 
 /// Where the interface holds on to the audio side. Never built if audio failed to
 /// start.
@@ -30,17 +34,21 @@ pub struct VoiceControl {
     pub hearing: Arc<AtomicBool>,
     /// Live microphone volume level (0.0 to 1.0) for VU meter visualization.
     pub mic_level: watch::Receiver<f32>,
-    /// Whether the microphone loopback test is active.
-    pub mic_loopback: Arc<AtomicBool>,
+    /// How loud each of the others is, 0-4, for the meters in the roster.
+    pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
+    /// What the microphone test is doing, as `MicTest::bits`.
+    pub mic_test: Arc<AtomicU8>,
+    /// The microphone's noise floor, as the capture loop reads it.
+    pub gate: Arc<AtomicU32>,
     pub health: Arc<AudioHealth>,
-    pub blip_tx: mpsc::Sender<()>,
+    pub blip_tx: mpsc::Sender<Blip>,
     /// The audio hardware stays open for as long as this is kept alive.
     pub devices: AudioDevices,
 }
 
 impl VoiceControl {
-    pub fn play_blip(&self) {
-        let _ = self.blip_tx.try_send(());
+    pub fn play(&self, blip: Blip) {
+        let _ = self.blip_tx.try_send(blip);
     }
 
     pub fn switch_input(&self, wanted: Option<&str>) -> Result<String> {
@@ -51,8 +59,68 @@ impl VoiceControl {
         self.devices.switch_output(wanted)
     }
 
-    pub fn set_loopback(&self, active: bool) {
-        self.mic_loopback.store(active, Ordering::Relaxed);
+    pub fn set_mic_test(&self, test: MicTest) {
+        self.mic_test.store(test.bits(), Ordering::Relaxed);
+    }
+
+    /// Moves the microphone's noise floor. `level` is a position on the same meter the
+    /// settings screen draws, so what the user drags and what the detector compares
+    /// against cannot drift apart.
+    pub fn set_gate(&self, level: f32) {
+        self.gate
+            .store(crate::audio::rms_for(level).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn active_input(&self) -> Option<String> {
+        self.devices.active_input()
+    }
+
+    pub fn active_output(&self) -> Option<String> {
+        self.devices.active_output()
+    }
+
+    /// Remembered devices that were not plugged in when we started.
+    pub fn missing(&self) -> Vec<String> {
+        self.devices.missing()
+    }
+
+    /// Reopens any stream the driver took away.
+    pub fn recover(&self) -> Vec<Recovered> {
+        self.devices.recover()
+    }
+}
+
+/// Backspace, as the click synthesiser knows it.
+const BACKSPACE: char = '\u{8}';
+
+/// How often the interface redraws itself while something on screen is moving.
+/// Roughly 14 frames a second: enough for a pulse to read as travel, cheap enough to
+/// leave a laptop alone.
+const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(70);
+
+/// Decides what the interface says about your own microphone and ears.
+///
+/// The keys only send a command — the state that matters comes back from the
+/// coordinator — so the sound follows what actually happened rather than what was
+/// asked for. The first roster is a sync rather than a change, and makes no sound.
+#[derive(Default)]
+struct SelfChime {
+    known: Option<(bool, bool)>,
+}
+
+impl SelfChime {
+    fn on_roster(&mut self, muted: bool, deafened: bool) -> Option<Blip> {
+        let (was_muted, was_deafened) = self.known.replace((muted, deafened))?;
+
+        // Shutting your ears closes the microphone with them. That is one action, so
+        // it makes one sound; the mute that came along is not news.
+        if deafened != was_deafened {
+            return Some(if deafened { Blip::EarsOff } else { Blip::EarsOn });
+        }
+        if muted != was_muted {
+            return Some(if muted { Blip::MicOff } else { Blip::MicOn });
+        }
+        None
     }
 }
 
@@ -85,34 +153,65 @@ pub async fn run(
     voice: Option<VoiceControl>,
     ptt_mode: bool,
 ) -> Result<()> {
+    let theme = Theme::from_env();
     let mut app = App::new(session.me, session.invite_code.clone());
     app.voice_available = voice.is_some();
     app.ptt_mode = ptt_mode && app.voice_available;
+    app.motion = theme.motion;
+    if let Some(voice) = voice.as_ref() {
+        // The rail names the microphone and speaker in use from the first frame, so
+        // it has to ask the engine what it actually opened rather than wait for the
+        // user to visit the settings screen.
+        app.active_input_name = voice.active_input();
+        app.active_output_name = voice.active_output();
+        let config = Config::load();
+        app.input_gate = config.gate_for(app.active_input_name.as_deref());
+        app.typing_clicks = config.typing_clicks;
+        app.typing_volume = config.typing_loudness();
+        voice.set_gate(app.input_gate);
+    }
     let mut terminal = ratatui::init();
     let mut keys = spawn_key_reader();
     let mut chime = JoinChime::default();
+    let mut own_state = SelfChime::default();
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+
+    let mut startup_notes: Vec<String> =
+        voice.as_ref().map(|v| v.missing()).unwrap_or_default();
+    // A device that stays gone would otherwise say so once a second, forever.
+    let mut last_audio_note: Option<String> = None;
 
     let mut speaking_rx = voice.as_ref().map(|v| v.speaking.clone());
     let mut mic_level_rx = voice.as_ref().map(|v| v.mic_level.clone());
+    let mut peer_levels_rx = voice.as_ref().map(|v| v.peer_levels.clone());
 
     let result = async {
         loop {
-            terminal.draw(|frame| view::draw(frame, &app))?;
+            terminal.draw(|frame| view::draw(frame, &app, &theme))?;
 
             tokio::select! {
                 event = session.events.recv() => match event {
                     Some(event) => {
                         let membership_changed =
                             matches!(event, Event::Roster(_) | Event::Welcome { .. });
+                        // Our own message comes back from the coordinator like anyone
+                        // else's; it already made its sound when it was sent.
+                        let someone_wrote =
+                            matches!(&event, Event::Chat(line) if line.from != app.me);
                         let prev_voice = app.voice;
                         app.apply(event);
+                        if someone_wrote && let Some(v) = voice.as_ref() {
+                            v.play(Blip::Message);
+                        }
                         if membership_changed {
                             sync_voice(&app, voice.as_ref()).await;
-                            if chime.on_roster(&app, prev_voice)
-                                && let Some(v) = voice.as_ref()
-                            {
-                                v.play_blip();
+                            if let Some(v) = voice.as_ref() {
+                                if chime.on_roster(&app, prev_voice) {
+                                    v.play(Blip::Chime);
+                                }
+                                if let Some(blip) = own_state.on_roster(app.muted, app.deafened) {
+                                    v.play(blip);
+                                }
                             }
                         }
                     }
@@ -124,20 +223,54 @@ pub async fn run(
                     app.speaking = changed;
                 }
 
-                // Live microphone level for Settings VU meter.
+                // Live microphone level: our own meter and the settings screen.
                 level = next_mic_level(mic_level_rx.as_mut()) => {
                     app.mic_level = level;
+                    app.observe_level(level);
+                    settle_calibration(&mut app, voice.as_ref());
+                    if app.watch_for_feedback(level)
+                        && let Some(v) = voice.as_ref()
+                    {
+                        v.set_mic_test(app.mic_test);
+                    }
+                }
+
+                // How loud everyone else is, for the meters in the roster.
+                levels = next_peer_levels(peer_levels_rx.as_mut()) => {
+                    app.peer_levels = levels;
                 }
 
                 _ = quality_tick.tick() => {
                     if let Some(voice) = voice.as_ref() {
                         app.link = voice.mesh.link_status().await;
-                        app.audio_dropouts = voice.health.underruns();
+                        app.note_dropouts(voice.health.underruns());
+
+                        // The first tick is the earliest point the roster has landed,
+                        // and `Welcome` replaces the transcript wholesale — a notice
+                        // pushed before it would be thrown away.
+                        for note in startup_notes.drain(..) {
+                            app.notice(note);
+                        }
+                        for news in voice.recover() {
+                            let note = describe(&news);
+                            if last_audio_note.as_deref() != Some(note.as_str()) {
+                                app.notice(note.clone());
+                                last_audio_note = Some(note);
+                            }
+                        }
                     }
                 }
 
-                _ = tokio::time::sleep(std::time::Duration::from_millis(60)), if app.is_transitioning() => {
-                    // Wakes up event loop to re-render after glow pulse finishes
+                // The only self-driven redraw: while the string is carrying a pulse
+                // or a mode change is settling. With nothing moving the interface
+                // sleeps until the network, the audio or a key wakes it.
+                _ = tokio::time::sleep(FRAME_INTERVAL), if app.needs_animation() => {
+                    settle_calibration(&mut app, voice.as_ref());
+                    if app.advance_mic_test()
+                        && let Some(v) = voice.as_ref()
+                    {
+                        v.set_mic_test(app.mic_test);
+                    }
                 }
 
                 key = keys.recv() => match key {
@@ -153,7 +286,7 @@ pub async fn run(
 
             if let Some(reason) = app.ended.clone() {
                 app.status = Some(reason);
-                terminal.draw(|frame| view::draw(frame, &app))?;
+                terminal.draw(|frame| view::draw(frame, &app, &theme))?;
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                 break;
             }
@@ -207,10 +340,13 @@ async fn handle_key(
     // Toggle Settings view (F6 or Ctrl+,)
     let toggle_settings_key = key.code == KeyCode::F(6) || (ctrl && key.code == KeyCode::Char(','));
     if toggle_settings_key {
+        if app.view_mode == ViewMode::Settings {
+            remember_gate(app, voice);
+        }
         app.toggle_settings();
         if let Some(v) = voice {
-            v.play_blip();
-            v.set_loopback(app.mic_test_active);
+            v.play(Blip::Chime);
+            v.set_mic_test(app.mic_test);
         }
         return Ok(false);
     }
@@ -219,11 +355,28 @@ async fn handle_key(
     if app.view_mode == ViewMode::Settings {
         match key.code {
             KeyCode::Esc => {
+                remember_gate(app, voice);
                 app.toggle_settings();
                 if let Some(v) = voice {
-                    v.play_blip();
-                    v.set_loopback(false);
+                    v.play(Blip::Chime);
+                    v.set_mic_test(MicTest::Off);
                 }
+                return Ok(false);
+            }
+            // Left and right belong to whichever section is under the cursor: the
+            // noise floor here, how loud the keyboard is there.
+            KeyCode::Left | KeyCode::Char('h') => {
+                nudge(app, voice, -1.0);
+                return Ok(false);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                nudge(app, voice, 1.0);
+                return Ok(false);
+            }
+            KeyCode::Char('a') | KeyCode::Char('A')
+                if app.settings_section == SettingsSection::MicTest =>
+            {
+                app.start_calibration();
                 return Ok(false);
             }
             KeyCode::Tab => {
@@ -243,10 +396,29 @@ async fn handle_key(
                 return Ok(false);
             }
             KeyCode::Char(' ') => {
-                let active = !app.mic_test_active;
-                app.mic_test_active = active;
+                match app.settings_section {
+                    SettingsSection::Typing => {
+                        app.toggle_typing_clicks();
+                        // Hearing it is the only way to know what you just switched on.
+                        if let (Some(v), Some(click)) = (voice, app.click_for('k')) {
+                            v.play(click);
+                        }
+                    }
+                    _ => {
+                        app.toggle_recorded_test();
+                        if let Some(v) = voice {
+                            v.set_mic_test(app.mic_test);
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+            // Live monitoring is behind its own key because it is only safe on
+            // headphones: on a laptop it closes a loop between speaker and microphone.
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                app.toggle_monitor();
                 if let Some(v) = voice {
-                    v.set_loopback(active);
+                    v.set_mic_test(app.mic_test);
                 }
                 return Ok(false);
             }
@@ -260,9 +432,10 @@ async fn handle_key(
                         if let Some(dev) = app.selected_input_device() {
                             let name = dev.name.clone();
                             if !dev.is_supported {
+                                // Any rate is resampled; a device only fails here
+                                // when it will not report a rate at all.
                                 app.settings_error = Some(format!(
-                                    "'{}' runs at {} Hz, but 48000 Hz is required",
-                                    name, dev.sample_rate
+                                    "{name} is not reporting a format, so it cannot be opened"
                                 ));
                             } else if let Some(v) = voice {
                                 match v.switch_input(Some(&name)) {
@@ -270,11 +443,15 @@ async fn handle_key(
                                         app.active_input_name = Some(activated.clone());
                                         app.settings_error = None;
                                         let mut cfg = Config::load();
+                                        // The gate belongs to the microphone, not to
+                                        // the session: this one has its own floor.
+                                        app.input_gate = cfg.gate_for(Some(&activated));
+                                        v.set_gate(app.input_gate);
                                         cfg.input_device = Some(activated);
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
-                                        app.settings_error = Some(format!("Microphone switch failed: {err:#}"));
+                                        app.settings_error = Some(format!("could not switch the microphone: {err:#}"));
                                     }
                                 }
                             }
@@ -284,9 +461,10 @@ async fn handle_key(
                         if let Some(dev) = app.selected_output_device() {
                             let name = dev.name.clone();
                             if !dev.is_supported {
+                                // Any rate is resampled; a device only fails here
+                                // when it will not report a rate at all.
                                 app.settings_error = Some(format!(
-                                    "'{}' runs at {} Hz, but 48000 Hz is required",
-                                    name, dev.sample_rate
+                                    "{name} is not reporting a format, so it cannot be opened"
                                 ));
                             } else if let Some(v) = voice {
                                 match v.switch_output(Some(&name)) {
@@ -298,19 +476,19 @@ async fn handle_key(
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
-                                        app.settings_error = Some(format!("Speaker switch failed: {err:#}"));
+                                        app.settings_error = Some(format!("could not switch the speaker: {err:#}"));
                                     }
                                 }
                             }
                         }
                     }
                     SettingsSection::MicTest => {
-                        let active = !app.mic_test_active;
-                        app.mic_test_active = active;
+                        app.toggle_recorded_test();
                         if let Some(v) = voice {
-                            v.set_loopback(active);
+                            v.set_mic_test(app.mic_test);
                         }
                     }
+                    SettingsSection::Typing => app.toggle_typing_clicks(),
                 }
                 return Ok(false);
             }
@@ -366,18 +544,95 @@ async fn handle_key(
             if let Some(text) = app.take_input() {
                 let channel = app.viewing;
                 let _ = commands.send(Command::Chat { channel, text }).await;
+                // Locally, now, rather than waiting for the coordinator to echo it
+                // back — and the echo is skipped, so a message makes one sound.
+                if let Some(v) = voice {
+                    v.play(Blip::Message);
+                }
             }
         }
 
         KeyCode::Backspace => {
-            app.input.pop();
+            if app.input.pop().is_some()
+                && let (Some(v), Some(click)) = (voice, app.click_for(BACKSPACE))
+            {
+                v.play(click);
+            }
         }
 
-        KeyCode::Char(c) if !ctrl => app.input.push(c),
+        KeyCode::Char(c) if !ctrl => {
+            app.input.push(c);
+            if let (Some(v), Some(click)) = (voice, app.click_for(c)) {
+                v.play(click);
+            }
+        }
 
         _ => {}
     }
     Ok(false)
+}
+
+/// Moves whichever dial the settings cursor is on.
+fn nudge(app: &mut App, voice: Option<&VoiceControl>, direction: f32) {
+    match app.settings_section {
+        SettingsSection::MicTest => {
+            app.nudge_gate(direction * GATE_STEP);
+            if let Some(voice) = voice {
+                voice.set_gate(app.input_gate);
+            }
+        }
+        SettingsSection::Typing => {
+            app.nudge_typing_volume(direction * VOLUME_STEP);
+            // Play it at the new setting: a volume dial you cannot hear is a guess.
+            if let (Some(voice), Some(click)) = (voice, app.click_for('k')) {
+                voice.play(click);
+            }
+        }
+        SettingsSection::InputDevice | SettingsSection::OutputDevice => {}
+    }
+}
+
+/// What to tell the room about a stream that was taken away and put back.
+fn describe(news: &Recovered) -> String {
+    match &news.device {
+        Some(device) => format!("the {} changed — now on {device}", news.side.name()),
+        None => format!("the {} was lost and will not reopen", news.side.name()),
+    }
+}
+
+/// Ends a room measurement once its time is up, and keeps what it decided.
+fn settle_calibration(app: &mut App, voice: Option<&VoiceControl>) {
+    if app.finish_calibration().is_some() {
+        if let Some(voice) = voice {
+            voice.set_gate(app.input_gate);
+        }
+        remember_gate(app, voice);
+    }
+}
+
+/// Writes the settings-screen dials to the config — the gate under the name of the
+/// microphone it was set for, the keyboard globally.
+///
+/// Called when leaving the screen rather than on every keypress: dragging a dial across
+/// its range is twenty-odd presses, and none of them is worth a file write.
+fn remember_gate(app: &App, voice: Option<&VoiceControl>) {
+    if voice.is_none() {
+        return;
+    }
+    let Some(device) = app.active_input_name.as_deref() else {
+        return;
+    };
+    let mut config = Config::load();
+    let same = (config.gate_for(Some(device)) - app.input_gate).abs() < f32::EPSILON
+        && config.typing_clicks == app.typing_clicks
+        && (config.typing_loudness() - app.typing_volume).abs() < f32::EPSILON;
+    if same {
+        return;
+    }
+    config.set_gate(device, app.input_gate);
+    config.typing_clicks = app.typing_clicks;
+    config.typing_volume = Some(app.typing_volume);
+    let _ = config.save();
 }
 
 /// When the roster changes, updates the voice mesh to the new membership and aligns
@@ -412,6 +667,22 @@ async fn next_speakers(
         Some(speaking) => {
             if speaking.changed().await.is_ok() {
                 speaking.borrow_and_update().clone()
+            } else {
+                std::future::pending().await
+            }
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// Waits for the next change in anyone else's level.
+async fn next_peer_levels(
+    levels: Option<&mut watch::Receiver<HashMap<PeerId, u8>>>,
+) -> HashMap<PeerId, u8> {
+    match levels {
+        Some(levels) => {
+            if levels.changed().await.is_ok() {
+                levels.borrow_and_update().clone()
             } else {
                 std::future::pending().await
             }
@@ -475,12 +746,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn peer_levels_reach_the_roster() {
+        let (tx, mut rx) = watch::channel(HashMap::new());
+        tx.send(HashMap::from([(PeerId([2; 32]), 3u8)])).unwrap();
+
+        let levels = next_peer_levels(Some(&mut rx)).await;
+        assert_eq!(levels.get(&PeerId([2; 32])), Some(&3));
+    }
+
+    #[tokio::test]
+    async fn peer_levels_do_not_spin_when_nobody_moves() {
+        let (tx, mut rx) = watch::channel(HashMap::new());
+        tx.send(HashMap::from([(PeerId([2; 32]), 3u8)])).unwrap();
+        next_peer_levels(Some(&mut rx)).await;
+
+        let again = tokio::time::timeout(Duration::from_millis(150), next_peer_levels(Some(&mut rx)));
+        assert!(again.await.is_err(), "an unchanged meter must not redraw the screen");
+    }
+
+    #[tokio::test]
     async fn mic_level_updates_correctly() {
         let (tx, mut rx) = watch::channel(0.0f32);
         tx.send(0.75f32).unwrap();
 
         let level = next_mic_level(Some(&mut rx)).await;
         assert!((level - 0.75).abs() < f32::EPSILON);
+    }
+
+    // ── Hardware that changed under us ──────────────────────────────────────
+
+    #[test]
+    fn a_reopened_stream_says_what_it_landed_on() {
+        use crate::audio::device::Side;
+
+        let back = describe(&Recovered {
+            side: Side::Speaker,
+            device: Some("MacBook Pro Speakers".into()),
+        });
+        assert!(back.contains("speaker"), "{back}");
+        assert!(back.contains("MacBook Pro Speakers"), "{back}");
+
+        let gone = describe(&Recovered { side: Side::Microphone, device: None });
+        assert!(gone.contains("microphone"), "{gone}");
+        assert!(gone.contains("not reopen"), "silence about a dead microphone helps nobody: {gone}");
+    }
+
+    // ── Your own microphone and ears ────────────────────────────────────────
+
+    #[test]
+    fn the_first_roster_is_a_sync_and_says_nothing() {
+        let mut chime = SelfChime::default();
+        assert_eq!(chime.on_roster(false, false), None);
+        assert_eq!(chime.on_roster(true, false), Some(Blip::MicOff), "but the next change speaks");
+    }
+
+    #[test]
+    fn arriving_already_muted_is_not_an_event() {
+        let mut chime = SelfChime::default();
+        assert_eq!(chime.on_roster(true, true), None);
+    }
+
+    #[test]
+    fn the_microphone_says_which_way_it_went() {
+        let mut chime = SelfChime::default();
+        chime.on_roster(false, false);
+
+        assert_eq!(chime.on_roster(true, false), Some(Blip::MicOff));
+        assert_eq!(chime.on_roster(false, false), Some(Blip::MicOn));
+    }
+
+    #[test]
+    fn shutting_your_ears_makes_one_sound_not_two() {
+        let mut chime = SelfChime::default();
+        chime.on_roster(false, false);
+
+        // F5 deafens and mutes in the same breath, and the roster reports both at
+        // once.
+        assert_eq!(chime.on_roster(true, true), Some(Blip::EarsOff), "one action, one sound");
+        assert_eq!(chime.on_roster(false, false), Some(Blip::EarsOn));
+    }
+
+    #[test]
+    fn a_roster_that_changes_nothing_about_you_is_silent() {
+        let mut chime = SelfChime::default();
+        chime.on_roster(true, false);
+        assert_eq!(chime.on_roster(true, false), None, "someone else moving is not your business");
     }
 
     // ── The welcome chime ───────────────────────────────────────────────────

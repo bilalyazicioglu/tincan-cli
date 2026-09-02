@@ -54,6 +54,12 @@ impl Vad {
         }
     }
 
+    /// Moves the floor. The user can drag it while talking, so it has to be settable
+    /// on a live detector rather than fixed when one is built.
+    pub fn set_threshold(&mut self, threshold: f32) {
+        self.threshold = threshold.max(0.0);
+    }
+
     pub fn is_active(&self) -> bool {
         self.remaining > 0
     }
@@ -87,6 +93,22 @@ mod tests {
 
         let mut quiet = Vad::default();
         assert!(!quiet.update(&[0.0001; 960]), "room noise must not count as speech");
+    }
+
+    #[test]
+    fn raising_the_floor_shuts_out_what_used_to_pass() {
+        let quiet = tone(0.02);
+        let mut vad = Vad::new(0.01, 0);
+        assert!(vad.update(&quiet), "it passes under the low floor");
+
+        vad.set_threshold(0.05);
+        assert!(!vad.update(&quiet), "and stops once the floor is above it");
+    }
+
+    #[test]
+    fn a_floor_of_zero_lets_everything_through() {
+        let mut vad = Vad::new(0.0, 0);
+        assert!(vad.update(&[0.0; 960]), "asked for no gate, there is no gate");
     }
 
     /// A short silence between words must not switch the indicator off.
