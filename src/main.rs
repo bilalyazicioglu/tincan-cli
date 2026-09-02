@@ -1,11 +1,11 @@
 //! tincan — serverless voice chat that runs in your terminal.
 
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use iroh::Endpoint;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tincan::audio;
 use tincan::clipboard;
 use tincan::config::Config;
@@ -87,17 +87,80 @@ struct AudioArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Logs only go to stderr when asked for, so they cannot scramble the interface:
-    //   RUST_LOG=debug tincan host 2>tincan.log
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
+    // Parsed first: `--help` and a bad argument both exit here, and neither should
+    // leave a log file behind.
+    let command = Cli::parse().command;
+    let log = start_logging();
 
-    match Cli::parse().command {
+    let result = run(command).await;
+    report_log(log);
+    result
+}
+
+/// Sends this run's log somewhere it cannot land on top of the interface.
+///
+/// The interface draws on the terminal and the alternate screen does not capture
+/// stderr, so one warning printed straight over the room — which is exactly what it
+/// did. A redirected stderr is left alone: `2>tincan.log` has always meant "put the
+/// log there", and it still does.
+fn start_logging() -> Option<PathBuf> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "warn".into());
+
+    if !std::io::stderr().is_terminal() {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(filter)
+            .init();
+        return None;
+    }
+
+    // Nowhere to write is a reason to stay quiet, not a reason to scribble on the
+    // interface: without `init` the macros do nothing at all.
+    let path = log_path()?;
+    let file = std::fs::File::create(&path).ok()?;
+    tracing_subscriber::fmt()
+        .with_writer(std::sync::Arc::new(file))
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .init();
+    Some(path)
+}
+
+fn log_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+    let dir = base.join("tincan");
+    std::fs::create_dir_all(&dir).ok()?;
+    // One file per run. Two tincans on one machine is an ordinary thing to do while
+    // testing, and they must not write over each other.
+    Some(dir.join(format!("{}.log", std::process::id())))
+}
+
+/// Says where the log is, but only when there is something in it.
+///
+/// A clean run should end in silence, and a bad one in a single line — not in a wall
+/// of text arriving at the moment you decided to stop reading. Whatever mattered to
+/// the user was already said in the room while it happened.
+fn report_log(path: Option<PathBuf>) {
+    let Some(path) = path else {
+        return;
+    };
+    let empty = std::fs::metadata(&path).map(|file| file.len() == 0).unwrap_or(true);
+    if empty {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let lines = std::fs::read_to_string(&path)
+        .map(|log| log.lines().count())
+        .unwrap_or(0);
+    let plural = if lines == 1 { "" } else { "s" };
+    eprintln!("\n  {lines} log line{plural} from this session: {}", path.display());
+}
+
+async fn run(command: Sub) -> Result<()> {
+    match command {
         Sub::Host {
             name,
             password,
@@ -160,24 +223,15 @@ async fn host(
     // countdown. F1 brings it back once the interface is up.
     print!("\n{}", tincan::logo::heading("  press enter to open the room. f1 brings the code back, f6 is audio."));
     std::io::stdout().flush().ok();
-    let mut answer = String::new();
-    let mut input = BufReader::new(tokio::io::stdin());
 
-    tokio::select! {
-        _ = input.read_line(&mut answer) => {}
+    if let Leaving::Interrupted = wait_at_the_prompt().await {
         // Leaving from the prompt is still leaving. Without this the process dies
         // holding an open endpoint, which iroh rightly complains about, and the room
         // is never told it closed.
-        _ = tokio::signal::ctrl_c() => {
-            println!();
-            let _ = session.commands.send(Command::Quit).await;
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                session.events.recv(),
-            )
-            .await;
-            return Ok(());
-        }
+        println!();
+        let _ = session.commands.send(Command::Quit).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), session.events.recv()).await;
+        return Ok(());
     }
 
     ui::run(session, control, audio.ptt).await
@@ -209,6 +263,35 @@ async fn join(
     .await?;
 
     ui::run(session, control, audio.ptt).await
+}
+
+/// How the wait at the prompt ended.
+enum Leaving {
+    Enter,
+    Interrupted,
+}
+
+/// Waits for Enter, or for the user to give up on the room.
+///
+/// The line is read on a plain thread rather than through `tokio::io::stdin`, which is
+/// backed by the runtime's blocking pool. A blocking read cannot be cancelled: dropping
+/// the future on ctrl+c leaves the thread sitting on `read`, and the runtime will not
+/// finish shutting down until it returns — so the program printed its goodbye and then
+/// waited forever for a keypress that was never coming. A detached thread is something
+/// the process is allowed to walk away from. `ui::spawn_key_reader` reads keys the same
+/// way, for the same reason.
+async fn wait_at_the_prompt() -> Leaving {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        let _ = tx.blocking_send(());
+    });
+
+    tokio::select! {
+        _ = rx.recv() => Leaving::Enter,
+        _ = tokio::signal::ctrl_c() => Leaving::Interrupted,
+    }
 }
 
 /// Brings up the audio hardware and the mesh.
