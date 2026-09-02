@@ -19,7 +19,7 @@ use crate::config::Config;
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
 use crate::proto::{ChannelId, PeerId};
-use state::{App, GATE_STEP, SettingsSection, ViewMode};
+use state::{App, GATE_STEP, SettingsSection, VOLUME_STEP, ViewMode};
 use theme::Theme;
 
 /// Where the interface holds on to the audio side. Never built if audio failed to
@@ -89,6 +89,9 @@ impl VoiceControl {
         self.devices.recover()
     }
 }
+
+/// Backspace, as the click synthesiser knows it.
+const BACKSPACE: char = '\u{8}';
 
 /// How often the interface redraws itself while something on screen is moving.
 /// Roughly 14 frames a second: enough for a pulse to read as travel, cheap enough to
@@ -161,7 +164,10 @@ pub async fn run(
         // user to visit the settings screen.
         app.active_input_name = voice.active_input();
         app.active_output_name = voice.active_output();
-        app.input_gate = Config::load().gate_for(app.active_input_name.as_deref());
+        let config = Config::load();
+        app.input_gate = config.gate_for(app.active_input_name.as_deref());
+        app.typing_clicks = config.typing_clicks;
+        app.typing_volume = config.typing_loudness();
         voice.set_gate(app.input_gate);
     }
     let mut terminal = ratatui::init();
@@ -188,8 +194,15 @@ pub async fn run(
                     Some(event) => {
                         let membership_changed =
                             matches!(event, Event::Roster(_) | Event::Welcome { .. });
+                        // Our own message comes back from the coordinator like anyone
+                        // else's; it already made its sound when it was sent.
+                        let someone_wrote =
+                            matches!(&event, Event::Chat(line) if line.from != app.me);
                         let prev_voice = app.voice;
                         app.apply(event);
+                        if someone_wrote && let Some(v) = voice.as_ref() {
+                            v.play(Blip::Message);
+                        }
                         if membership_changed {
                             sync_voice(&app, voice.as_ref()).await;
                             if let Some(v) = voice.as_ref() {
@@ -350,24 +363,14 @@ async fn handle_key(
                 }
                 return Ok(false);
             }
-            // The gate steps by one cell of the meter it is drawn on, so a press moves
-            // it exactly as far as it looks like it should.
-            KeyCode::Left | KeyCode::Char('h')
-                if app.settings_section == SettingsSection::MicTest =>
-            {
-                app.nudge_gate(-GATE_STEP);
-                if let Some(v) = voice {
-                    v.set_gate(app.input_gate);
-                }
+            // Left and right belong to whichever section is under the cursor: the
+            // noise floor here, how loud the keyboard is there.
+            KeyCode::Left | KeyCode::Char('h') => {
+                nudge(app, voice, -1.0);
                 return Ok(false);
             }
-            KeyCode::Right | KeyCode::Char('l')
-                if app.settings_section == SettingsSection::MicTest =>
-            {
-                app.nudge_gate(GATE_STEP);
-                if let Some(v) = voice {
-                    v.set_gate(app.input_gate);
-                }
+            KeyCode::Right | KeyCode::Char('l') => {
+                nudge(app, voice, 1.0);
                 return Ok(false);
             }
             KeyCode::Char('a') | KeyCode::Char('A')
@@ -393,9 +396,20 @@ async fn handle_key(
                 return Ok(false);
             }
             KeyCode::Char(' ') => {
-                app.toggle_recorded_test();
-                if let Some(v) = voice {
-                    v.set_mic_test(app.mic_test);
+                match app.settings_section {
+                    SettingsSection::Typing => {
+                        app.toggle_typing_clicks();
+                        // Hearing it is the only way to know what you just switched on.
+                        if let (Some(v), Some(click)) = (voice, app.click_for('k')) {
+                            v.play(click);
+                        }
+                    }
+                    _ => {
+                        app.toggle_recorded_test();
+                        if let Some(v) = voice {
+                            v.set_mic_test(app.mic_test);
+                        }
+                    }
                 }
                 return Ok(false);
             }
@@ -474,6 +488,7 @@ async fn handle_key(
                             v.set_mic_test(app.mic_test);
                         }
                     }
+                    SettingsSection::Typing => app.toggle_typing_clicks(),
                 }
                 return Ok(false);
             }
@@ -529,18 +544,52 @@ async fn handle_key(
             if let Some(text) = app.take_input() {
                 let channel = app.viewing;
                 let _ = commands.send(Command::Chat { channel, text }).await;
+                // Locally, now, rather than waiting for the coordinator to echo it
+                // back — and the echo is skipped, so a message makes one sound.
+                if let Some(v) = voice {
+                    v.play(Blip::Message);
+                }
             }
         }
 
         KeyCode::Backspace => {
-            app.input.pop();
+            if app.input.pop().is_some()
+                && let (Some(v), Some(click)) = (voice, app.click_for(BACKSPACE))
+            {
+                v.play(click);
+            }
         }
 
-        KeyCode::Char(c) if !ctrl => app.input.push(c),
+        KeyCode::Char(c) if !ctrl => {
+            app.input.push(c);
+            if let (Some(v), Some(click)) = (voice, app.click_for(c)) {
+                v.play(click);
+            }
+        }
 
         _ => {}
     }
     Ok(false)
+}
+
+/// Moves whichever dial the settings cursor is on.
+fn nudge(app: &mut App, voice: Option<&VoiceControl>, direction: f32) {
+    match app.settings_section {
+        SettingsSection::MicTest => {
+            app.nudge_gate(direction * GATE_STEP);
+            if let Some(voice) = voice {
+                voice.set_gate(app.input_gate);
+            }
+        }
+        SettingsSection::Typing => {
+            app.nudge_typing_volume(direction * VOLUME_STEP);
+            // Play it at the new setting: a volume dial you cannot hear is a guess.
+            if let (Some(voice), Some(click)) = (voice, app.click_for('k')) {
+                voice.play(click);
+            }
+        }
+        SettingsSection::InputDevice | SettingsSection::OutputDevice => {}
+    }
 }
 
 /// What to tell the room about a stream that was taken away and put back.
@@ -561,10 +610,11 @@ fn settle_calibration(app: &mut App, voice: Option<&VoiceControl>) {
     }
 }
 
-/// Writes the gate to the config, under the name of the microphone it was set for.
+/// Writes the settings-screen dials to the config — the gate under the name of the
+/// microphone it was set for, the keyboard globally.
 ///
-/// Called when leaving the settings screen rather than on every keypress: dragging the
-/// gate across the meter is twenty-odd presses, and none of them is worth a file write.
+/// Called when leaving the screen rather than on every keypress: dragging a dial across
+/// its range is twenty-odd presses, and none of them is worth a file write.
 fn remember_gate(app: &App, voice: Option<&VoiceControl>) {
     if voice.is_none() {
         return;
@@ -573,10 +623,15 @@ fn remember_gate(app: &App, voice: Option<&VoiceControl>) {
         return;
     };
     let mut config = Config::load();
-    if (config.gate_for(Some(device)) - app.input_gate).abs() < f32::EPSILON {
+    let same = (config.gate_for(Some(device)) - app.input_gate).abs() < f32::EPSILON
+        && config.typing_clicks == app.typing_clicks
+        && (config.typing_loudness() - app.typing_volume).abs() < f32::EPSILON;
+    if same {
         return;
     }
     config.set_gate(device, app.input_gate);
+    config.typing_clicks = app.typing_clicks;
+    config.typing_volume = Some(app.typing_volume);
     let _ = config.save();
 }
 

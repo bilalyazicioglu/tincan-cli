@@ -79,6 +79,7 @@ fn channel_rows_of(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static
             let id = ChannelId(index as u8);
             let reading = id == app.viewing && app.view_mode == ViewMode::Chat;
             let talking = app.voice == Some(id);
+            let unread = app.unread.contains(&id);
             let here = app.peers_in(id).len();
 
             let mark = |on: bool, glyph: char| {
@@ -94,9 +95,16 @@ fn channel_rows_of(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static
                 Span::raw(" "),
                 mark(talking, theme.glyphs.on_air),
                 Span::raw(" "),
+                // Brass is the palette's "look at this" colour, and it is deliberately
+                // not the turquoise that marks where you already are: being here and
+                // having something waiting are different questions.
                 Span::styled(
                     clip(name, NAME_ROOM, theme),
-                    if reading { theme.strong() } else { theme.text() },
+                    match (reading, unread) {
+                        (true, _) => theme.strong(),
+                        (false, true) => theme.brass(),
+                        (false, false) => theme.text(),
+                    },
                 ),
             ];
             let right = match here {
@@ -209,6 +217,22 @@ mod tests {
         assert!(general.contains(theme.glyphs.cursor), "the read channel keeps the cursor: {general}");
         assert!(!general.contains(theme.glyphs.on_air), "we are not talking there: {general}");
         assert!(gaming.contains(theme.glyphs.on_air), "the voice channel is marked: {gaming}");
+    }
+
+    #[test]
+    fn a_channel_with_something_waiting_is_set_apart_from_the_one_you_are_in() {
+        let mut app = room();
+        app.unread.insert(ChannelId(1));
+        let theme = Theme::from_env();
+        let rows = channel_rows_of(28, &app, &theme);
+
+        let waiting = rows[1].spans.iter().find(|span| span.content.contains("gaming")).unwrap();
+        let quiet = rows[0].spans.iter().find(|span| span.content.contains("general")).unwrap();
+        assert_ne!(waiting.style, quiet.style, "an unread channel has to look different");
+        assert_ne!(
+            waiting.style, theme.accent(),
+            "and different from the colour that means you are already there"
+        );
     }
 
     #[test]

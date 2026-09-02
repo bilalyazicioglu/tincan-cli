@@ -29,11 +29,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     // together instead of drifting apart down an empty screen.
     let problem = if app.settings_error.is_some() { 2 } else { 0 };
     let rows_for = |count: usize| (count.max(1) as u16).saturating_add(2);
-    let [banner, input, output, test, _rest] = Layout::vertical([
+    let [banner, input, output, test, typing, _rest] = Layout::vertical([
         Constraint::Length(problem),
         Constraint::Max(rows_for(app.input_devices.len())),
         Constraint::Max(rows_for(app.output_devices.len())),
         Constraint::Length(6),
+        Constraint::Length(4),
         Constraint::Min(0),
     ])
     .areas(area);
@@ -95,6 +96,53 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         app.settings_section == SettingsSection::MicTest,
         test_rows(test.width, app, theme),
     );
+
+    section(
+        frame,
+        typing,
+        theme,
+        "TYPING",
+        app.settings_section == SettingsSection::Typing,
+        typing_rows(typing.width, app, theme),
+    );
+}
+
+/// The keyboard's own sound. It belongs on this screen and not with the microphone:
+/// nobody else ever hears it.
+fn typing_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
+    let (state, state_style) = if app.typing_clicks {
+        ("on", theme.ok())
+    } else {
+        ("off", theme.dim())
+    };
+    let loudness = if app.typing_clicks && app.typing_volume > 0.0 {
+        format!("{}%", (app.typing_volume * 100.0).round() as u32)
+    } else if app.typing_clicks {
+        "silent".to_string()
+    } else {
+        "—".to_string()
+    };
+    let room = (width as usize).saturating_sub(HEAD_ROOM);
+
+    vec![
+        TextLine::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{:<5}", "space"), theme.accent()),
+            Span::raw("  "),
+            Span::styled(format!("{:<21}", "key clicks"), theme.text()),
+            Span::styled(clip(state, room, theme), state_style),
+        ]),
+        TextLine::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("{:<5}", "←→"), theme.accent()),
+            Span::raw("  "),
+            Span::styled(format!("{:<21}", "how loud"), theme.text()),
+            Span::styled(
+                clip(&loudness, room, theme),
+                if app.typing_clicks { theme.text() } else { theme.dim() },
+            ),
+        ]),
+    ]
 }
 
 fn section(
@@ -485,6 +533,38 @@ mod tests {
             !text(&test_rows(90, &app, &theme)[1]).contains("listen live"),
             "one thing at a time"
         );
+    }
+
+    #[test]
+    fn the_keyboard_section_says_whether_it_is_on_and_how_loud() {
+        let theme = Theme::from_env();
+        let mut app = app();
+
+        let off = typing_rows(70, &app, &theme);
+        assert!(text(&off[0]).contains("off"), "{}", text(&off[0]));
+        assert!(
+            !text(&off[1]).contains('%'),
+            "a volume for a thing that is off is noise: {}",
+            text(&off[1])
+        );
+
+        app.toggle_typing_clicks();
+        app.typing_volume = 0.4;
+        let on = typing_rows(70, &app, &theme);
+        assert!(text(&on[0]).contains("on"), "{}", text(&on[0]));
+        assert!(text(&on[1]).contains("40%"), "{}", text(&on[1]));
+    }
+
+    #[test]
+    fn the_keyboard_rows_fit_a_narrow_pane() {
+        let theme = Theme::from_env();
+        let mut app = app();
+        app.toggle_typing_clicks();
+        for width in [30, 45, 70] {
+            for row in typing_rows(width, &app, &theme) {
+                assert!(row.width() <= width as usize, "{}", text(&row));
+            }
+        }
     }
 
     #[test]

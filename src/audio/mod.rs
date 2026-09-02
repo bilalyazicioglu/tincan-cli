@@ -245,7 +245,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         loop {
             tokio::select! {
                 Some(blip) = blip_rx.recv() => {
-                    blip_samples.extend(blip::of(blip));
+                    overlay(&mut blip_samples, blip::of(blip));
                 }
 
                 Some(pcm_loop) = loopback_rx.recv() => {
@@ -282,7 +282,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                     }
 
                     while let Ok(blip) = blip_rx.try_recv() {
-                        blip_samples.extend(blip::of(blip));
+                        overlay(&mut blip_samples, blip::of(blip));
                     }
                     let test = MicTest::from_bits(playback_test.load(Ordering::Relaxed));
                     while let Ok(pcm_loop) = loopback_rx.try_recv() {
@@ -449,6 +449,21 @@ fn speaker_bus<'a>(room: &'a [Vec<f32>], interface: &'a [f32], hearing: bool) ->
     bus
 }
 
+/// Adds a sound to whatever is already waiting, starting now.
+///
+/// Two sounds triggered at almost the same moment should overlap rather than take
+/// turns. Queueing them would put every key click behind the one before it and let a
+/// fast typist outrun their own keyboard. The limiter on the speaker bus is what keeps
+/// the sum in bounds.
+fn overlay(queue: &mut Vec<f32>, sound: Vec<f32>) {
+    if queue.len() < sound.len() {
+        queue.resize(sound.len(), 0.0);
+    }
+    for (slot, sample) in queue.iter_mut().zip(sound) {
+        *slot += sample;
+    }
+}
+
 /// Takes as much of a queued sound as fits into this frame.
 fn queue_into(queue: &mut Vec<f32>, frame: &mut [f32]) {
     let take = queue.len().min(frame.len());
@@ -569,6 +584,23 @@ mod tests {
         take_microphone(MicTest::Off, vec![0.5; 100], &mut speaker, &mut recorded);
         take_microphone(MicTest::Playing, vec![0.5; 100], &mut speaker, &mut recorded);
         assert!(speaker.is_empty() && recorded.is_empty());
+    }
+
+    #[test]
+    fn two_sounds_at_once_overlap_rather_than_queue() {
+        let mut queued = vec![0.5; 10];
+        overlay(&mut queued, vec![0.25; 4]);
+
+        assert_eq!(queued.len(), 10, "a short sound must not lengthen what is playing");
+        assert_eq!(queued[0], 0.75, "it starts now, not after");
+        assert_eq!(queued[4], 0.5, "and stops where it ends");
+    }
+
+    #[test]
+    fn a_sound_longer_than_what_is_playing_extends_it() {
+        let mut queued = vec![0.5; 2];
+        overlay(&mut queued, vec![0.25; 5]);
+        assert_eq!(queued, vec![0.75, 0.75, 0.25, 0.25, 0.25]);
     }
 
     #[test]

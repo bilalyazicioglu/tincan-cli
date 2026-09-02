@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 /// installation that never touches the setting behaves exactly as it did before.
 pub const DEFAULT_GATE: f32 = 0.23;
 
+/// How loud key clicks are when they have never been adjusted. Under half, because a
+/// keyboard should sit beneath what you are writing rather than over it.
+pub const DEFAULT_TYPING_VOLUME: f32 = 0.4;
+
 /// Persistent application configuration.
 ///
 /// Not `Eq`: the gate is a float. `PartialEq` is all the comparisons here need.
@@ -30,6 +34,13 @@ pub struct Config {
     /// share a noise floor, and one value for both is wrong for at least one of them.
     #[serde(default)]
     pub input_gates: HashMap<String, f32>,
+    /// Whether typing makes a sound. Off until asked for: a keyboard that starts
+    /// clicking on its own is a surprise, not a feature.
+    #[serde(default)]
+    pub typing_clicks: bool,
+    /// How loud those clicks are, 0.0 to 1.0. `None` means never adjusted.
+    #[serde(default)]
+    pub typing_volume: Option<f32>,
 }
 
 impl Config {
@@ -39,6 +50,13 @@ impl Config {
             .and_then(|name| self.input_gates.get(name))
             .copied()
             .unwrap_or(DEFAULT_GATE)
+            .clamp(0.0, 1.0)
+    }
+
+    /// How loud key clicks should be, or the default for a setting never touched.
+    pub fn typing_loudness(&self) -> f32 {
+        self.typing_volume
+            .unwrap_or(DEFAULT_TYPING_VOLUME)
             .clamp(0.0, 1.0)
     }
 
@@ -131,6 +149,13 @@ mod tests {
     }
 
     #[test]
+    fn typing_is_silent_until_it_is_asked_for() {
+        let config = Config::default();
+        assert!(!config.typing_clicks, "a keyboard that starts clicking on its own is a surprise");
+        assert_eq!(config.typing_loudness(), DEFAULT_TYPING_VOLUME, "but it has a sane volume waiting");
+    }
+
+    #[test]
     fn a_config_written_before_gates_existed_still_loads() {
         let dir = std::env::temp_dir().join("tincan_test_old_config");
         let path = dir.join("config.toml");
@@ -140,6 +165,8 @@ mod tests {
         let config = Config::load_from(&path).expect("an older config must still open");
         assert_eq!(config.input_device.as_deref(), Some("MacBook Pro Microphone"));
         assert_eq!(config.gate_for(Some("MacBook Pro Microphone")), DEFAULT_GATE);
+        assert!(!config.typing_clicks);
+        assert_eq!(config.typing_loudness(), DEFAULT_TYPING_VOLUME);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -153,6 +180,8 @@ mod tests {
             input_device: Some("MacBook Pro Microphone".into()),
             output_device: Some("External Headphones".into()),
             input_gates: HashMap::from([("MacBook Pro Microphone".to_string(), 0.31)]),
+            typing_clicks: true,
+            typing_volume: Some(0.6),
         };
 
         original.save_to(&path).expect("saving config should succeed");

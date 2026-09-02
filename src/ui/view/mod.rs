@@ -128,10 +128,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn fit(app: &App, width: usize, theme: &Theme) -> String {
     let full = if app.view_mode == ViewMode::Settings {
         [
-            "tab section · ↑↓ move · ←→ level · a measure · space test · m live · esc back",
-            "tab section · ↑↓ move · ←→ level · enter apply · esc back",
-            "tab section · ↑↓ move · ←→ level · esc back",
-            "↑↓ move · ←→ level · esc back",
+            "tab section · ↑↓ move · ←→ adjust · a measure · space toggle · m live · esc back",
+            "tab section · ↑↓ move · ←→ adjust · enter apply · esc back",
+            "tab section · ↑↓ move · ←→ adjust · esc back",
+            "↑↓ move · ←→ adjust · esc back",
             "esc back",
         ]
     } else {
@@ -245,7 +245,7 @@ mod tests {
         let theme = Theme::from_env();
 
         let full = fit(&app, 80, &theme);
-        assert!(full.contains("←→"), "the gate is only discoverable from here: {full}");
+        assert!(full.contains("←→"), "the dials are only discoverable from here: {full}");
         for width in [70, 55, 40, 20, 4] {
             assert!(fit(&app, width, &theme).chars().count() <= width);
         }

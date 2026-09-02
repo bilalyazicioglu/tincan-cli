@@ -61,11 +61,22 @@ stays out of the call. `←`/`→` move the floor a step at a time, and `a` list
 room for a second and a half and sets it just above whatever it hears. It is remembered
 per microphone, because a laptop microphone and a headset do not share a noise floor.
 
+A channel with something said in it since you last looked turns brass in the rail, so
+the list tells you where to go without a count or a badge. Every message makes a sound
+— one short note, the same whether you sent it or it arrived, deliberately the only
+single note in a set of two-note gestures.
+
 `space` records three seconds and plays them back. It records and plays in separate
 stages rather than monitoring live, because on a laptop the microphone can hear the
 speakers, and anything that opens both at once closes a loop between them that grows
 until it clips. `m` gives you live monitoring anyway for when you are on headphones,
 and cuts itself off if it starts feeding back.
+
+Under `TYPING` the keyboard can be given a voice: a short burst of noise per key, off
+until you ask for it and adjustable with `←`/`→`. Each key is seeded from the character
+itself, so the same key always sounds the same and two keys never sound alike — a
+keyboard rather than a random generator. The spacebar is lower and longer, and
+backspace is duller.
 
 Set `NO_COLOR` for a colourless interface, `TINCAN_ASCII=1` if your terminal has no
 box-drawing, `TINCAN_NO_MOTION=1` to hold the string still, and `TINCAN_THEME=light`

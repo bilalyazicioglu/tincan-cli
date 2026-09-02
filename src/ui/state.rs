@@ -40,6 +40,8 @@ const RUNAWAY_FOR: std::time::Duration = std::time::Duration::from_millis(700);
 pub const METER_CELLS: usize = 28;
 /// One cell of the meter.
 pub const GATE_STEP: f32 = 1.0 / METER_CELLS as f32;
+/// One press of the key-click volume.
+pub const VOLUME_STEP: f32 = 0.05;
 
 /// A measurement of the room in progress.
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +73,7 @@ pub enum SettingsSection {
     InputDevice,
     OutputDevice,
     MicTest,
+    Typing,
 }
 
 pub struct App {
@@ -85,6 +88,8 @@ pub struct App {
     pub lines: Vec<Line>,
     /// The channel on screen — a typed message goes here.
     pub viewing: ChannelId,
+    /// Channels somebody has written in since you last looked at them.
+    pub unread: HashSet<ChannelId>,
     /// The channel we are connected to by voice. Independent of the one being viewed:
     /// you can be talking in "gaming" while reading the chat in "general".
     pub voice: Option<ChannelId>,
@@ -134,6 +139,10 @@ pub struct App {
     pub active_input_name: Option<String>,
     pub active_output_name: Option<String>,
     pub mic_level: f32,
+    /// Whether typing makes a sound.
+    pub typing_clicks: bool,
+    /// How loud that sound is, 0.0 to 1.0.
+    pub typing_volume: f32,
     /// What the microphone test is doing.
     pub mic_test: MicTest,
     /// When the current stage of the test runs out, for the stages that are timed.
@@ -157,6 +166,7 @@ impl App {
             names: HashMap::new(),
             lines: Vec::new(),
             viewing: ChannelId(0),
+            unread: HashSet::new(),
             voice: None,
             muted: false,
             deafened: false,
@@ -185,6 +195,8 @@ impl App {
             active_input_name: None,
             active_output_name: None,
             mic_level: 0.0,
+            typing_clicks: false,
+            typing_volume: crate::config::DEFAULT_TYPING_VOLUME,
             mic_test: MicTest::Off,
             mic_test_until: None,
             fed_back: false,
@@ -212,7 +224,15 @@ impl App {
                 self.remember_names();
                 self.sync_self_from_roster();
             }
-            Event::Chat(line) => self.push(Line::Chat(line)),
+            Event::Chat(line) => {
+                // Something said in a channel you are not reading is the only thing
+                // worth marking: your own words and the channel in front of you are
+                // both already accounted for.
+                if line.channel != self.viewing && line.from != self.me {
+                    self.unread.insert(line.channel);
+                }
+                self.push(Line::Chat(line));
+            }
             Event::Notice(text) => {
                 let at = crate::net::now();
                 self.push(Line::Notice { text, at });
@@ -300,6 +320,8 @@ impl App {
         } else {
             (self.viewing.0 + count - 1) % count
         });
+        // Looking at a channel is what reading it means.
+        self.unread.remove(&self.viewing);
     }
 
     /// Toggles between Chat and Settings views.
@@ -454,6 +476,23 @@ impl App {
         self.mic_level > self.input_gate
     }
 
+    /// Turns key clicks on or off.
+    pub fn toggle_typing_clicks(&mut self) {
+        self.typing_clicks = !self.typing_clicks;
+    }
+
+    /// Moves how loud key clicks are.
+    pub fn nudge_typing_volume(&mut self, delta: f32) {
+        self.typing_volume = (self.typing_volume + delta).clamp(0.0, 1.0);
+    }
+
+    /// The sound a key should make, or nothing when the user has asked for quiet.
+    pub fn click_for(&self, key: char) -> Option<crate::audio::blip::Blip> {
+        (self.typing_clicks && self.typing_volume > 0.0).then_some(
+            crate::audio::blip::Blip::Click { key, volume: self.typing_volume },
+        )
+    }
+
     /// Moves the noise floor by a step of the meter.
     pub fn nudge_gate(&mut self, delta: f32) {
         self.calibrating = None;
@@ -533,15 +572,14 @@ impl App {
 
     /// Cycles through sections in the Settings view.
     pub fn settings_next_section(&mut self, forward: bool) {
-        self.settings_section = match (self.settings_section, forward) {
-            (SettingsSection::InputDevice, true) => SettingsSection::OutputDevice,
-            (SettingsSection::OutputDevice, true) => SettingsSection::MicTest,
-            (SettingsSection::MicTest, true) => SettingsSection::InputDevice,
-
-            (SettingsSection::InputDevice, false) => SettingsSection::MicTest,
-            (SettingsSection::OutputDevice, false) => SettingsSection::InputDevice,
-            (SettingsSection::MicTest, false) => SettingsSection::OutputDevice,
-        };
+        use SettingsSection::*;
+        let order = [InputDevice, OutputDevice, MicTest, Typing];
+        let at = order
+            .iter()
+            .position(|section| *section == self.settings_section)
+            .unwrap_or(0);
+        let step = if forward { 1 } else { order.len() - 1 };
+        self.settings_section = order[(at + step) % order.len()];
         self.settings_error = None;
     }
 
@@ -568,7 +606,7 @@ impl App {
                     };
                 }
             }
-            SettingsSection::MicTest => {
+            SettingsSection::MicTest | SettingsSection::Typing => {
                 self.settings_next_section(forward);
             }
         }
@@ -659,10 +697,13 @@ mod tests {
         assert_eq!(app.settings_section, SettingsSection::MicTest);
 
         app.settings_next_section(true);
+        assert_eq!(app.settings_section, SettingsSection::Typing);
+
+        app.settings_next_section(true);
         assert_eq!(app.settings_section, SettingsSection::InputDevice);
 
         app.settings_next_section(false);
-        assert_eq!(app.settings_section, SettingsSection::MicTest);
+        assert_eq!(app.settings_section, SettingsSection::Typing);
 
         app.toggle_settings();
         assert_eq!(app.view_mode, ViewMode::Chat);
@@ -715,6 +756,86 @@ mod tests {
         app.view_next(true);
         assert_eq!(app.viewing, ChannelId(1));
         assert_eq!(app.voice, Some(ChannelId(2)), "browsing must not move the voice channel");
+    }
+
+    #[test]
+    fn a_channel_you_are_not_reading_is_marked_and_then_cleared() {
+        let mut app = welcomed();
+        app.apply(Event::Chat(ChatLine {
+            channel: ChannelId(1),
+            from: PeerId([2; 32]),
+            text: "over here".into(),
+            at: 1,
+        }));
+        assert!(app.unread.contains(&ChannelId(1)));
+
+        app.view_next(true);
+        assert_eq!(app.viewing, ChannelId(1));
+        assert!(app.unread.is_empty(), "looking at a channel is what reading it means");
+    }
+
+    #[test]
+    fn the_channel_in_front_of_you_and_your_own_words_are_never_unread() {
+        let mut app = welcomed();
+        app.apply(Event::Chat(ChatLine {
+            channel: ChannelId(0),
+            from: PeerId([2; 32]),
+            text: "right here".into(),
+            at: 1,
+        }));
+        assert!(app.unread.is_empty(), "you are looking straight at it");
+
+        app.apply(Event::Chat(ChatLine {
+            channel: ChannelId(1),
+            from: PeerId([1; 32]),
+            text: "mine".into(),
+            at: 2,
+        }));
+        assert!(app.unread.is_empty(), "you do not need telling about your own message");
+    }
+
+    #[test]
+    fn typing_makes_no_sound_until_it_is_switched_on() {
+        let mut app = welcomed();
+        assert_eq!(app.click_for('a'), None);
+
+        app.toggle_typing_clicks();
+        assert!(app.click_for('a').is_some());
+
+        app.nudge_typing_volume(-1.0);
+        assert_eq!(app.click_for('a'), None, "turned all the way down is off too");
+    }
+
+    #[test]
+    fn the_click_volume_stays_on_its_dial() {
+        let mut app = welcomed();
+        for _ in 0..50 {
+            app.nudge_typing_volume(0.1);
+        }
+        assert_eq!(app.typing_volume, 1.0);
+        for _ in 0..50 {
+            app.nudge_typing_volume(-0.1);
+        }
+        assert_eq!(app.typing_volume, 0.0);
+    }
+
+    #[test]
+    fn every_settings_section_can_be_reached_in_both_directions() {
+        let mut app = welcomed();
+        let mut seen = vec![app.settings_section];
+        for _ in 0..3 {
+            app.settings_next_section(true);
+            seen.push(app.settings_section);
+        }
+        assert_eq!(seen.len(), 4);
+        seen.sort_by_key(|section| format!("{section:?}"));
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "tab must reach all four, not loop through three");
+
+        app.settings_next_section(true);
+        assert_eq!(app.settings_section, SettingsSection::InputDevice, "and wrap");
+        app.settings_next_section(false);
+        assert_eq!(app.settings_section, SettingsSection::Typing, "in both directions");
     }
 
     #[test]
