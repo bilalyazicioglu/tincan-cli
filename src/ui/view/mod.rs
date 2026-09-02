@@ -128,10 +128,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn fit(app: &App, width: usize, theme: &Theme) -> String {
     let full = if app.view_mode == ViewMode::Settings {
         [
-            "tab section · ↑↓ move · enter apply · space test · r rescan · esc back",
-            "tab section · ↑↓ move · enter apply · space test · esc back",
-            "tab section · ↑↓ move · enter apply · esc back",
-            "↑↓ move · enter apply · esc back",
+            "tab section · ↑↓ move · ←→ level · a measure · enter apply · esc back",
+            "tab section · ↑↓ move · ←→ level · enter apply · esc back",
+            "tab section · ↑↓ move · ←→ level · esc back",
+            "↑↓ move · ←→ level · esc back",
             "esc back",
         ]
     } else {
@@ -236,6 +236,19 @@ mod tests {
     fn the_shortcuts_are_always_on_screen() {
         let screen = rendered(80, 24, &room());
         assert!(screen.contains("ctrl+c"), "{screen}");
+    }
+
+    #[test]
+    fn the_settings_hints_name_the_keys_that_screen_actually_has() {
+        let mut app = room();
+        app.view_mode = ViewMode::Settings;
+        let theme = Theme::from_env();
+
+        let full = fit(&app, 80, &theme);
+        assert!(full.contains("←→"), "the gate is only discoverable from here: {full}");
+        for width in [70, 55, 40, 20, 4] {
+            assert!(fit(&app, width, &theme).chars().count() <= width);
+        }
     }
 
     #[test]

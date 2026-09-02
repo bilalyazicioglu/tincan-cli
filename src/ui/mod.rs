@@ -6,7 +6,7 @@ mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyhow::Result;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -18,7 +18,7 @@ use crate::config::Config;
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
 use crate::proto::{ChannelId, PeerId};
-use state::{App, SettingsSection, ViewMode};
+use state::{App, GATE_STEP, SettingsSection, ViewMode};
 use theme::Theme;
 
 /// Where the interface holds on to the audio side. Never built if audio failed to
@@ -37,6 +37,8 @@ pub struct VoiceControl {
     pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
     /// Whether the microphone loopback test is active.
     pub mic_loopback: Arc<AtomicBool>,
+    /// The microphone's noise floor, as the capture loop reads it.
+    pub gate: Arc<AtomicU32>,
     pub health: Arc<AudioHealth>,
     pub blip_tx: mpsc::Sender<Blip>,
     /// The audio hardware stays open for as long as this is kept alive.
@@ -58,6 +60,14 @@ impl VoiceControl {
 
     pub fn set_loopback(&self, active: bool) {
         self.mic_loopback.store(active, Ordering::Relaxed);
+    }
+
+    /// Moves the microphone's noise floor. `level` is a position on the same meter the
+    /// settings screen draws, so what the user drags and what the detector compares
+    /// against cannot drift apart.
+    pub fn set_gate(&self, level: f32) {
+        self.gate
+            .store(crate::audio::rms_for(level).to_bits(), Ordering::Relaxed);
     }
 
     pub fn active_input(&self) -> Option<String> {
@@ -140,6 +150,8 @@ pub async fn run(
         // user to visit the settings screen.
         app.active_input_name = voice.active_input();
         app.active_output_name = voice.active_output();
+        app.input_gate = Config::load().gate_for(app.active_input_name.as_deref());
+        voice.set_gate(app.input_gate);
     }
     let mut terminal = ratatui::init();
     let mut keys = spawn_key_reader();
@@ -185,6 +197,8 @@ pub async fn run(
                 // Live microphone level: our own meter and the settings screen.
                 level = next_mic_level(mic_level_rx.as_mut()) => {
                     app.mic_level = level;
+                    app.observe_level(level);
+                    settle_calibration(&mut app, voice.as_ref());
                 }
 
                 // How loud everyone else is, for the meters in the roster.
@@ -202,7 +216,9 @@ pub async fn run(
                 // The only self-driven redraw: while the string is carrying a pulse
                 // or a mode change is settling. With nothing moving the interface
                 // sleeps until the network, the audio or a key wakes it.
-                _ = tokio::time::sleep(FRAME_INTERVAL), if app.needs_animation() => {}
+                _ = tokio::time::sleep(FRAME_INTERVAL), if app.needs_animation() => {
+                    settle_calibration(&mut app, voice.as_ref());
+                }
 
                 key = keys.recv() => match key {
                     Some(key) => {
@@ -271,6 +287,9 @@ async fn handle_key(
     // Toggle Settings view (F6 or Ctrl+,)
     let toggle_settings_key = key.code == KeyCode::F(6) || (ctrl && key.code == KeyCode::Char(','));
     if toggle_settings_key {
+        if app.view_mode == ViewMode::Settings {
+            remember_gate(app, voice);
+        }
         app.toggle_settings();
         if let Some(v) = voice {
             v.play(Blip::Chime);
@@ -283,11 +302,38 @@ async fn handle_key(
     if app.view_mode == ViewMode::Settings {
         match key.code {
             KeyCode::Esc => {
+                remember_gate(app, voice);
                 app.toggle_settings();
                 if let Some(v) = voice {
                     v.play(Blip::Chime);
                     v.set_loopback(false);
                 }
+                return Ok(false);
+            }
+            // The gate steps by one cell of the meter it is drawn on, so a press moves
+            // it exactly as far as it looks like it should.
+            KeyCode::Left | KeyCode::Char('h')
+                if app.settings_section == SettingsSection::MicTest =>
+            {
+                app.nudge_gate(-GATE_STEP);
+                if let Some(v) = voice {
+                    v.set_gate(app.input_gate);
+                }
+                return Ok(false);
+            }
+            KeyCode::Right | KeyCode::Char('l')
+                if app.settings_section == SettingsSection::MicTest =>
+            {
+                app.nudge_gate(GATE_STEP);
+                if let Some(v) = voice {
+                    v.set_gate(app.input_gate);
+                }
+                return Ok(false);
+            }
+            KeyCode::Char('a') | KeyCode::Char('A')
+                if app.settings_section == SettingsSection::MicTest =>
+            {
+                app.start_calibration();
                 return Ok(false);
             }
             KeyCode::Tab => {
@@ -335,6 +381,10 @@ async fn handle_key(
                                         app.active_input_name = Some(activated.clone());
                                         app.settings_error = None;
                                         let mut cfg = Config::load();
+                                        // The gate belongs to the microphone, not to
+                                        // the session: this one has its own floor.
+                                        app.input_gate = cfg.gate_for(Some(&activated));
+                                        v.set_gate(app.input_gate);
                                         cfg.input_device = Some(activated);
                                         let _ = cfg.save();
                                     }
@@ -444,6 +494,35 @@ async fn handle_key(
         _ => {}
     }
     Ok(false)
+}
+
+/// Ends a room measurement once its time is up, and keeps what it decided.
+fn settle_calibration(app: &mut App, voice: Option<&VoiceControl>) {
+    if app.finish_calibration().is_some() {
+        if let Some(voice) = voice {
+            voice.set_gate(app.input_gate);
+        }
+        remember_gate(app, voice);
+    }
+}
+
+/// Writes the gate to the config, under the name of the microphone it was set for.
+///
+/// Called when leaving the settings screen rather than on every keypress: dragging the
+/// gate across the meter is twenty-odd presses, and none of them is worth a file write.
+fn remember_gate(app: &App, voice: Option<&VoiceControl>) {
+    if voice.is_none() {
+        return;
+    }
+    let Some(device) = app.active_input_name.as_deref() else {
+        return;
+    };
+    let mut config = Config::load();
+    if (config.gate_for(Some(device)) - app.input_gate).abs() < f32::EPSILON {
+        return;
+    }
+    config.set_gate(device, app.input_gate);
+    let _ = config.save();
 }
 
 /// When the roster changes, updates the voice mesh to the new membership and aligns

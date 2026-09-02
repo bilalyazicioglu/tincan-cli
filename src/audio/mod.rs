@@ -10,7 +10,7 @@ pub mod vad;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -73,6 +73,10 @@ pub struct VoiceIo {
     pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
     /// Whether the microphone loopback test is active (hearing own voice).
     pub mic_loopback: Arc<AtomicBool>,
+    /// The RMS floor under which the microphone is treated as room noise, held as
+    /// `f32::to_bits`. The interface writes it and the capture loop reads it, so the
+    /// user can drag the gate while the detector is running.
+    pub gate: Arc<AtomicU32>,
     pub health: Arc<AudioHealth>,
     pub blip_tx: mpsc::Sender<Blip>,
     /// The audio hardware stays open for as long as this is kept alive.
@@ -91,6 +95,9 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let (peer_levels_tx, peer_levels_rx) = watch::channel(HashMap::new());
     let (loopback_tx, mut loopback_rx) = mpsc::channel::<Vec<f32>>(16);
 
+    let gate = Arc::new(AtomicU32::new(
+        rms_for(crate::config::DEFAULT_GATE).to_bits(),
+    ));
     let mic_open = Arc::new(AtomicBool::new(true));
     let hearing = Arc::new(AtomicBool::new(true));
     let mic_loopback = Arc::new(AtomicBool::new(false));
@@ -99,6 +106,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let capture_mic = mic_open.clone();
     let capture_speaking = speaking_tx.clone();
     let capture_loopback = mic_loopback.clone();
+    let capture_gate = gate.clone();
     tokio::spawn(async move {
         let mut encoder = match codec::Encoder::new() {
             Ok(encoder) => encoder,
@@ -139,6 +147,10 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                 if capture_loopback.load(Ordering::Relaxed) {
                     let _ = loopback_tx.try_send(pcm.clone());
                 }
+
+                // The gate can move under us while someone drags it, so it is read
+                // per frame rather than baked into the detector when it was built.
+                detector.set_threshold(f32::from_bits(capture_gate.load(Ordering::Relaxed)));
 
                 // Keep feeding the VAD even while the microphone is closed, so that
                 // the hangover state is consistent when it opens again — but send
@@ -316,6 +328,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         mic_level: mic_level_rx,
         peer_levels: peer_levels_rx,
         mic_loopback,
+        gate,
         health,
         blip_tx,
         devices,
@@ -362,18 +375,39 @@ fn to_speaker(room: &mut [f32], hearing: bool, interface: &[f32]) {
     }
 }
 
+/// The quietest sound the meter can show, in decibels.
+const FLOOR_DB: f32 = -50.0;
+/// How many decibels the meter spans, from its floor to full.
+const SPAN_DB: f32 = 44.0;
+/// Keeps the logarithm finite on digital silence.
+const EPSILON: f32 = 1e-5;
+
 /// Loudness on the scale the meters draw: 0.0 at the noise floor, 1.0 at a shout.
 ///
 /// The ear works in decibels, so a linear RMS bar spends most of its travel doing
 /// nothing at all. The window here is -50 dB (a quiet room) to -6 dB (a loud voice).
 pub fn loudness(pcm: &[f32]) -> f32 {
-    if pcm.is_empty() {
+    level_of(vad::rms(pcm))
+}
+
+/// Where an RMS reading sits on the meter.
+pub fn level_of(rms: f32) -> f32 {
+    let db = 20.0 * (rms + EPSILON).log10();
+    ((db - FLOOR_DB) / SPAN_DB).clamp(0.0, 1.0)
+}
+
+/// The RMS threshold a position on the meter stands for — the inverse of `level_of`,
+/// so what the user drags along the meter and what the detector compares against are
+/// the same number in two units.
+///
+/// The bottom of the meter is not -50 dB but nothing at all: a gate dragged all the
+/// way down means *never gate*, which is a state worth being able to ask for.
+pub fn rms_for(level: f32) -> f32 {
+    if level <= 0.0 {
         return 0.0;
     }
-    let sum_squares: f32 = pcm.iter().map(|sample| sample * sample).sum();
-    let rms = (sum_squares / pcm.len() as f32).sqrt();
-    let db = 20.0 * (rms + 1e-5).log10();
-    ((db + 50.0) / 44.0).clamp(0.0, 1.0)
+    let db = level.min(1.0) * SPAN_DB + FLOOR_DB;
+    (10f32.powf(db / 20.0) - EPSILON).max(0.0)
 }
 
 /// Which of the five steps of the three-cell meter a loudness lands on.
@@ -418,6 +452,36 @@ mod tests {
         assert!(queued.is_empty());
         assert_eq!(frame[..10], [1.0; 10], "and then it plays");
         assert_eq!(frame[10], 0.0, "with silence after it, not a repeat");
+    }
+
+    #[test]
+    fn the_meter_scale_converts_both_ways() {
+        for step in 1..=20 {
+            let level = step as f32 / 20.0;
+            let back = level_of(rms_for(level));
+            assert!(
+                (back - level).abs() < 0.01,
+                "{level} became {back}; the meter and the gate must agree"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bottom_of_the_meter_means_never_gate() {
+        assert_eq!(rms_for(0.0), 0.0, "a gate at zero must let digital silence through");
+        assert_eq!(rms_for(-1.0), 0.0, "and must not go negative");
+    }
+
+    #[test]
+    fn the_gate_we_shipped_with_is_where_the_marker_now_sits() {
+        // The detector's old hard-coded 0.01 RMS is what the default has to reproduce,
+        // or everyone's microphone changes behaviour on upgrade.
+        let level = level_of(0.01);
+        assert!(
+            (level - crate::config::DEFAULT_GATE).abs() < 0.02,
+            "0.01 RMS sits at {level}, the default claims {}",
+            crate::config::DEFAULT_GATE
+        );
     }
 
     #[test]

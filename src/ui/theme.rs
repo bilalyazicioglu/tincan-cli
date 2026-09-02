@@ -229,7 +229,9 @@ impl Theme {
     /// Swaps marks that live in prose rather than in the glyph table.
     pub fn plainly(&self, text: &str) -> String {
         if self.ascii {
-            text.replace(" · ", " - ").replace("↑↓", "up/down")
+            text.replace(" · ", " - ")
+                .replace("↑↓", "up/down")
+                .replace("←→", "left/right")
         } else {
             text.to_string()
         }
@@ -463,7 +465,10 @@ mod tests {
         // Separators and ellipses are written into sentences rather than looked up in
         // the glyph table, so they are exactly what slips past a fallback.
         let plain = Theme::austere();
-        assert_eq!(plain.plainly("tab · f2 · ↑↓ move"), "tab - f2 - up/down move");
+        assert_eq!(
+            plain.plainly("tab · f2 · ↑↓ move · ←→ level"),
+            "tab - f2 - up/down move - left/right level"
+        );
         assert!(plain.glyphs.cut.is_ascii());
         assert!(plain.glyphs.dot.is_ascii());
 

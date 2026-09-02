@@ -17,6 +17,30 @@ const VISIBLE_HISTORY: usize = 500;
 /// How long a dropout keeps being reported after the audio recovers.
 const DROPOUT_MEMORY: std::time::Duration = std::time::Duration::from_secs(6);
 
+/// How long we listen to the room before deciding where its floor is. Long enough to
+/// catch a fan coming round, short enough that nobody wanders off.
+const CALIBRATION: std::time::Duration = std::time::Duration::from_millis(1500);
+/// How far above the loudest thing we heard the gate is placed. About 2.6 dB on the
+/// meter's scale: enough that the room stays under it, little enough that a quiet
+/// voice still gets over.
+const CALIBRATION_MARGIN: f32 = 0.06;
+/// Above this the gate would start eating the voice it is supposed to protect.
+const GATE_CEILING: f32 = 0.9;
+/// How many cells the level meter is drawn in. Lives here rather than in the view
+/// because the gate steps by exactly one cell — what you press and what you see have
+/// to be the same distance.
+pub const METER_CELLS: usize = 28;
+/// One cell of the meter.
+pub const GATE_STEP: f32 = 1.0 / METER_CELLS as f32;
+
+/// A measurement of the room in progress.
+#[derive(Debug, Clone, Copy)]
+pub struct Calibration {
+    until: std::time::Instant,
+    /// The loudest the room got while we listened.
+    peak: f32,
+}
+
 /// A line in the chat pane: either someone's message or a system notice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Line {
@@ -69,6 +93,11 @@ pub struct App {
     pub speaking: HashSet<PeerId>,
     /// How loud each of the others is, 0-4, for the meters beside their names.
     pub peer_levels: HashMap<PeerId, u8>,
+    /// Where the microphone's noise floor sits, as a position on the level meter.
+    /// Anything quieter than this never leaves the machine.
+    pub input_gate: f32,
+    /// A measurement of the room, if one is running.
+    pub calibrating: Option<Calibration>,
     /// Whether the string may animate. Off under reduced motion.
     pub motion: bool,
     /// When the interface opened. The string's pulse runs on this clock, so it keeps
@@ -121,6 +150,8 @@ impl App {
             input: String::new(),
             speaking: HashSet::new(),
             peer_levels: HashMap::new(),
+            input_gate: crate::config::DEFAULT_GATE,
+            calibrating: None,
             motion: true,
             started: std::time::Instant::now(),
             voice_available: false,
@@ -297,8 +328,54 @@ impl App {
 
     /// Whether anything on screen is still moving. The event loop asks before waking
     /// itself, so an idle room costs nothing.
+    ///
+    /// A running measurement counts even under reduced motion: the microphone level is
+    /// only published when it changes, so in the silent room a measurement is *for*
+    /// there may be no event left to finish it on.
     pub fn needs_animation(&self) -> bool {
-        self.is_transitioning() || (self.motion && !self.speaking.is_empty())
+        self.is_transitioning()
+            || self.calibrating.is_some()
+            || (self.motion && !self.speaking.is_empty())
+    }
+
+    /// Whether the microphone is currently loud enough to be sent.
+    pub fn gate_open(&self) -> bool {
+        self.mic_level > self.input_gate
+    }
+
+    /// Moves the noise floor by a step of the meter.
+    pub fn nudge_gate(&mut self, delta: f32) {
+        self.calibrating = None;
+        self.input_gate = (self.input_gate + delta).clamp(0.0, GATE_CEILING);
+    }
+
+    /// Starts listening to the room to find its floor.
+    pub fn start_calibration(&mut self) {
+        self.calibrating = Some(Calibration {
+            until: std::time::Instant::now() + CALIBRATION,
+            peak: 0.0,
+        });
+    }
+
+    /// Feeds the running measurement, if there is one.
+    pub fn observe_level(&mut self, level: f32) {
+        if let Some(calibration) = self.calibrating.as_mut()
+            && std::time::Instant::now() < calibration.until
+        {
+            calibration.peak = calibration.peak.max(level);
+        }
+    }
+
+    /// Ends the measurement once its time is up, and returns the gate it decided on.
+    /// `None` while it is still listening, or when nothing is running.
+    pub fn finish_calibration(&mut self) -> Option<f32> {
+        let calibration = self.calibrating?;
+        if std::time::Instant::now() < calibration.until {
+            return None;
+        }
+        self.calibrating = None;
+        self.input_gate = (calibration.peak + CALIBRATION_MARGIN).clamp(0.0, GATE_CEILING);
+        Some(self.input_gate)
     }
 
     /// Returns true if a mode switch happened recently (< 180 ms).
@@ -625,6 +702,73 @@ mod tests {
 
         app.dropped_at = Some(std::time::Instant::now() - DROPOUT_MEMORY * 2);
         assert!(!app.recently_dropped(), "old trouble must stop being reported");
+    }
+
+    #[test]
+    fn the_gate_cannot_be_pushed_off_either_end_of_the_meter() {
+        let mut app = welcomed();
+        for _ in 0..100 {
+            app.nudge_gate(-0.05);
+        }
+        assert_eq!(app.input_gate, 0.0, "the bottom of the meter means never gate");
+
+        for _ in 0..100 {
+            app.nudge_gate(0.05);
+        }
+        assert_eq!(app.input_gate, GATE_CEILING, "and it must never eat the voice entirely");
+    }
+
+    #[test]
+    fn the_gate_says_whether_anything_is_getting_through() {
+        let mut app = welcomed();
+        app.input_gate = 0.3;
+
+        app.mic_level = 0.1;
+        assert!(!app.gate_open(), "room noise stays home");
+        app.mic_level = 0.5;
+        assert!(app.gate_open());
+    }
+
+    #[test]
+    fn measuring_the_room_settles_above_the_loudest_thing_it_heard() {
+        let mut app = welcomed();
+        app.start_calibration();
+        assert!(app.needs_animation(), "a measurement has to keep the loop awake");
+        assert_eq!(app.finish_calibration(), None, "it is still listening");
+
+        for level in [0.05, 0.22, 0.11] {
+            app.observe_level(level);
+        }
+        // Run the clock out rather than sleeping.
+        app.calibrating.as_mut().unwrap().until = std::time::Instant::now();
+
+        let gate = app.finish_calibration().expect("its time is up");
+        assert!((gate - (0.22 + CALIBRATION_MARGIN)).abs() < 1e-6, "settled at {gate}");
+        assert_eq!(app.input_gate, gate);
+        assert!(app.calibrating.is_none(), "and it is over");
+        assert_eq!(app.finish_calibration(), None, "it does not fire twice");
+    }
+
+    #[test]
+    fn a_level_arriving_after_the_measurement_is_not_counted() {
+        let mut app = welcomed();
+        app.start_calibration();
+        app.observe_level(0.1);
+        app.calibrating.as_mut().unwrap().until = std::time::Instant::now();
+
+        app.observe_level(0.9);
+        assert!(
+            app.finish_calibration().unwrap() < 0.9,
+            "someone talking after the window must not set the floor"
+        );
+    }
+
+    #[test]
+    fn touching_the_gate_by_hand_calls_off_a_measurement() {
+        let mut app = welcomed();
+        app.start_calibration();
+        app.nudge_gate(0.05);
+        assert!(app.calibrating.is_none(), "the user overruled it");
     }
 
     #[test]

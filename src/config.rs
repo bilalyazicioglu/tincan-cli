@@ -3,22 +3,50 @@
 //! Stores user preferences such as preferred audio input/output devices
 //! across sessions in `~/.config/tincan/config.toml`.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Where the microphone gate sits by default, as a position on the level meter.
+///
+/// This is where the detector's original hard-coded 0.01 RMS actually lands, so an
+/// installation that never touches the setting behaves exactly as it did before.
+pub const DEFAULT_GATE: f32 = 0.23;
+
 /// Persistent application configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+///
+/// Not `Eq`: the gate is a float. `PartialEq` is all the comparisons here need.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Config {
     /// Preferred microphone name (partial matching supported).
     pub input_device: Option<String>,
     /// Preferred speaker / headphone name (partial matching supported).
     pub output_device: Option<String>,
+    /// The gate below which each microphone's audio is treated as room noise, keyed by
+    /// device name. Kept per device because a laptop microphone and a headset do not
+    /// share a noise floor, and one value for both is wrong for at least one of them.
+    #[serde(default)]
+    pub input_gates: HashMap<String, f32>,
 }
 
 impl Config {
+    /// The gate for a microphone, or the default for one never adjusted.
+    pub fn gate_for(&self, device: Option<&str>) -> f32 {
+        device
+            .and_then(|name| self.input_gates.get(name))
+            .copied()
+            .unwrap_or(DEFAULT_GATE)
+            .clamp(0.0, 1.0)
+    }
+
+    pub fn set_gate(&mut self, device: &str, level: f32) {
+        self.input_gates
+            .insert(device.to_string(), level.clamp(0.0, 1.0));
+    }
+
     /// Returns the standard path to the configuration file:
     /// `~/.config/tincan/config.toml` (or `$XDG_CONFIG_HOME/tincan/config.toml`).
     pub fn default_path() -> Option<PathBuf> {
@@ -88,6 +116,35 @@ mod tests {
     }
 
     #[test]
+    fn an_unadjusted_microphone_gets_the_default_gate() {
+        let mut config = Config::default();
+        assert_eq!(config.gate_for(Some("MacBook Pro Microphone")), DEFAULT_GATE);
+        assert_eq!(config.gate_for(None), DEFAULT_GATE);
+
+        config.set_gate("AirPods", 0.4);
+        assert_eq!(config.gate_for(Some("AirPods")), 0.4);
+        assert_eq!(
+            config.gate_for(Some("MacBook Pro Microphone")),
+            DEFAULT_GATE,
+            "one microphone's noise floor says nothing about another's"
+        );
+    }
+
+    #[test]
+    fn a_config_written_before_gates_existed_still_loads() {
+        let dir = std::env::temp_dir().join("tincan_test_old_config");
+        let path = dir.join("config.toml");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(&path, "input_device = \"MacBook Pro Microphone\"\n").unwrap();
+
+        let config = Config::load_from(&path).expect("an older config must still open");
+        assert_eq!(config.input_device.as_deref(), Some("MacBook Pro Microphone"));
+        assert_eq!(config.gate_for(Some("MacBook Pro Microphone")), DEFAULT_GATE);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn roundtrip_save_and_load() {
         let temp_dir = std::env::temp_dir().join("tincan_test_config");
         let path = temp_dir.join("test_config.toml");
@@ -95,6 +152,7 @@ mod tests {
         let original = Config {
             input_device: Some("MacBook Pro Microphone".into()),
             output_device: Some("External Headphones".into()),
+            input_gates: HashMap::from([("MacBook Pro Microphone".to_string(), 0.31)]),
         };
 
         original.save_to(&path).expect("saving config should succeed");

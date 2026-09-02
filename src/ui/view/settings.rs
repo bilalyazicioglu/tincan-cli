@@ -10,16 +10,12 @@ use ratatui::widgets::Paragraph;
 
 use super::{clip, spread};
 use crate::audio::device::AudioDeviceInfo;
-use crate::ui::state::{App, SettingsSection};
+use crate::ui::state::{App, METER_CELLS, SettingsSection};
 use crate::ui::theme::Theme;
 
-/// How wide the microphone test meter is drawn.
-const METER_CELLS: usize = 28;
-/// Where the voice detector starts letting audio through, as a share of the meter.
-const VAD_MARK: usize = METER_CELLS / 5;
-/// The label in front of the loopback switch, so the state after it can be clipped
+/// The key and the label in front of a control, so the state after it can be clipped
 /// to what is left rather than run off the edge.
-const HEAD_ROOM: usize = 25;
+const HEAD_ROOM: usize = 30;
 /// Above this share of the meter the input is close to clipping.
 const HOT: usize = METER_CELLS * 17 / 20;
 const WARM: usize = METER_CELLS * 3 / 5;
@@ -36,7 +32,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Constraint::Length(problem),
         Constraint::Max(rows_for(app.input_devices.len())),
         Constraint::Max(rows_for(app.output_devices.len())),
-        Constraint::Length(5),
+        Constraint::Length(6),
         Constraint::Min(0),
     ])
     .areas(area);
@@ -94,7 +90,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         frame,
         test,
         theme,
-        "HEAR YOURSELF",
+        "INPUT",
         app.settings_section == SettingsSection::MicTest,
         test_rows(test.width, app, theme),
     );
@@ -185,10 +181,10 @@ fn devices(
         .collect()
 }
 
-/// The loopback test, and what the microphone is picking up while it runs.
+/// The noise floor, the loopback test, and what the microphone is picking up.
 fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
-    // The label says what the switch does, so the state only has to say which way it
-    // is thrown. The meter under it shows the rest.
+    // Each label says what its control does, so the state after it only has to say
+    // where the control is set. The meter under both shows the rest.
     let (state, state_style) = if app.mic_test_active {
         ("on", theme.ok())
     } else {
@@ -196,49 +192,102 @@ fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
     };
     let room = (width as usize).saturating_sub(HEAD_ROOM);
 
+    let (gate, gate_style) = if app.calibrating.is_some() {
+        ("listening to the room…".to_string(), theme.brass())
+    } else if app.input_gate <= 0.0 {
+        ("nothing is ignored".to_string(), theme.dim())
+    } else {
+        (format!("{}%", (app.input_gate * 100.0).round() as u32), theme.text())
+    };
+
+    let floor = vec![
+        Span::raw("  "),
+        Span::styled("←→", theme.accent()),
+        Span::raw("     "),
+        Span::styled("ignore quieter than  ", theme.text()),
+        Span::styled(clip(&gate, room, theme), gate_style),
+    ];
+    // The measurement is the faster way to set the floor, so it is offered right
+    // beside it — but only when the pane is wide enough to hold both. `spread` drops
+    // it rather than letting it run over the edge.
+    let offer = match app.calibrating {
+        Some(_) => Vec::new(),
+        None => vec![
+            Span::styled("a", theme.accent()),
+            Span::styled("  measure the room ", theme.dim()),
+        ],
+    };
+
     vec![
+        spread(width, floor, offer),
         TextLine::from(vec![
             Span::raw("  "),
             Span::styled("space", theme.accent()),
             Span::raw("  "),
-            Span::styled("hear yourself   ", theme.text()),
+            Span::styled("hear yourself        ", theme.text()),
             Span::styled(clip(state, room, theme), state_style),
         ]),
         TextLine::from(""),
-        TextLine::from(meter(app, theme)),
+        TextLine::from(meter(width, app, theme)),
     ]
 }
 
-/// A meter with the speech threshold marked on it: below the mark nothing is sent,
-/// which is the one thing worth knowing while you talk into it.
-fn meter(app: &App, theme: &Theme) -> Vec<Span<'static>> {
-    let filled = ((app.mic_level.clamp(0.0, 1.0) * METER_CELLS as f32).round() as usize).min(METER_CELLS);
+/// The live level with the noise floor marked on it.
+///
+/// The mark is drawn from the gate itself rather than from a constant, and it is drawn
+/// over the lit cells as well as the dark ones — it is while you are talking that you
+/// most want to see how much room you have above the floor.
+///
+/// The bar shrinks to whatever the pane can hold. The gate keeps stepping by
+/// `1 / METER_CELLS` whatever the bar is drawn at, so a narrow terminal loses
+/// resolution on screen but never loses the setting.
+pub fn meter(width: u16, app: &App, theme: &Theme) -> Vec<Span<'static>> {
+    let (verdict, verdict_style) = if app.calibrating.is_some() {
+        ("hold still", theme.brass())
+    } else if app.gate_open() {
+        ("sending", theme.ok())
+    } else {
+        ("too quiet to send", theme.dim())
+    };
+
+    let cells = METER_CELLS.min((width as usize).saturating_sub(verdict.len() + 4));
+    if cells == 0 {
+        return vec![Span::styled(format!("  {verdict}"), verdict_style)];
+    }
+
+    let filled = ((app.mic_level.clamp(0.0, 1.0) * cells as f32).round() as usize).min(cells);
     let [lit, unlit] = theme.glyphs.bar;
+    let mark = gate_cell(app.input_gate, cells);
 
     let mut spans = vec![Span::raw("  ")];
-    for cell in 0..METER_CELLS {
-        if cell < filled {
-            let style = if cell >= HOT {
+    for cell in 0..cells {
+        if Some(cell) == mark {
+            spans.push(Span::styled("|", theme.accent()));
+        } else if cell < filled {
+            let style = if cell * METER_CELLS >= HOT * cells {
                 theme.error()
-            } else if cell >= WARM {
+            } else if cell * METER_CELLS >= WARM * cells {
                 theme.brass()
             } else {
                 theme.ok()
             };
             spans.push(Span::styled(lit.to_string(), style));
-        } else if cell == VAD_MARK {
-            spans.push(Span::styled("|", theme.text()));
         } else {
             spans.push(Span::styled(unlit.to_string(), theme.dim()));
         }
     }
     spans.push(Span::raw("  "));
-    spans.push(if filled > VAD_MARK {
-        Span::styled("sending", theme.ok())
-    } else {
-        Span::styled("too quiet to send", theme.dim())
-    });
+    spans.push(Span::styled(verdict, verdict_style));
     spans
+}
+
+/// Which cell of a `cells`-wide bar the gate sits on, or `None` when it is off the
+/// bottom and nothing is being ignored.
+pub fn gate_cell(gate: f32, cells: usize) -> Option<usize> {
+    if gate <= 0.0 || cells == 0 {
+        return None;
+    }
+    Some(((gate * cells as f32).round() as usize).min(cells - 1))
 }
 
 #[cfg(test)]
@@ -300,28 +349,110 @@ mod tests {
         assert!(!text(&rows[1]).contains("unavailable"), "{}", text(&rows[1]));
     }
 
+    fn drawn(app: &App) -> String {
+        meter(60, app, &Theme::from_env())
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
     #[test]
     fn the_meter_says_whether_the_voice_is_getting_through() {
         let mut app = app();
-        let theme = Theme::from_env();
+        app.input_gate = crate::config::DEFAULT_GATE;
 
         app.mic_level = 0.02;
-        let quiet: String = meter(&app, &theme).iter().map(|s| s.content.as_ref()).collect();
-        assert!(quiet.contains("too quiet"), "{quiet}");
+        assert!(drawn(&app).contains("too quiet"), "{}", drawn(&app));
 
         app.mic_level = 0.7;
-        let loud: String = meter(&app, &theme).iter().map(|s| s.content.as_ref()).collect();
-        assert!(loud.contains("sending"), "{loud}");
+        assert!(drawn(&app).contains("sending"), "{}", drawn(&app));
+    }
+
+    #[test]
+    fn the_mark_and_the_verdict_cannot_drift_apart() {
+        // They used to: the mark was a constant and the verdict compared against that
+        // same constant, and neither was the threshold the detector actually used.
+        let mut app = app();
+        for step in 1..=8 {
+            app.input_gate = step as f32 / 10.0;
+            let mark = gate_cell(app.input_gate, METER_CELLS).unwrap();
+
+            app.mic_level = app.input_gate - 0.02;
+            assert!(!app.gate_open(), "just under the mark at cell {mark} must not send");
+            app.mic_level = app.input_gate + 0.02;
+            assert!(app.gate_open(), "just over the mark at cell {mark} must send");
+        }
+    }
+
+    #[test]
+    fn moving_the_gate_moves_the_mark() {
+        let mut app = app();
+        app.input_gate = 0.2;
+        let low = drawn(&app).find('|').expect("the mark must be on the meter");
+
+        app.input_gate = 0.6;
+        let high = drawn(&app).find('|').expect("the mark must still be there");
+        assert!(high > low, "the mark has to follow the setting: {low} then {high}");
+    }
+
+    #[test]
+    fn the_mark_survives_a_loud_voice() {
+        let mut app = app();
+        app.input_gate = 0.3;
+        app.mic_level = 1.0;
+        assert!(
+            drawn(&app).contains('|'),
+            "the floor matters most when the meter is full: {}",
+            drawn(&app)
+        );
+    }
+
+    #[test]
+    fn a_gate_at_the_bottom_has_no_mark_to_draw() {
+        let mut app = app();
+        app.input_gate = 0.0;
+        assert_eq!(gate_cell(0.0, METER_CELLS), None);
+        assert!(!drawn(&app).contains('|'));
+    }
+
+    #[test]
+    fn the_floor_row_says_where_it_is_set() {
+        let mut app = app();
+        app.input_gate = 0.25;
+        let row = text(&test_rows(70, &app, &Theme::from_env())[0]);
+        assert!(row.contains("25%"), "{row}");
+        assert!(row.contains("measure the room"), "{row}");
+
+        app.input_gate = 0.0;
+        let off = text(&test_rows(70, &app, &Theme::from_env())[0]);
+        assert!(off.contains("nothing is ignored"), "{off}");
+    }
+
+    #[test]
+    fn a_measurement_in_progress_says_what_it_is_doing() {
+        let mut app = app();
+        app.start_calibration();
+        let row = text(&test_rows(70, &app, &Theme::from_env())[0]);
+        assert!(row.contains("listening to the room"), "{row}");
+        assert!(drawn(&app).contains("hold still"), "{}", drawn(&app));
     }
 
     #[test]
     fn the_test_names_its_own_state() {
         let mut app = app();
         let theme = Theme::from_env();
-        assert!(text(&test_rows(60, &app, &theme)[0]).contains("off"));
+        assert!(text(&test_rows(60, &app, &theme)[1]).contains("off"));
 
         app.mic_test_active = true;
-        assert!(text(&test_rows(60, &app, &theme)[0]).contains("on"));
-        assert!(test_rows(30, &app, &theme)[0].width() <= 30, "the switch must fit its section");
+        assert!(text(&test_rows(60, &app, &theme)[1]).contains("on"));
+        for width in [30, 40, 53, 80] {
+            for row in test_rows(width, &app, &theme) {
+                assert!(
+                    row.width() <= width as usize,
+                    "a control must fit its section at {width}: {:?}",
+                    text(&row)
+                );
+            }
+        }
     }
 }

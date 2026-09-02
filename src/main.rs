@@ -220,6 +220,7 @@ fn setup_voice(
                 mic_level: io.mic_level,
                 peer_levels: io.peer_levels,
                 mic_loopback: io.mic_loopback,
+                gate: io.gate,
                 health: io.health,
                 blip_tx: io.blip_tx,
                 devices: io.devices,
