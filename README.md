@@ -54,12 +54,18 @@ string, their can, with the latency written on it and your invite code underneat
 stays up there while the conversation is short enough to leave the room for it, so a
 full-screen terminal is never a wall of nothing.
 
-`F6` opens the audio screen: which microphone and speaker are in use, a loopback so you
-can hear yourself, and the level meter with your noise floor marked on it. Anything
+`F6` opens the audio screen: which microphone and speaker are in use, a way to hear
+yourself, and the level meter with your noise floor marked on it. Anything
 quieter than that mark never leaves your machine, which is how a fan or a noisy room
 stays out of the call. `←`/`→` move the floor a step at a time, and `a` listens to the
 room for a second and a half and sets it just above whatever it hears. It is remembered
 per microphone, because a laptop microphone and a headset do not share a noise floor.
+
+`space` records three seconds and plays them back. It records and plays in separate
+stages rather than monitoring live, because on a laptop the microphone can hear the
+speakers, and anything that opens both at once closes a loop between them that grows
+until it clips. `m` gives you live monitoring anyway for when you are on headphones,
+and cuts itself off if it starts feeding back.
 
 Set `NO_COLOR` for a colourless interface, `TINCAN_ASCII=1` if your terminal has no
 box-drawing, `TINCAN_NO_MOTION=1` to hold the string still, and `TINCAN_THEME=light`

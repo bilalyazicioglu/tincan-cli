@@ -256,7 +256,9 @@ impl AudioDevices {
                         } else {
                             0.0
                         };
-                        chunk.fill(sample);
+                        // The integer formats below clamp; this one used to hand
+                        // out-of-range floats straight to the driver.
+                        chunk.fill(sample.clamp(-1.0, 1.0));
                     }
                 },
                 |err| tracing::warn!("speaker error: {err}"),

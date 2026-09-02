@@ -10,7 +10,7 @@ pub mod vad;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -37,6 +37,49 @@ const JITTER_TARGET: usize = 3;
 const PLAYBACK_TARGET_FRAMES: usize = 3;
 /// If a peer sends nothing for this long, its resources are released.
 const PEER_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a recorded microphone test runs, and then how long it plays back.
+pub const TEST_LENGTH: Duration = Duration::from_secs(3);
+/// The ceiling on the buffer holding it.
+const TEST_SAMPLES: usize = 3 * SAMPLE_RATE as usize;
+
+/// What the microphone test is doing.
+///
+/// Recording and playing back are separate states rather than one "test" flag because
+/// the whole point is that the speaker stays quiet while the microphone is open: on a
+/// laptop, anything else closes an acoustic loop between the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MicTest {
+    #[default]
+    Off,
+    /// The microphone is being recorded and nothing is going to the speaker.
+    Recording,
+    /// What was recorded is playing back and the microphone is ignored.
+    Playing,
+    /// The microphone goes straight to the speaker. Safe on headphones and nowhere
+    /// else, which is why it is not the default.
+    Monitoring,
+}
+
+impl MicTest {
+    pub fn bits(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => Self::Recording,
+            2 => Self::Playing,
+            3 => Self::Monitoring,
+            _ => Self::Off,
+        }
+    }
+
+    /// Whether the microphone is being taken in at all.
+    pub fn listening(self) -> bool {
+        matches!(self, Self::Recording | Self::Monitoring)
+    }
+}
+
 /// The smallest change worth redrawing for: finer than the widest meter we draw.
 const METER_STEP: f32 = 1.0 / 64.0;
 /// How much of a meter survives each 20 ms frame once its peer goes quiet. A meter
@@ -71,8 +114,8 @@ pub struct VoiceIo {
     /// interface can draw. Quantising here is what lets the interface sleep: it
     /// wakes only when a bar would actually change, not fifty times a second.
     pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
-    /// Whether the microphone loopback test is active (hearing own voice).
-    pub mic_loopback: Arc<AtomicBool>,
+    /// What the microphone test is doing, as `MicTest::bits`.
+    pub mic_test: Arc<AtomicU8>,
     /// The RMS floor under which the microphone is treated as room noise, held as
     /// `f32::to_bits`. The interface writes it and the capture loop reads it, so the
     /// user can drag the gate while the detector is running.
@@ -100,12 +143,12 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     ));
     let mic_open = Arc::new(AtomicBool::new(true));
     let hearing = Arc::new(AtomicBool::new(true));
-    let mic_loopback = Arc::new(AtomicBool::new(false));
+    let mic_test = Arc::new(AtomicU8::new(MicTest::Off.bits()));
 
     // ── Capture: microphone → VAD → Opus → network ──────────────────────────
     let capture_mic = mic_open.clone();
     let capture_speaking = speaking_tx.clone();
-    let capture_loopback = mic_loopback.clone();
+    let capture_test = mic_test.clone();
     let capture_gate = gate.clone();
     tokio::spawn(async move {
         let mut encoder = match codec::Encoder::new() {
@@ -143,8 +186,10 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                     }
                 });
 
-                // If loopback test is active, pipe local mic audio to speaker side.
-                if capture_loopback.load(Ordering::Relaxed) {
+                // Hand the microphone to the test while it wants it. Where those
+                // samples go — the speaker now, or a buffer for later — is the
+                // playback side's decision.
+                if MicTest::from_bits(capture_test.load(Ordering::Relaxed)).listening() {
                     let _ = loopback_tx.try_send(pcm.clone());
                 }
 
@@ -182,6 +227,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
 
     // ── Playback: network → jitter → Opus decode → mixing → speaker ─────────
     let playback_hearing = hearing.clone();
+    let playback_test = mic_test.clone();
     tokio::spawn(async move {
         let mut streams: HashMap<PeerId, PeerStream> = HashMap::new();
         let mut levels: HashMap<PeerId, f32> = HashMap::new();
@@ -193,6 +239,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         let mut mixed = vec![0f32; FRAME];
         let mut blip_samples: Vec<f32> = Vec::new();
         let mut loopback_samples: Vec<f32> = Vec::new();
+        let mut recorded: Vec<f32> = Vec::new();
         let mut interface = vec![0f32; FRAME];
 
         loop {
@@ -202,7 +249,12 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                 }
 
                 Some(pcm_loop) = loopback_rx.recv() => {
-                    loopback_samples.extend(pcm_loop);
+                    take_microphone(
+                        MicTest::from_bits(playback_test.load(Ordering::Relaxed)),
+                        pcm_loop,
+                        &mut loopback_samples,
+                        &mut recorded,
+                    );
                 }
 
                 Some(packet) = incoming_rx.recv() => {
@@ -232,8 +284,19 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                     while let Ok(blip) = blip_rx.try_recv() {
                         blip_samples.extend(blip::of(blip));
                     }
+                    let test = MicTest::from_bits(playback_test.load(Ordering::Relaxed));
                     while let Ok(pcm_loop) = loopback_rx.try_recv() {
-                        loopback_samples.extend(pcm_loop);
+                        take_microphone(test, pcm_loop, &mut loopback_samples, &mut recorded);
+                    }
+                    match test {
+                        // The recording is handed over whole the moment the interface
+                        // says it is time to hear it.
+                        MicTest::Playing => loopback_samples.append(&mut recorded),
+                        MicTest::Off => {
+                            recorded.clear();
+                            loopback_samples.clear();
+                        }
+                        MicTest::Recording | MicTest::Monitoring => {}
                     }
 
                     // Feed the speaker buffer up to its target fill. Looking at the
@@ -267,17 +330,19 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                             }
                         }
 
-                        let refs: Vec<&[f32]> = sources.iter().map(|s| s.as_slice()).collect();
-                        mixer.mix(&refs, &mut mixed);
-
                         // Everything the program itself makes, as opposed to the room:
-                        // its own sounds, and your microphone while you are testing it.
+                        // its own sounds, and your own microphone played back at you.
                         interface.fill(0.0);
                         queue_into(&mut blip_samples, &mut interface);
                         queue_into(&mut loopback_samples, &mut interface);
 
+                        // One bus, one limiter. The interface used to be added after
+                        // the limiter had already done its work, which left its own
+                        // sounds — a played-back recording most of all — with nothing
+                        // holding them under full scale.
                         let hearing_now = playback_hearing.load(Ordering::Relaxed);
-                        to_speaker(&mut mixed, hearing_now, &interface);
+                        let bus = speaker_bus(&sources, &interface, hearing_now);
+                        mixer.mix(&bus, &mut mixed);
                         for sample in mixed.iter() {
                             let _ = playback.push(*sample);
                         }
@@ -327,7 +392,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         hearing,
         mic_level: mic_level_rx,
         peer_levels: peer_levels_rx,
-        mic_loopback,
+        mic_test,
         gate,
         health,
         blip_tx,
@@ -352,25 +417,42 @@ impl PeerStream {
     }
 }
 
+/// Where a frame of microphone audio goes while a test is running.
+fn take_microphone(
+    test: MicTest,
+    pcm: Vec<f32>,
+    speaker: &mut Vec<f32>,
+    recorded: &mut Vec<f32>,
+) {
+    match test {
+        MicTest::Monitoring => speaker.extend(pcm),
+        MicTest::Recording => {
+            // Bounded: a recording that outgrew its own playback would be a leak.
+            let room = TEST_SAMPLES.saturating_sub(recorded.len());
+            recorded.extend(pcm.into_iter().take(room));
+        }
+        MicTest::Off | MicTest::Playing => {}
+    }
+}
+
+/// What goes on the speaker bus.
+///
+/// The program's own sounds always; the room only while the ears are open. Deafening
+/// leaves the room off the bus rather than zeroing it afterwards, so the limiter is
+/// never working against audio nobody is going to hear.
+fn speaker_bus<'a>(room: &'a [Vec<f32>], interface: &'a [f32], hearing: bool) -> Vec<&'a [f32]> {
+    let mut bus: Vec<&[f32]> = Vec::with_capacity(room.len() + 1);
+    if hearing {
+        bus.extend(room.iter().map(|source| source.as_slice()));
+    }
+    bus.push(interface);
+    bus
+}
+
 /// Takes as much of a queued sound as fits into this frame.
 fn queue_into(queue: &mut Vec<f32>, frame: &mut [f32]) {
     let take = queue.len().min(frame.len());
     for (slot, sample) in frame.iter_mut().zip(queue.drain(..take)) {
-        *slot += sample;
-    }
-}
-
-/// What actually reaches the speaker.
-///
-/// Deafening silences the room, not the interface: the sound telling you your ears are
-/// shut has to survive the very state it is announcing, and so does the microphone test
-/// you opened on purpose. The stream keeps running either way — letting the speaker
-/// buffer drain would inflate the underrun counter for the wrong reason.
-fn to_speaker(room: &mut [f32], hearing: bool, interface: &[f32]) {
-    if !hearing {
-        room.fill(0.0);
-    }
-    for (slot, sample) in room.iter_mut().zip(interface) {
         *slot += sample;
     }
 }
@@ -427,15 +509,66 @@ mod tests {
 
     #[test]
     fn deafening_silences_the_room_but_not_the_interface() {
-        let mut room = vec![0.5; 4];
+        let room = vec![vec![0.5; 4]];
         let interface = vec![0.2; 4];
 
-        to_speaker(&mut room, false, &interface);
-        assert_eq!(room, vec![0.2; 4], "you must still hear yourself turn your ears back on");
+        let shut = speaker_bus(&room, &interface, false);
+        assert_eq!(shut.len(), 1, "the room must be off the bus");
+        assert_eq!(shut[0], &interface[..], "you must still hear your ears reopen");
 
-        let mut room = vec![0.5; 4];
-        to_speaker(&mut room, true, &interface);
-        assert_eq!(room, vec![0.7; 4], "hearing normally, both arrive");
+        let open = speaker_bus(&room, &interface, true);
+        assert_eq!(open.len(), 2, "hearing normally, both arrive");
+    }
+
+    #[test]
+    fn a_played_back_recording_cannot_leave_full_scale() {
+        // It used to: the interface bus was added after the limiter had run, so
+        // nothing held it down. Feedback then clipped instead of merely being loud.
+        let mut mixer = Mixer::default();
+        let room: Vec<Vec<f32>> = Vec::new();
+        let interface = vec![1.8; FRAME];
+        let mut out = vec![0.0; FRAME];
+
+        mixer.mix(&speaker_bus(&room, &interface, true), &mut out);
+
+        let peak = out.iter().fold(0f32, |peak, s| peak.max(s.abs()));
+        assert!(peak <= 1.0, "the speaker saw {peak}");
+        assert!(peak > 0.5, "and it must still be audible");
+    }
+
+    #[test]
+    fn the_speaker_stays_out_of_it_while_the_microphone_is_recording() {
+        let mut speaker = Vec::new();
+        let mut recorded = Vec::new();
+
+        take_microphone(MicTest::Recording, vec![0.5; 100], &mut speaker, &mut recorded);
+        assert!(
+            speaker.is_empty(),
+            "a speaker that plays while the microphone is open is the whole bug"
+        );
+        assert_eq!(recorded.len(), 100);
+
+        take_microphone(MicTest::Monitoring, vec![0.5; 100], &mut speaker, &mut recorded);
+        assert_eq!(speaker.len(), 100, "monitoring is the one mode that does play live");
+    }
+
+    #[test]
+    fn a_recording_cannot_grow_past_its_own_length() {
+        let mut speaker = Vec::new();
+        let mut recorded = Vec::new();
+        for _ in 0..(TEST_SAMPLES / FRAME + 10) {
+            take_microphone(MicTest::Recording, vec![0.1; FRAME], &mut speaker, &mut recorded);
+        }
+        assert_eq!(recorded.len(), TEST_SAMPLES);
+    }
+
+    #[test]
+    fn a_test_that_is_over_leaves_nothing_behind() {
+        let mut speaker = Vec::new();
+        let mut recorded = Vec::new();
+        take_microphone(MicTest::Off, vec![0.5; 100], &mut speaker, &mut recorded);
+        take_microphone(MicTest::Playing, vec![0.5; 100], &mut speaker, &mut recorded);
+        assert!(speaker.is_empty() && recorded.is_empty());
     }
 
     #[test]

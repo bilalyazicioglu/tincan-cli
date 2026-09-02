@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::audio::MicTest;
 use crate::audio::device::AudioDeviceInfo;
 use crate::net::Event;
 use crate::net::voice::LinkStatus;
@@ -26,6 +27,13 @@ const CALIBRATION: std::time::Duration = std::time::Duration::from_millis(1500);
 const CALIBRATION_MARGIN: f32 = 0.06;
 /// Above this the gate would start eating the voice it is supposed to protect.
 const GATE_CEILING: f32 = 0.9;
+
+/// A level this high is either a shout or a feedback loop.
+const RUNAWAY_LEVEL: f32 = 0.9;
+/// How long it has to stay there before we call it feedback. Speech has gaps between
+/// syllables; a room howling into its own microphone does not, and that is the one
+/// signature that separates them.
+const RUNAWAY_FOR: std::time::Duration = std::time::Duration::from_millis(700);
 /// How many cells the level meter is drawn in. Lives here rather than in the view
 /// because the gate steps by exactly one cell — what you press and what you see have
 /// to be the same distance.
@@ -126,7 +134,14 @@ pub struct App {
     pub active_input_name: Option<String>,
     pub active_output_name: Option<String>,
     pub mic_level: f32,
-    pub mic_test_active: bool,
+    /// What the microphone test is doing.
+    pub mic_test: MicTest,
+    /// When the current stage of the test runs out, for the stages that are timed.
+    pub mic_test_until: Option<std::time::Instant>,
+    /// Set when live monitoring was cut off because it started feeding back.
+    pub fed_back: bool,
+    /// Since when the input has been pinned at the top, if it has.
+    loud_since: Option<std::time::Instant>,
     pub settings_error: Option<String>,
     pub mode_transition_at: Option<std::time::Instant>,
 }
@@ -170,7 +185,10 @@ impl App {
             active_input_name: None,
             active_output_name: None,
             mic_level: 0.0,
-            mic_test_active: false,
+            mic_test: MicTest::Off,
+            mic_test_until: None,
+            fed_back: false,
+            loud_since: None,
             settings_error: None,
             mode_transition_at: None,
         }
@@ -289,7 +307,7 @@ impl App {
             }
             ViewMode::Settings => {
                 self.view_mode = ViewMode::Chat;
-                self.mic_test_active = false;
+                self.stop_mic_test();
                 self.settings_error = None;
             }
         }
@@ -335,7 +353,94 @@ impl App {
     pub fn needs_animation(&self) -> bool {
         self.is_transitioning()
             || self.calibrating.is_some()
+            || self.mic_test_until.is_some()
             || (self.motion && !self.speaking.is_empty())
+    }
+
+    /// Records for a few seconds and then plays it back, or stops a test already
+    /// running.
+    ///
+    /// Recording and playing are separate stages on purpose: while the microphone is
+    /// open the speaker stays silent, so there is no loop for a laptop to close.
+    pub fn toggle_recorded_test(&mut self) {
+        if self.mic_test == MicTest::Off {
+            self.fed_back = false;
+            self.mic_test = MicTest::Recording;
+            self.mic_test_until =
+                Some(std::time::Instant::now() + crate::audio::TEST_LENGTH);
+        } else {
+            self.stop_mic_test();
+        }
+    }
+
+    /// Turns live monitoring on or off. Safe on headphones; on a laptop the microphone
+    /// hears the speaker and the two feed each other.
+    pub fn toggle_monitor(&mut self) {
+        if self.mic_test == MicTest::Monitoring {
+            self.stop_mic_test();
+        } else {
+            self.fed_back = false;
+            self.loud_since = None;
+            self.mic_test = MicTest::Monitoring;
+            self.mic_test_until = None;
+        }
+    }
+
+    pub fn stop_mic_test(&mut self) {
+        self.mic_test = MicTest::Off;
+        self.mic_test_until = None;
+        self.loud_since = None;
+    }
+
+    /// Moves a timed test on to its next stage. Returns `true` when the stage changed,
+    /// so the caller knows to tell the audio engine.
+    pub fn advance_mic_test(&mut self) -> bool {
+        let Some(until) = self.mic_test_until else {
+            return false;
+        };
+        if std::time::Instant::now() < until {
+            return false;
+        }
+        match self.mic_test {
+            MicTest::Recording => {
+                self.mic_test = MicTest::Playing;
+                self.mic_test_until = Some(until + crate::audio::TEST_LENGTH);
+                true
+            }
+            _ => {
+                self.stop_mic_test();
+                true
+            }
+        }
+    }
+
+    /// How long the current stage of the test has left.
+    pub fn mic_test_left(&self) -> Option<std::time::Duration> {
+        self.mic_test_until
+            .map(|until| until.saturating_duration_since(std::time::Instant::now()))
+    }
+
+    /// Cuts live monitoring off when it starts feeding back, and returns `true` when it
+    /// just did.
+    ///
+    /// Only monitoring can feed back: it is the one mode that opens the microphone and
+    /// the speaker at the same time.
+    pub fn watch_for_feedback(&mut self, level: f32) -> bool {
+        if self.mic_test != MicTest::Monitoring {
+            self.loud_since = None;
+            return false;
+        }
+        if level < RUNAWAY_LEVEL {
+            self.loud_since = None;
+            return false;
+        }
+        let since = *self.loud_since.get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() < RUNAWAY_FOR {
+            return false;
+        }
+        self.stop_mic_test();
+        self.fed_back = true;
+        true
     }
 
     /// Whether the microphone is currently loud enough to be sent.
@@ -555,7 +660,7 @@ mod tests {
 
         app.toggle_settings();
         assert_eq!(app.view_mode, ViewMode::Chat);
-        assert!(!app.mic_test_active);
+        assert_eq!(app.mic_test, MicTest::Off);
     }
 
     #[test]
@@ -702,6 +807,69 @@ mod tests {
 
         app.dropped_at = Some(std::time::Instant::now() - DROPOUT_MEMORY * 2);
         assert!(!app.recently_dropped(), "old trouble must stop being reported");
+    }
+
+    #[test]
+    fn the_recorded_test_keeps_the_speaker_shut_while_the_microphone_is_open() {
+        let mut app = welcomed();
+        app.toggle_recorded_test();
+        assert_eq!(app.mic_test, MicTest::Recording, "recording comes first, on its own");
+
+        app.mic_test_until = Some(std::time::Instant::now());
+        assert!(app.advance_mic_test());
+        assert_eq!(app.mic_test, MicTest::Playing, "and only then does the speaker open");
+
+        app.mic_test_until = Some(std::time::Instant::now());
+        assert!(app.advance_mic_test());
+        assert_eq!(app.mic_test, MicTest::Off);
+        assert!(!app.advance_mic_test(), "and it stays over");
+    }
+
+    #[test]
+    fn space_stops_a_test_that_is_already_running() {
+        let mut app = welcomed();
+        app.toggle_recorded_test();
+        app.toggle_recorded_test();
+        assert_eq!(app.mic_test, MicTest::Off);
+        assert_eq!(app.mic_test_until, None);
+    }
+
+    #[test]
+    fn monitoring_that_starts_howling_is_cut_off() {
+        let mut app = welcomed();
+        app.toggle_monitor();
+        assert_eq!(app.mic_test, MicTest::Monitoring);
+
+        assert!(!app.watch_for_feedback(1.0), "one loud frame is not yet a verdict");
+        app.loud_since = Some(std::time::Instant::now() - RUNAWAY_FOR * 2);
+
+        assert!(app.watch_for_feedback(1.0), "but a level that never comes down is");
+        assert_eq!(app.mic_test, MicTest::Off);
+        assert!(app.fed_back, "and the interface has to be able to say why");
+    }
+
+    #[test]
+    fn a_loud_voice_with_gaps_in_it_is_not_feedback() {
+        let mut app = welcomed();
+        app.toggle_monitor();
+        app.loud_since = Some(std::time::Instant::now() - RUNAWAY_FOR * 2);
+
+        // A syllable ends. Speech does that; a howling room does not.
+        assert!(!app.watch_for_feedback(0.2));
+        assert!(!app.watch_for_feedback(1.0), "and the clock starts over");
+        assert_eq!(app.mic_test, MicTest::Monitoring);
+    }
+
+    #[test]
+    fn the_recorded_test_cannot_feed_back_by_definition() {
+        let mut app = welcomed();
+        app.toggle_recorded_test();
+        app.loud_since = Some(std::time::Instant::now() - RUNAWAY_FOR * 2);
+        assert!(
+            !app.watch_for_feedback(1.0),
+            "there is no loop to cut: the speaker is shut while the microphone is open"
+        );
+        assert_eq!(app.mic_test, MicTest::Recording);
     }
 
     #[test]

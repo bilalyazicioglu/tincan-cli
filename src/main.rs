@@ -219,7 +219,7 @@ fn setup_voice(
                 hearing: io.hearing,
                 mic_level: io.mic_level,
                 peer_levels: io.peer_levels,
-                mic_loopback: io.mic_loopback,
+                mic_test: io.mic_test,
                 gate: io.gate,
                 health: io.health,
                 blip_tx: io.blip_tx,

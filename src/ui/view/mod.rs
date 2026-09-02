@@ -128,7 +128,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 fn fit(app: &App, width: usize, theme: &Theme) -> String {
     let full = if app.view_mode == ViewMode::Settings {
         [
-            "tab section · ↑↓ move · ←→ level · a measure · enter apply · esc back",
+            "tab section · ↑↓ move · ←→ level · a measure · space test · m live · esc back",
             "tab section · ↑↓ move · ←→ level · enter apply · esc back",
             "tab section · ↑↓ move · ←→ level · esc back",
             "↑↓ move · ←→ level · esc back",

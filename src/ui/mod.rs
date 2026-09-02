@@ -6,12 +6,13 @@ mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use anyhow::Result;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::{mpsc, watch};
 
+use crate::audio::MicTest;
 use crate::audio::blip::Blip;
 use crate::audio::device::{AudioDevices, AudioHealth};
 use crate::config::Config;
@@ -35,8 +36,8 @@ pub struct VoiceControl {
     pub mic_level: watch::Receiver<f32>,
     /// How loud each of the others is, 0-4, for the meters in the roster.
     pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
-    /// Whether the microphone loopback test is active.
-    pub mic_loopback: Arc<AtomicBool>,
+    /// What the microphone test is doing, as `MicTest::bits`.
+    pub mic_test: Arc<AtomicU8>,
     /// The microphone's noise floor, as the capture loop reads it.
     pub gate: Arc<AtomicU32>,
     pub health: Arc<AudioHealth>,
@@ -58,8 +59,8 @@ impl VoiceControl {
         self.devices.switch_output(wanted)
     }
 
-    pub fn set_loopback(&self, active: bool) {
-        self.mic_loopback.store(active, Ordering::Relaxed);
+    pub fn set_mic_test(&self, test: MicTest) {
+        self.mic_test.store(test.bits(), Ordering::Relaxed);
     }
 
     /// Moves the microphone's noise floor. `level` is a position on the same meter the
@@ -199,6 +200,11 @@ pub async fn run(
                     app.mic_level = level;
                     app.observe_level(level);
                     settle_calibration(&mut app, voice.as_ref());
+                    if app.watch_for_feedback(level)
+                        && let Some(v) = voice.as_ref()
+                    {
+                        v.set_mic_test(app.mic_test);
+                    }
                 }
 
                 // How loud everyone else is, for the meters in the roster.
@@ -218,6 +224,11 @@ pub async fn run(
                 // sleeps until the network, the audio or a key wakes it.
                 _ = tokio::time::sleep(FRAME_INTERVAL), if app.needs_animation() => {
                     settle_calibration(&mut app, voice.as_ref());
+                    if app.advance_mic_test()
+                        && let Some(v) = voice.as_ref()
+                    {
+                        v.set_mic_test(app.mic_test);
+                    }
                 }
 
                 key = keys.recv() => match key {
@@ -293,7 +304,7 @@ async fn handle_key(
         app.toggle_settings();
         if let Some(v) = voice {
             v.play(Blip::Chime);
-            v.set_loopback(app.mic_test_active);
+            v.set_mic_test(app.mic_test);
         }
         return Ok(false);
     }
@@ -306,7 +317,7 @@ async fn handle_key(
                 app.toggle_settings();
                 if let Some(v) = voice {
                     v.play(Blip::Chime);
-                    v.set_loopback(false);
+                    v.set_mic_test(MicTest::Off);
                 }
                 return Ok(false);
             }
@@ -353,10 +364,18 @@ async fn handle_key(
                 return Ok(false);
             }
             KeyCode::Char(' ') => {
-                let active = !app.mic_test_active;
-                app.mic_test_active = active;
+                app.toggle_recorded_test();
                 if let Some(v) = voice {
-                    v.set_loopback(active);
+                    v.set_mic_test(app.mic_test);
+                }
+                return Ok(false);
+            }
+            // Live monitoring is behind its own key because it is only safe on
+            // headphones: on a laptop it closes a loop between speaker and microphone.
+            KeyCode::Char('m') | KeyCode::Char('M') => {
+                app.toggle_monitor();
+                if let Some(v) = voice {
+                    v.set_mic_test(app.mic_test);
                 }
                 return Ok(false);
             }
@@ -421,10 +440,9 @@ async fn handle_key(
                         }
                     }
                     SettingsSection::MicTest => {
-                        let active = !app.mic_test_active;
-                        app.mic_test_active = active;
+                        app.toggle_recorded_test();
                         if let Some(v) = voice {
-                            v.set_loopback(active);
+                            v.set_mic_test(app.mic_test);
                         }
                     }
                 }

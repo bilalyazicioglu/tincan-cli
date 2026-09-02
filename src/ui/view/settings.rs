@@ -10,6 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use super::{clip, spread};
 use crate::audio::device::AudioDeviceInfo;
+use crate::audio::MicTest;
 use crate::ui::state::{App, METER_CELLS, SettingsSection};
 use crate::ui::theme::Theme;
 
@@ -185,10 +186,28 @@ fn devices(
 fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
     // Each label says what its control does, so the state after it only has to say
     // where the control is set. The meter under both shows the rest.
-    let (state, state_style) = if app.mic_test_active {
-        ("on", theme.ok())
-    } else {
-        ("off", theme.dim())
+    // The row belongs to whichever control is running, and each stage names itself:
+    // "on" would say nothing about which half of the test you are in, and the halves
+    // being separate is the whole point.
+    let (key, label, state, state_style) = match app.mic_test {
+        MicTest::Recording => (
+            "space",
+            "play yourself back",
+            match app.mic_test_left() {
+                Some(left) => format!("recording… {}", left.as_secs() + 1),
+                None => "recording…".to_string(),
+            },
+            theme.brass(),
+        ),
+        MicTest::Playing => ("space", "play yourself back", "playing it back".to_string(), theme.ok()),
+        MicTest::Monitoring => ("m", "listen live", "on".to_string(), theme.ok()),
+        MicTest::Off if app.fed_back => (
+            "space",
+            "play yourself back",
+            "fed back — use headphones".to_string(),
+            theme.error(),
+        ),
+        MicTest::Off => ("space", "play yourself back", "ready".to_string(), theme.dim()),
     };
     let room = (width as usize).saturating_sub(HEAD_ROOM);
 
@@ -220,13 +239,23 @@ fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
 
     vec![
         spread(width, floor, offer),
-        TextLine::from(vec![
-            Span::raw("  "),
-            Span::styled("space", theme.accent()),
-            Span::raw("  "),
-            Span::styled("hear yourself        ", theme.text()),
-            Span::styled(clip(state, room, theme), state_style),
-        ]),
+        spread(
+            width,
+            vec![
+                Span::raw("  "),
+                Span::styled(format!("{key:<5}"), theme.accent()),
+                Span::raw("  "),
+                Span::styled(format!("{label:<21}"), theme.text()),
+                Span::styled(clip(&state, room, theme), state_style),
+            ],
+            match app.mic_test {
+                MicTest::Off => vec![
+                    Span::styled("m", theme.accent()),
+                    Span::styled("  listen live ", theme.dim()),
+                ],
+                _ => Vec::new(),
+            },
+        ),
         TextLine::from(""),
         TextLine::from(meter(width, app, theme)),
     ]
@@ -416,6 +445,49 @@ mod tests {
     }
 
     #[test]
+    fn each_stage_of_the_test_names_itself() {
+        let theme = Theme::from_env();
+        let mut app = app();
+
+        app.toggle_recorded_test();
+        assert!(text(&test_rows(70, &app, &theme)[1]).contains("recording"));
+
+        app.mic_test_until = Some(std::time::Instant::now());
+        app.advance_mic_test();
+        assert!(text(&test_rows(70, &app, &theme)[1]).contains("playing it back"));
+    }
+
+    #[test]
+    fn a_cut_off_monitor_says_what_happened_and_what_to_do() {
+        let theme = Theme::from_env();
+        // Whether the cutoff trips is state's business and tested there; this is
+        // about the interface being able to explain it afterwards.
+        let mut app = app();
+        app.fed_back = true;
+
+        let row = text(&test_rows(90, &app, &theme)[1]);
+        assert!(row.contains("fed back"), "{row}");
+        assert!(row.contains("headphones"), "it has to say what to do about it: {row}");
+        assert!(
+            !row.contains('…'),
+            "and it must fit rather than be cut off mid-advice: {row}"
+        );
+    }
+
+    #[test]
+    fn live_monitoring_is_offered_only_while_nothing_is_running() {
+        let theme = Theme::from_env();
+        let mut app = app();
+        assert!(text(&test_rows(90, &app, &theme)[1]).contains("listen live"));
+
+        app.toggle_recorded_test();
+        assert!(
+            !text(&test_rows(90, &app, &theme)[1]).contains("listen live"),
+            "one thing at a time"
+        );
+    }
+
+    #[test]
     fn the_floor_row_says_where_it_is_set() {
         let mut app = app();
         app.input_gate = 0.25;
@@ -441,10 +513,12 @@ mod tests {
     fn the_test_names_its_own_state() {
         let mut app = app();
         let theme = Theme::from_env();
-        assert!(text(&test_rows(60, &app, &theme)[1]).contains("off"));
+        assert!(text(&test_rows(60, &app, &theme)[1]).contains("ready"));
 
-        app.mic_test_active = true;
-        assert!(text(&test_rows(60, &app, &theme)[1]).contains("on"));
+        app.toggle_monitor();
+        let row = text(&test_rows(60, &app, &theme)[1]);
+        assert!(row.contains("listen live"), "the row names the control that is running: {row}");
+        assert!(row.trim_start().starts_with('m'), "and the key that stops it: {row}");
         for width in [30, 40, 53, 80] {
             for row in test_rows(width, &app, &theme) {
                 assert!(
