@@ -1,6 +1,6 @@
 [package]
 name = "tincan"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.91"
 description = "Serverless peer-to-peer voice and text chat for your terminal"
@@ -26,7 +26,8 @@ ratatui = "0.30.2"
 rtrb = "0.3.4"
 serde = { version = "1.0.229", features = ["derive"] }
 subtle = "2.6.1"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "signal"] }
+toml = "0.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 

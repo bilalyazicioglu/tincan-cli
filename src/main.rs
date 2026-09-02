@@ -1,14 +1,17 @@
 //! tincan — serverless voice chat that runs in your terminal.
 
-use std::io::Write as _;
+use std::io::{IsTerminal as _, Write as _};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use iroh::Endpoint;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tincan::audio;
 use tincan::clipboard;
+use tincan::config::Config;
 use tincan::invite;
+use tincan::audio::device::Wanted;
+use tincan::net::Command;
 use tincan::net::control::{Client, Coordinator};
 use tincan::net::voice::VoiceMesh;
 use tincan::net::endpoint;
@@ -19,25 +22,12 @@ use tincan::ui::{self, VoiceControl};
 /// Channels created by default when a room is opened.
 const DEFAULT_CHANNELS: &str = "general,gaming,music";
 
-const BANNER: &str = r#"
-       ( o )
-      /=====\
-     | tincan|
-     |  /\   |
-     | /  \  |
-     | \  /  |
-      \=====/
-         ~
-        S
-       ~
-"#;
-
 #[derive(Parser)]
 #[command(
     name = "tincan",
     version,
     about = "Serverless voice chat in your terminal",
-    before_help = BANNER
+    before_help = tincan::logo::BANNER
 )]
 struct Cli {
     #[command(subcommand)]
@@ -97,17 +87,80 @@ struct AudioArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Logs only go to stderr when asked for, so they cannot scramble the interface:
-    //   RUST_LOG=debug tincan host 2>tincan.log
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
+    // Parsed first: `--help` and a bad argument both exit here, and neither should
+    // leave a log file behind.
+    let command = Cli::parse().command;
+    let log = start_logging();
 
-    match Cli::parse().command {
+    let result = run(command).await;
+    report_log(log);
+    result
+}
+
+/// Sends this run's log somewhere it cannot land on top of the interface.
+///
+/// The interface draws on the terminal and the alternate screen does not capture
+/// stderr, so one warning printed straight over the room — which is exactly what it
+/// did. A redirected stderr is left alone: `2>tincan.log` has always meant "put the
+/// log there", and it still does.
+fn start_logging() -> Option<PathBuf> {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "warn".into());
+
+    if !std::io::stderr().is_terminal() {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(filter)
+            .init();
+        return None;
+    }
+
+    // Nowhere to write is a reason to stay quiet, not a reason to scribble on the
+    // interface: without `init` the macros do nothing at all.
+    let path = log_path()?;
+    let file = std::fs::File::create(&path).ok()?;
+    tracing_subscriber::fmt()
+        .with_writer(std::sync::Arc::new(file))
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .init();
+    Some(path)
+}
+
+fn log_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+    let dir = base.join("tincan");
+    std::fs::create_dir_all(&dir).ok()?;
+    // One file per run. Two tincans on one machine is an ordinary thing to do while
+    // testing, and they must not write over each other.
+    Some(dir.join(format!("{}.log", std::process::id())))
+}
+
+/// Says where the log is, but only when there is something in it.
+///
+/// A clean run should end in silence, and a bad one in a single line — not in a wall
+/// of text arriving at the moment you decided to stop reading. Whatever mattered to
+/// the user was already said in the room while it happened.
+fn report_log(path: Option<PathBuf>) {
+    let Some(path) = path else {
+        return;
+    };
+    let empty = std::fs::metadata(&path).map(|file| file.len() == 0).unwrap_or(true);
+    if empty {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    let lines = std::fs::read_to_string(&path)
+        .map(|log| log.lines().count())
+        .unwrap_or(0);
+    let plural = if lines == 1 { "" } else { "s" };
+    eprintln!("\n  {lines} log line{plural} from this session: {}", path.display());
+}
+
+async fn run(command: Sub) -> Result<()> {
+    match command {
         Sub::Host {
             name,
             password,
@@ -143,12 +196,12 @@ async fn host(
         .collect();
     let room = Room::new(room_name, channels)?;
 
-    println!("connecting to the network...");
+    println!("{}", tincan::logo::heading("  connecting to the network…"));
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
 
-    let session = Coordinator::spawn(
+    let mut session = Coordinator::spawn(
         endpoint,
         room,
         password.unwrap_or_default(),
@@ -157,20 +210,29 @@ async fn host(
     )
     .await?;
 
-    println!("\n  Room is open. Send the invite code to your friends:\n");
-    println!("      {}\n", session.invite_code);
-    if clipboard::copy(&session.invite_code) {
-        println!("  It is on your clipboard — just paste it.\n");
+    let copied = clipboard::copy(&session.invite_code);
+    println!("\n{}", tincan::logo::heading("  the room is open. send this code to whoever you want in it:"));
+    println!("\n    {}\n", tincan::logo::code(&session.invite_code));
+    if copied {
+        println!("{}", tincan::logo::heading("  it is on your clipboard already."));
     }
-    println!("  They will run:  tincan join {}\n", session.invite_code);
+    println!("{}", tincan::logo::heading(&format!("  they run:  tincan join {}", session.invite_code)));
 
     // Wait for the user rather than a timer. The interface takes over the whole
     // screen, and a 63-character code is not something anyone can copy against a
     // countdown. F1 brings it back once the interface is up.
-    print!("  Press Enter to open the interface (F1 shows the code again)...");
+    print!("\n{}", tincan::logo::heading("  press enter to open the room. f1 brings the code back, f6 is audio."));
     std::io::stdout().flush().ok();
-    let mut answer = String::new();
-    BufReader::new(tokio::io::stdin()).read_line(&mut answer).await.ok();
+
+    if let Leaving::Interrupted = wait_at_the_prompt().await {
+        // Leaving from the prompt is still leaving. Without this the process dies
+        // holding an open endpoint, which iroh rightly complains about, and the room
+        // is never told it closed.
+        println!();
+        let _ = session.commands.send(Command::Quit).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), session.events.recv()).await;
+        return Ok(());
+    }
 
     ui::run(session, control, audio.ptt).await
 }
@@ -185,7 +247,7 @@ async fn join(
     let key = invite::decode(&code).context("could not read the invite code")?;
     let coordinator = PeerId(key);
 
-    println!("connecting to the room...");
+    println!("{}", tincan::logo::heading("  connecting to the room…"));
     let endpoint = endpoint::bind().await?;
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
@@ -203,6 +265,35 @@ async fn join(
     ui::run(session, control, audio.ptt).await
 }
 
+/// How the wait at the prompt ended.
+enum Leaving {
+    Enter,
+    Interrupted,
+}
+
+/// Waits for Enter, or for the user to give up on the room.
+///
+/// The line is read on a plain thread rather than through `tokio::io::stdin`, which is
+/// backed by the runtime's blocking pool. A blocking read cannot be cancelled: dropping
+/// the future on ctrl+c leaves the thread sitting on `read`, and the runtime will not
+/// finish shutting down until it returns — so the program printed its goodbye and then
+/// waited forever for a keypress that was never coming. A detached thread is something
+/// the process is allowed to walk away from. `ui::spawn_key_reader` reads keys the same
+/// way, for the same reason.
+async fn wait_at_the_prompt() -> Leaving {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        let _ = tx.blocking_send(());
+    });
+
+    tokio::select! {
+        _ = rx.recv() => Leaving::Enter,
+        _ = tokio::signal::ctrl_c() => Leaving::Interrupted,
+    }
+}
+
 /// Brings up the audio hardware and the mesh.
 ///
 /// If audio cannot start (no microphone permission, device is not 48 kHz) the app must
@@ -215,9 +306,10 @@ fn setup_voice(
     if args.no_voice {
         return (None, None);
     }
+    let config = Config::load();
     let choice = audio::device::DeviceChoice {
-        input: args.input.clone(),
-        output: args.output.clone(),
+        input: Wanted::pick(args.input.clone(), config.input_device),
+        output: Wanted::pick(args.output.clone(), config.output_device),
     };
     match audio::start(me, &choice) {
         Ok(io) => {
@@ -227,14 +319,18 @@ fn setup_voice(
                 speaking: io.speaking,
                 mic_open: io.mic_open,
                 hearing: io.hearing,
+                mic_level: io.mic_level,
+                peer_levels: io.peer_levels,
+                mic_test: io.mic_test,
+                gate: io.gate,
                 health: io.health,
                 blip_tx: io.blip_tx,
-                _devices: io.devices,
+                devices: io.devices,
             };
             (Some(mesh), Some(control))
         }
         Err(err) => {
-            eprintln!("\n  ⚠ audio could not start, text chat only: {err:#}\n");
+            eprintln!("\n  audio could not start, so this is a text-only session: {err:#}\n");
             std::thread::sleep(std::time::Duration::from_millis(2500));
             (None, None)
         }

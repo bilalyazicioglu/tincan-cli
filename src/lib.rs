@@ -10,6 +10,7 @@
 
 pub mod auth;
 pub mod clipboard;
+pub mod config;
 pub mod invite;
 pub mod logo;
 pub mod proto;
