@@ -12,6 +12,7 @@ use anyhow::Result;
 use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::{mpsc, watch};
 
+use crate::audio::blip::Blip;
 use crate::audio::device::{AudioDevices, AudioHealth};
 use crate::config::Config;
 use crate::net::voice::VoiceMesh;
@@ -37,14 +38,14 @@ pub struct VoiceControl {
     /// Whether the microphone loopback test is active.
     pub mic_loopback: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
-    pub blip_tx: mpsc::Sender<()>,
+    pub blip_tx: mpsc::Sender<Blip>,
     /// The audio hardware stays open for as long as this is kept alive.
     pub devices: AudioDevices,
 }
 
 impl VoiceControl {
-    pub fn play_blip(&self) {
-        let _ = self.blip_tx.try_send(());
+    pub fn play(&self, blip: Blip) {
+        let _ = self.blip_tx.try_send(blip);
     }
 
     pub fn switch_input(&self, wanted: Option<&str>) -> Result<String> {
@@ -72,6 +73,32 @@ impl VoiceControl {
 /// Roughly 14 frames a second: enough for a pulse to read as travel, cheap enough to
 /// leave a laptop alone.
 const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(70);
+
+/// Decides what the interface says about your own microphone and ears.
+///
+/// The keys only send a command — the state that matters comes back from the
+/// coordinator — so the sound follows what actually happened rather than what was
+/// asked for. The first roster is a sync rather than a change, and makes no sound.
+#[derive(Default)]
+struct SelfChime {
+    known: Option<(bool, bool)>,
+}
+
+impl SelfChime {
+    fn on_roster(&mut self, muted: bool, deafened: bool) -> Option<Blip> {
+        let (was_muted, was_deafened) = self.known.replace((muted, deafened))?;
+
+        // Shutting your ears closes the microphone with them. That is one action, so
+        // it makes one sound; the mute that came along is not news.
+        if deafened != was_deafened {
+            return Some(if deafened { Blip::EarsOff } else { Blip::EarsOn });
+        }
+        if muted != was_muted {
+            return Some(if muted { Blip::MicOff } else { Blip::MicOn });
+        }
+        None
+    }
+}
 
 /// Decides when the welcome chime should sound.
 #[derive(Default)]
@@ -117,6 +144,7 @@ pub async fn run(
     let mut terminal = ratatui::init();
     let mut keys = spawn_key_reader();
     let mut chime = JoinChime::default();
+    let mut own_state = SelfChime::default();
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
 
     let mut speaking_rx = voice.as_ref().map(|v| v.speaking.clone());
@@ -136,10 +164,13 @@ pub async fn run(
                         app.apply(event);
                         if membership_changed {
                             sync_voice(&app, voice.as_ref()).await;
-                            if chime.on_roster(&app, prev_voice)
-                                && let Some(v) = voice.as_ref()
-                            {
-                                v.play_blip();
+                            if let Some(v) = voice.as_ref() {
+                                if chime.on_roster(&app, prev_voice) {
+                                    v.play(Blip::Chime);
+                                }
+                                if let Some(blip) = own_state.on_roster(app.muted, app.deafened) {
+                                    v.play(blip);
+                                }
                             }
                         }
                     }
@@ -242,7 +273,7 @@ async fn handle_key(
     if toggle_settings_key {
         app.toggle_settings();
         if let Some(v) = voice {
-            v.play_blip();
+            v.play(Blip::Chime);
             v.set_loopback(app.mic_test_active);
         }
         return Ok(false);
@@ -254,7 +285,7 @@ async fn handle_key(
             KeyCode::Esc => {
                 app.toggle_settings();
                 if let Some(v) = voice {
-                    v.play_blip();
+                    v.play(Blip::Chime);
                     v.set_loopback(false);
                 }
                 return Ok(false);
@@ -551,6 +582,48 @@ mod tests {
 
         let level = next_mic_level(Some(&mut rx)).await;
         assert!((level - 0.75).abs() < f32::EPSILON);
+    }
+
+    // ── Your own microphone and ears ────────────────────────────────────────
+
+    #[test]
+    fn the_first_roster_is_a_sync_and_says_nothing() {
+        let mut chime = SelfChime::default();
+        assert_eq!(chime.on_roster(false, false), None);
+        assert_eq!(chime.on_roster(true, false), Some(Blip::MicOff), "but the next change speaks");
+    }
+
+    #[test]
+    fn arriving_already_muted_is_not_an_event() {
+        let mut chime = SelfChime::default();
+        assert_eq!(chime.on_roster(true, true), None);
+    }
+
+    #[test]
+    fn the_microphone_says_which_way_it_went() {
+        let mut chime = SelfChime::default();
+        chime.on_roster(false, false);
+
+        assert_eq!(chime.on_roster(true, false), Some(Blip::MicOff));
+        assert_eq!(chime.on_roster(false, false), Some(Blip::MicOn));
+    }
+
+    #[test]
+    fn shutting_your_ears_makes_one_sound_not_two() {
+        let mut chime = SelfChime::default();
+        chime.on_roster(false, false);
+
+        // F5 deafens and mutes in the same breath, and the roster reports both at
+        // once.
+        assert_eq!(chime.on_roster(true, true), Some(Blip::EarsOff), "one action, one sound");
+        assert_eq!(chime.on_roster(false, false), Some(Blip::EarsOn));
+    }
+
+    #[test]
+    fn a_roster_that_changes_nothing_about_you_is_silent() {
+        let mut chime = SelfChime::default();
+        chime.on_roster(true, false);
+        assert_eq!(chime.on_roster(true, false), None, "someone else moving is not your business");
     }
 
     // ── The welcome chime ───────────────────────────────────────────────────

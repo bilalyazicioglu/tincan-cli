@@ -17,6 +17,7 @@ use anyhow::Result;
 use tokio::sync::{mpsc, watch};
 
 use crate::proto::PeerId;
+use blip::Blip;
 use device::{AudioDevices, AudioHealth};
 use jitter::{Frame, JitterBuffer};
 use mixer::Mixer;
@@ -73,7 +74,7 @@ pub struct VoiceIo {
     /// Whether the microphone loopback test is active (hearing own voice).
     pub mic_loopback: Arc<AtomicBool>,
     pub health: Arc<AudioHealth>,
-    pub blip_tx: mpsc::Sender<()>,
+    pub blip_tx: mpsc::Sender<Blip>,
     /// The audio hardware stays open for as long as this is kept alive.
     pub devices: AudioDevices,
 }
@@ -84,7 +85,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
 
     let (outgoing_tx, outgoing_rx) = mpsc::channel::<Vec<u8>>(64);
     let (incoming_tx, mut incoming_rx) = mpsc::channel::<Incoming>(256);
-    let (blip_tx, mut blip_rx) = mpsc::channel::<()>(16);
+    let (blip_tx, mut blip_rx) = mpsc::channel::<Blip>(16);
     let (speaking_tx, speaking_rx) = watch::channel(HashSet::new());
     let (mic_level_tx, mic_level_rx) = watch::channel(0.0f32);
     let (peer_levels_tx, peer_levels_rx) = watch::channel(HashMap::new());
@@ -180,11 +181,12 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         let mut mixed = vec![0f32; FRAME];
         let mut blip_samples: Vec<f32> = Vec::new();
         let mut loopback_samples: Vec<f32> = Vec::new();
+        let mut interface = vec![0f32; FRAME];
 
         loop {
             tokio::select! {
-                Some(_) = blip_rx.recv() => {
-                    blip_samples.extend(blip::generate_blip());
+                Some(blip) = blip_rx.recv() => {
+                    blip_samples.extend(blip::of(blip));
                 }
 
                 Some(pcm_loop) = loopback_rx.recv() => {
@@ -215,8 +217,8 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                         *level *= LEVEL_RELEASE;
                     }
 
-                    while blip_rx.try_recv().is_ok() {
-                        blip_samples.extend(blip::generate_blip());
+                    while let Ok(blip) = blip_rx.try_recv() {
+                        blip_samples.extend(blip::of(blip));
                     }
                     while let Ok(pcm_loop) = loopback_rx.try_recv() {
                         loopback_samples.extend(pcm_loop);
@@ -256,28 +258,16 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                         let refs: Vec<&[f32]> = sources.iter().map(|s| s.as_slice()).collect();
                         mixer.mix(&refs, &mut mixed);
 
-                        // Mix in UI blips
-                        if !blip_samples.is_empty() {
-                            let take = std::cmp::min(blip_samples.len(), mixed.len());
-                            for (i, sample) in blip_samples.drain(..take).enumerate() {
-                                mixed[i] += sample;
-                            }
-                        }
+                        // Everything the program itself makes, as opposed to the room:
+                        // its own sounds, and your microphone while you are testing it.
+                        interface.fill(0.0);
+                        queue_into(&mut blip_samples, &mut interface);
+                        queue_into(&mut loopback_samples, &mut interface);
 
-                        // Mix in local mic loopback test
-                        if !loopback_samples.is_empty() {
-                            let take = std::cmp::min(loopback_samples.len(), mixed.len());
-                            for (i, sample) in loopback_samples.drain(..take).enumerate() {
-                                mixed[i] += sample;
-                            }
-                        }
-
-                        // When deafened we do not stop the stream, we feed silence:
-                        // letting the speaker buffer drain would inflate the underrun
-                        // counter for the wrong reason.
                         let hearing_now = playback_hearing.load(Ordering::Relaxed);
+                        to_speaker(&mut mixed, hearing_now, &interface);
                         for sample in mixed.iter() {
-                            let _ = playback.push(if hearing_now { *sample } else { 0.0 });
+                            let _ = playback.push(*sample);
                         }
 
                         speaking_tx.send_if_modified(|speakers| {
@@ -349,6 +339,29 @@ impl PeerStream {
     }
 }
 
+/// Takes as much of a queued sound as fits into this frame.
+fn queue_into(queue: &mut Vec<f32>, frame: &mut [f32]) {
+    let take = queue.len().min(frame.len());
+    for (slot, sample) in frame.iter_mut().zip(queue.drain(..take)) {
+        *slot += sample;
+    }
+}
+
+/// What actually reaches the speaker.
+///
+/// Deafening silences the room, not the interface: the sound telling you your ears are
+/// shut has to survive the very state it is announcing, and so does the microphone test
+/// you opened on purpose. The stream keeps running either way — letting the speaker
+/// buffer drain would inflate the underrun counter for the wrong reason.
+fn to_speaker(room: &mut [f32], hearing: bool, interface: &[f32]) {
+    if !hearing {
+        room.fill(0.0);
+    }
+    for (slot, sample) in room.iter_mut().zip(interface) {
+        *slot += sample;
+    }
+}
+
 /// Loudness on the scale the meters draw: 0.0 at the noise floor, 1.0 at a shout.
 ///
 /// The ear works in decibels, so a linear RMS bar spends most of its travel doing
@@ -376,6 +389,35 @@ mod tests {
         (0..FRAME)
             .map(|i| amplitude * (i as f32 * 0.1).sin())
             .collect()
+    }
+
+    #[test]
+    fn deafening_silences_the_room_but_not_the_interface() {
+        let mut room = vec![0.5; 4];
+        let interface = vec![0.2; 4];
+
+        to_speaker(&mut room, false, &interface);
+        assert_eq!(room, vec![0.2; 4], "you must still hear yourself turn your ears back on");
+
+        let mut room = vec![0.5; 4];
+        to_speaker(&mut room, true, &interface);
+        assert_eq!(room, vec![0.7; 4], "hearing normally, both arrive");
+    }
+
+    #[test]
+    fn a_sound_longer_than_a_frame_carries_over_to_the_next() {
+        let mut queued: Vec<f32> = vec![1.0; FRAME + 10];
+        let mut frame = vec![0.0; FRAME];
+
+        queue_into(&mut queued, &mut frame);
+        assert_eq!(queued.len(), 10, "the tail has to wait for the next frame");
+        assert!(frame.iter().all(|s| *s == 1.0));
+
+        let mut frame = vec![0.0; FRAME];
+        queue_into(&mut queued, &mut frame);
+        assert!(queued.is_empty());
+        assert_eq!(frame[..10], [1.0; 10], "and then it plays");
+        assert_eq!(frame[10], 0.0, "with silence after it, not a repeat");
     }
 
     #[test]
