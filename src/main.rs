@@ -10,6 +10,8 @@ use tincan::audio;
 use tincan::clipboard;
 use tincan::config::Config;
 use tincan::invite;
+use tincan::audio::device::Wanted;
+use tincan::net::Command;
 use tincan::net::control::{Client, Coordinator};
 use tincan::net::voice::VoiceMesh;
 use tincan::net::endpoint;
@@ -136,7 +138,7 @@ async fn host(
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
 
-    let session = Coordinator::spawn(
+    let mut session = Coordinator::spawn(
         endpoint,
         room,
         password.unwrap_or_default(),
@@ -159,7 +161,24 @@ async fn host(
     print!("\n{}", tincan::logo::heading("  press enter to open the room. f1 brings the code back, f6 is audio."));
     std::io::stdout().flush().ok();
     let mut answer = String::new();
-    BufReader::new(tokio::io::stdin()).read_line(&mut answer).await.ok();
+    let mut input = BufReader::new(tokio::io::stdin());
+
+    tokio::select! {
+        _ = input.read_line(&mut answer) => {}
+        // Leaving from the prompt is still leaving. Without this the process dies
+        // holding an open endpoint, which iroh rightly complains about, and the room
+        // is never told it closed.
+        _ = tokio::signal::ctrl_c() => {
+            println!();
+            let _ = session.commands.send(Command::Quit).await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                session.events.recv(),
+            )
+            .await;
+            return Ok(());
+        }
+    }
 
     ui::run(session, control, audio.ptt).await
 }
@@ -206,8 +225,8 @@ fn setup_voice(
     }
     let config = Config::load();
     let choice = audio::device::DeviceChoice {
-        input: args.input.clone().or(config.input_device),
-        output: args.output.clone().or(config.output_device),
+        input: Wanted::pick(args.input.clone(), config.input_device),
+        output: Wanted::pick(args.output.clone(), config.output_device),
     };
     match audio::start(me, &choice) {
         Ok(io) => {

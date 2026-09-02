@@ -232,6 +232,12 @@ impl App {
         self.push(Line::Notice { text, at });
     }
 
+    /// Puts a line from the room itself on screen.
+    pub fn notice(&mut self, text: String) {
+        let at = crate::net::now();
+        self.push(Line::Notice { text, at });
+    }
+
     fn push(&mut self, line: Line) {
         self.lines.push(line);
         if self.lines.len() > VISIBLE_HISTORY {

@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::audio::MicTest;
 use crate::audio::blip::Blip;
-use crate::audio::device::{AudioDevices, AudioHealth};
+use crate::audio::device::{AudioDevices, AudioHealth, Recovered};
 use crate::config::Config;
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
@@ -77,6 +77,16 @@ impl VoiceControl {
 
     pub fn active_output(&self) -> Option<String> {
         self.devices.active_output()
+    }
+
+    /// Remembered devices that were not plugged in when we started.
+    pub fn missing(&self) -> Vec<String> {
+        self.devices.missing()
+    }
+
+    /// Reopens any stream the driver took away.
+    pub fn recover(&self) -> Vec<Recovered> {
+        self.devices.recover()
     }
 }
 
@@ -160,6 +170,11 @@ pub async fn run(
     let mut own_state = SelfChime::default();
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
 
+    let mut startup_notes: Vec<String> =
+        voice.as_ref().map(|v| v.missing()).unwrap_or_default();
+    // A device that stays gone would otherwise say so once a second, forever.
+    let mut last_audio_note: Option<String> = None;
+
     let mut speaking_rx = voice.as_ref().map(|v| v.speaking.clone());
     let mut mic_level_rx = voice.as_ref().map(|v| v.mic_level.clone());
     let mut peer_levels_rx = voice.as_ref().map(|v| v.peer_levels.clone());
@@ -216,6 +231,20 @@ pub async fn run(
                     if let Some(voice) = voice.as_ref() {
                         app.link = voice.mesh.link_status().await;
                         app.note_dropouts(voice.health.underruns());
+
+                        // The first tick is the earliest point the roster has landed,
+                        // and `Welcome` replaces the transcript wholesale — a notice
+                        // pushed before it would be thrown away.
+                        for note in startup_notes.drain(..) {
+                            app.notice(note);
+                        }
+                        for news in voice.recover() {
+                            let note = describe(&news);
+                            if last_audio_note.as_deref() != Some(note.as_str()) {
+                                app.notice(note.clone());
+                                last_audio_note = Some(note);
+                            }
+                        }
                     }
                 }
 
@@ -514,6 +543,14 @@ async fn handle_key(
     Ok(false)
 }
 
+/// What to tell the room about a stream that was taken away and put back.
+fn describe(news: &Recovered) -> String {
+    match &news.device {
+        Some(device) => format!("the {} changed — now on {device}", news.side.name()),
+        None => format!("the {} was lost and will not reopen", news.side.name()),
+    }
+}
+
 /// Ends a room measurement once its time is up, and keeps what it decided.
 fn settle_calibration(app: &mut App, voice: Option<&VoiceControl>) {
     if app.finish_calibration().is_some() {
@@ -679,6 +716,24 @@ mod tests {
 
         let level = next_mic_level(Some(&mut rx)).await;
         assert!((level - 0.75).abs() < f32::EPSILON);
+    }
+
+    // ── Hardware that changed under us ──────────────────────────────────────
+
+    #[test]
+    fn a_reopened_stream_says_what_it_landed_on() {
+        use crate::audio::device::Side;
+
+        let back = describe(&Recovered {
+            side: Side::Speaker,
+            device: Some("MacBook Pro Speakers".into()),
+        });
+        assert!(back.contains("speaker"), "{back}");
+        assert!(back.contains("MacBook Pro Speakers"), "{back}");
+
+        let gone = describe(&Recovered { side: Side::Microphone, device: None });
+        assert!(gone.contains("microphone"), "{gone}");
+        assert!(gone.contains("not reopen"), "silence about a dead microphone helps nobody: {gone}");
     }
 
     // ── Your own microphone and ears ────────────────────────────────────────
