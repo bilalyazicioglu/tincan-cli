@@ -89,8 +89,9 @@ curl -fsSL https://raw.githubusercontent.com/bilalyazicioglu/tincan-cli/main/ins
 ```
 
 This downloads a prebuilt binary for your platform into `~/.local/bin` and verifies its
-checksum. macOS (Apple Silicon and Intel) and Linux (x86_64) have prebuilt binaries;
-anywhere else — arm64 Linux included — the script falls back to building from source. If
+checksum. macOS (Apple Silicon) and Linux (x86_64) have prebuilt binaries; anywhere
+else — Intel Macs and arm64 Linux included — the script falls back to building from
+source. If
 you would rather read the script before running it — always a reasonable instinct with
 `curl | sh` — it lives at [`install.sh`](install.sh) in this repo.
 
