@@ -47,10 +47,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let holding = app.selected_peer.is_some();
     // And until you have used it, the chip names its own key, the way AUDIO carries F6.
     // Once you are in the list the footer is saying more than this could, so the hint
-    // gets out of the way rather than repeating itself.
-    let heading = match holding {
-        true => format!("ON THE LINE{}{}", theme.glyphs.dot, app.peers.len()),
-        false => format!(
+    // gets out of the way rather than repeating itself — as it does on the settings
+    // screen, where the arrows belong to the dials and naming them here would point at
+    // a key that will not do this.
+    let advertise = !holding && app.view_mode == ViewMode::Chat;
+    let heading = match advertise {
+        false => format!("ON THE LINE{}{}", theme.glyphs.dot, app.peers.len()),
+        true => format!(
             "ON THE LINE{}{}{}{}",
             theme.glyphs.dot,
             app.peers.len(),
@@ -460,6 +463,18 @@ mod tests {
         assert!(
             !holding.contains("↑↓"),
             "once you are in it the footer says more than this could, so the hint gets out of the way: {holding}"
+        );
+    }
+
+    #[test]
+    fn the_roster_stops_naming_its_key_where_that_key_does_something_else() {
+        let mut app = room();
+        app.view_mode = ViewMode::Settings;
+        let heading = chip_row(&app, "ON THE LINE");
+        assert!(
+            !heading.contains("↑↓"),
+            "on the settings screen the arrows belong to the dials, so advertising them \
+             here points at a key that will not do this: {heading}"
         );
     }
 
