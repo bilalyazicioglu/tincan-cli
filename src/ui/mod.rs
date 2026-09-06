@@ -19,7 +19,7 @@ use crate::config::Config;
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
 use crate::proto::{ChannelId, PeerId};
-use state::{App, GATE_STEP, SettingsSection, VOLUME_STEP, ViewMode};
+use state::{App, GATE_STEP, PEER_VOLUME_STEP, SettingsSection, VOLUME_STEP, ViewMode};
 use theme::Theme;
 
 /// Where the interface holds on to the audio side. Never built if audio failed to
@@ -36,6 +36,9 @@ pub struct VoiceControl {
     pub mic_level: watch::Receiver<f32>,
     /// How loud each of the others is, 0-4, for the meters in the roster.
     pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
+    /// How loud each of them is played back — the other direction: the interface
+    /// writes this one and the engine reads it.
+    pub peer_gains: watch::Sender<HashMap<PeerId, f32>>,
     /// What the microphone test is doing, as `MicTest::bits`.
     pub mic_test: Arc<AtomicU8>,
     /// The microphone's noise floor, as the capture loop reads it.
@@ -69,6 +72,11 @@ impl VoiceControl {
     pub fn set_gate(&self, level: f32) {
         self.gate
             .store(crate::audio::rms_for(level).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Hands the engine the volume you have set for each person.
+    pub fn set_peer_gains(&self, gains: &HashMap<PeerId, f32>) {
+        let _ = self.peer_gains.send(gains.clone());
     }
 
     pub fn active_input(&self) -> Option<String> {
@@ -536,9 +544,43 @@ async fn handle_key(
         return Ok(false);
     }
 
+    // Silencing one person. Not Ctrl+S, which is XOFF in most terminals and would
+    // freeze the session rather than quieten anybody — the same trap that keeps mute
+    // off Ctrl+M.
+    if ctrl && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K')) {
+        if let Some(peer) = app.selected_peer {
+            app.toggle_peer_silence();
+            if let Some(v) = voice {
+                v.set_peer_gains(&app.peer_gains);
+                // Closing your ears on one person is the same act as closing them on
+                // the room, so it borrows the same pair of notes. Every other state
+                // this loud already has a sound; this one was the odd silence.
+                v.play(match app.gain_of(peer) {
+                    0.0 => Blip::EarsOff,
+                    _ => Blip::EarsOn,
+                });
+            }
+        }
+        return Ok(false);
+    }
+
     match key.code {
         KeyCode::Tab => app.view_next(true),
         KeyCode::BackTab => app.view_next(false),
+
+        // The roster cursor. Arrows are free here — letters go to the message being
+        // typed, so this is the one kind of key that can steer the rail without
+        // taking anything away from writing.
+        KeyCode::Down => app.select_peer(true),
+        KeyCode::Up => app.select_peer(false),
+        KeyCode::Left | KeyCode::Right if app.selected_peer.is_some() => {
+            let direction = if key.code == KeyCode::Right { 1.0 } else { -1.0 };
+            app.nudge_peer_volume(direction * PEER_VOLUME_STEP);
+            if let Some(v) = voice {
+                v.set_peer_gains(&app.peer_gains);
+            }
+        }
+        KeyCode::Esc => app.selected_peer = None,
 
         KeyCode::Enter => {
             if let Some(text) = app.take_input() {

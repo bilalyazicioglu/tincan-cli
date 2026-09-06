@@ -61,6 +61,34 @@ stays out of the call. `←`/`→` move the floor a step at a time, and `a` list
 room for a second and a half and sets it just above whatever it hears. It is remembered
 per microphone, because a laptop microphone and a headset do not share a noise floor.
 
+`F5` deafens you against the whole room, which is a blunt instrument. For one person
+there are the arrow keys: `↑`/`↓` moves a cursor down the names under `ON THE LINE`,
+`←`/`→` turns whoever it is on down or up, and `Ctrl+K` silences them outright. It is
+the same cursor the channel list uses, in the same column, because it answers the same
+question — this is the row your keys act on. Letters go to the message you are typing,
+so none of this costs you a key you were using. (`Ctrl+K` and not `Ctrl+S`: in most
+terminals `Ctrl+S` is XOFF and would freeze the session rather than quieten anybody.)
+
+Until you have used it the section names its own key, the way the audio corner carries
+`F6`; once the cursor is in the list the footer says more than a chip could, and the hint
+gets out of the way.
+
+Their meter keeps moving while they are turned down, and that is deliberate: someone you
+have silenced should not look the same as someone who has gone quiet. It moves in the
+grey a silent meter uses, though, so the movement reads as a voice that is not reaching
+you whole — and that grey is what carries the setting once you move on, because the
+exact number only appears while you are on that row changing it. The rest of the time
+the column goes back to saying which channel the person is in, which is what it is for.
+Silencing somebody is the exception, because it is one keystroke and it is total: their
+meter is replaced by a mark that looks like neither a quiet one nor a loud one, the
+column at the edge says `silenced`, and it makes the same two notes as closing your ears
+on the whole room. Their name still goes bold when they speak, so you can always see
+that you are cutting off somebody who is talking.
+
+The setting is local — nobody is told you turned them down — and it lasts as long as the
+session does, because identities are regenerated on every run and there is nothing stable
+to remember them against.
+
 A channel with something said in it since you last looked turns brass in the rail, so
 the list tells you where to go without a count or a badge. Every message makes a sound
 — one short note, the same whether you sent it or it arrived, deliberately the only
@@ -166,6 +194,10 @@ tincan devices
 | `F4`                | Push-to-talk (only in `--ptt` mode)           |
 | `F5`                | Deafen: hear nobody (also closes your mic)    |
 | `F1`                | Show the full invite code (and copy it)       |
+| `↑` / `↓`           | Pick someone out of the roster                |
+| `←` / `→`           | Turn that person down or up                   |
+| `Ctrl+K`            | Silence that person, or let them back in      |
+| `Esc`               | Let go of the roster                          |
 | `Enter`             | Send the message                              |
 | `Ctrl+C`            | Quit                                          |
 

@@ -134,6 +134,17 @@ fn fit(app: &App, width: usize, theme: &Theme) -> String {
             "↑↓ move · ←→ adjust · esc back",
             "esc back",
         ]
+    } else if app.selected_peer.is_some() {
+        // While a name is picked out, the row tells you what the keys now do to that
+        // one person. Nothing else on this line changes meaning, and these three keys
+        // have nowhere else to announce themselves.
+        [
+            "↑↓ person · ←→ volume · ctrl+k silence · esc done · f2 talk · f6 audio · ctrl+c",
+            "↑↓ person · ←→ volume · ctrl+k silence · esc done · f2 talk · ctrl+c",
+            "↑↓ person · ←→ volume · ctrl+k silence · esc done · f2 talk",
+            "←→ volume · ctrl+k silence · esc done · f2 talk",
+            "esc done · f2 talk",
+        ]
     } else {
         [
             "tab channel · f2 talk · f3 mute · f5 deafen · f6 audio · ctrl+c quit",
@@ -248,6 +259,41 @@ mod tests {
         assert!(full.contains("←→"), "the dials are only discoverable from here: {full}");
         for width in [70, 55, 40, 20, 4] {
             assert!(fit(&app, width, &theme).chars().count() <= width);
+        }
+    }
+
+    #[test]
+    fn picking_someone_out_of_the_roster_puts_their_keys_in_the_footer() {
+        let mut app = room();
+        app.selected_peer = Some(crate::proto::PeerId([2; 32]));
+        let theme = Theme::from_env();
+
+        let full = fit(&app, 80, &theme);
+        assert!(
+            full.contains("←→"),
+            "one person's volume is only discoverable from here: {full}"
+        );
+        assert!(full.contains("ctrl+k"), "and so is silencing them: {full}");
+
+        for width in [70, 55, 40, 20, 4] {
+            assert!(fit(&app, width, &theme).chars().count() <= width);
+        }
+    }
+
+    #[test]
+    fn the_key_that_joins_a_channel_survives_the_roster_taking_the_footer() {
+        let mut app = room();
+        app.selected_peer = Some(PeerId([2; 32]));
+        let theme = Theme::from_env();
+
+        // The drawing that says "f2 talks in #music" is only up while the room has
+        // said nothing at all, so once anyone speaks the footer is the only thing
+        // left naming the app's primary action. Picking someone out of the roster
+        // must not cost it.
+        for width in [80, 60, 50, 40] {
+            let line = fit(&app, width, &theme);
+            assert!(line.contains("f2"), "at {width} columns: {line}");
+            assert!(line.chars().count() <= width);
         }
     }
 
