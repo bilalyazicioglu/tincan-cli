@@ -364,3 +364,225 @@ mod tests {
         assert!(fit(&app, 3, &theme).chars().count() <= 3);
     }
 }
+
+/// Regenerates the README's pictures from the real renderer.
+///
+/// Not a test — it asserts nothing. It lives here because `view` is private, it is
+/// `#[ignore]`d so CI never runs it, and it is next to the code it draws so a screen
+/// that changes shape cannot leave the README describing an interface that is gone.
+///
+///     cargo test --lib -- --ignored --nocapture readme_pictures
+#[cfg(test)]
+mod pictures {
+    use super::*;
+    use crate::net::Event;
+    use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo, RoomSnapshot};
+    use crate::ui::state::{App, SettingsSection};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier};
+
+    /// One character cell, in pixels. The ratio is the one monospace faces settle on.
+    const CELL_W: f32 = 8.6;
+    const CELL_H: f32 = 18.0;
+    const FONT: f32 = 14.5;
+    /// Air around the drawing, so it does not sit against the edge of the picture.
+    const PAD: f32 = 14.0;
+
+    fn hex(colour: Color, fallback: &str) -> String {
+        match colour {
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            _ => fallback.to_string(),
+        }
+    }
+
+    fn escape(text: &str) -> String {
+        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    }
+
+    /// Draws the interface and writes it out as SVG.
+    ///
+    /// Every run of same-looking cells is one `<text>` pinned to an exact width, so the
+    /// columns hold whatever monospace face the reader's browser happens to pick — the
+    /// thing a pasted block of terminal text cannot promise.
+    fn svg(app: &App, cols: u16, rows: u16) -> String {
+        let theme = Theme::from_env();
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal.draw(|frame| draw(frame, app, &theme)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let ground = hex(theme.surface().bg.unwrap_or(Color::Reset), "#1a1512");
+        let ink = hex(theme.surface().fg.unwrap_or(Color::Reset), "#dcd5cb");
+        let (w, h) = (
+            cols as f32 * CELL_W + PAD * 2.0,
+            rows as f32 * CELL_H + PAD * 2.0,
+        );
+
+        let mut out = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.0}\" height=\"{h:.0}\" \
+             viewBox=\"0 0 {w:.0} {h:.0}\" font-family=\"ui-monospace,SFMono-Regular,\
+             Menlo,Consolas,'Liberation Mono',monospace\" font-size=\"{FONT}\">\n\
+             <rect width=\"{w:.0}\" height=\"{h:.0}\" rx=\"8\" fill=\"{ground}\"/>\n"
+        );
+
+        for y in 0..rows {
+            // Backgrounds first, so no glyph is painted over.
+            let mut x = 0;
+            while x < cols {
+                let bg = hex(buffer[(x, y)].bg, &ground);
+                let start = x;
+                while x < cols && hex(buffer[(x, y)].bg, &ground) == bg {
+                    x += 1;
+                }
+                if bg != ground {
+                    out.push_str(&format!(
+                        "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{CELL_H}\" fill=\"{bg}\"/>\n",
+                        PAD + start as f32 * CELL_W,
+                        PAD + y as f32 * CELL_H,
+                        (x - start) as f32 * CELL_W,
+                    ));
+                }
+            }
+
+            let mut x = 0;
+            while x < cols {
+                let look = |at: u16| {
+                    let cell = &buffer[(at, y)];
+                    (hex(cell.fg, &ink), cell.modifier.contains(Modifier::BOLD))
+                };
+                let (fg, bold) = look(x);
+                let start = x;
+                let mut run = String::new();
+                while x < cols && look(x) == (fg.clone(), bold) {
+                    run.push_str(buffer[(x, y)].symbol());
+                    x += 1;
+                }
+                if run.trim().is_empty() {
+                    continue;
+                }
+                let weight = if bold { " font-weight=\"600\"" } else { "" };
+                out.push_str(&format!(
+                    "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"{fg}\"{weight} \
+                     textLength=\"{:.1}\" lengthAdjust=\"spacing\" xml:space=\"preserve\">{}</text>\n",
+                    PAD + start as f32 * CELL_W,
+                    PAD + y as f32 * CELL_H + CELL_H * 0.74,
+                    (x - start) as f32 * CELL_W,
+                    escape(&run),
+                ));
+            }
+        }
+        out.push_str("</svg>\n");
+        out
+    }
+
+    fn peer(seed: u8, name: &str, channel: Option<ChannelId>) -> PeerInfo {
+        PeerInfo {
+            id: PeerId([seed; 32]),
+            name: name.into(),
+            channel,
+            muted: false,
+            deafened: false,
+        }
+    }
+
+    /// The room mid-conversation: three people, one of them turned down.
+    fn hero() -> App {
+        let me = PeerId([1; 32]);
+        let mut app = App::new(me, "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into());
+        app.apply(Event::Welcome {
+            me,
+            room: RoomSnapshot {
+                room_name: "lobby".into(),
+                channels: vec!["general".into(), "gaming".into(), "music".into()],
+                peers: vec![
+                    peer(1, "alice", Some(ChannelId(0))),
+                    peer(2, "bob", Some(ChannelId(0))),
+                    peer(3, "cem", Some(ChannelId(1))),
+                ],
+                recent_chat: vec![],
+            },
+        });
+        app.voice = Some(ChannelId(0));
+        app.voice_available = true;
+        // Held still: a picture cannot show a pulse travelling, and a frozen one
+        // reads as a stray character rather than as motion.
+        app.motion = false;
+        app.link = crate::net::voice::LinkStatus {
+            direct: 2,
+            relayed: 0,
+            worst_rtt: Some(std::time::Duration::from_millis(18)),
+        };
+        app.active_input_name = Some("MacBook Pro Microphone".into());
+        app.active_output_name = Some("AirPods Pro".into());
+        app.peer_levels.insert(PeerId([2; 32]), 3);
+        app.speaking.insert(PeerId([2; 32]));
+
+        let said = [
+            (2u8, "hey, bob here"),
+            (2, "can you hear me alright?"),
+            (1, "loud and clear"),
+            (2, "oh that is the round trip time on the string?"),
+            (1, "yes, and the pulse speed is the latency"),
+            (3, "cem here, joining from gaming"),
+            (1, "it frays when audio drops out too"),
+            (2, "and the meters move with each voice"),
+        ];
+        for (index, (from, text)) in said.iter().enumerate() {
+            app.apply(Event::Chat(ChatLine {
+                channel: ChannelId(0),
+                from: PeerId([*from; 32]),
+                text: (*text).into(),
+                at: 1_757_000_000 + index as u64 * 47,
+            }));
+        }
+        // The point of the picture: one voice turned down without deafening the room.
+        app.peer_gains.insert(PeerId([3; 32]), 0.0);
+        app
+    }
+
+    fn device(name: &str, rate: u32, default: bool) -> crate::audio::device::AudioDeviceInfo {
+        crate::audio::device::AudioDeviceInfo {
+            name: name.into(),
+            sample_rate: rate,
+            channels: 2,
+            is_default: default,
+            is_supported: rate == 48_000,
+        }
+    }
+
+    /// The audio screen: what is open, where the noise floor sits, how loud the keys are.
+    fn settings() -> App {
+        let mut app = hero();
+        app.view_mode = ViewMode::Settings;
+        app.settings_section = SettingsSection::InputDevice;
+        app.input_devices = vec![
+            device("MacBook Pro Microphone", 48_000, true),
+            device("AirPods Pro", 48_000, false),
+            device("BlackHole 2ch", 48_000, false),
+        ];
+        app.output_devices = vec![
+            device("MacBook Pro Speakers", 48_000, true),
+            device("AirPods Pro", 48_000, false),
+            device("Studio Display Speakers", 48_000, false),
+        ];
+        app.selected_input_idx = 0;
+        app.selected_output_idx = 1;
+        // Mid-sentence, comfortably over a floor set just above the room.
+        app.mic_level = 0.46;
+        app.input_gate = 0.29;
+        app.typing_clicks = true;
+        app.typing_volume = 0.4;
+        app
+    }
+
+    #[test]
+    #[ignore = "writes assets/; run it on purpose when a screen changes shape"]
+    fn readme_pictures() {
+        for (name, app, rows) in [("room", hero(), 22u16), ("audio", settings(), 22)] {
+            let path = format!("assets/{name}.svg");
+            let picture = svg(&app, 84, rows);
+            std::fs::write(&path, &picture).unwrap_or_else(|e| panic!("could not write {path}: {e}"));
+            println!("{path} — {} bytes", picture.len());
+        }
+    }
+}

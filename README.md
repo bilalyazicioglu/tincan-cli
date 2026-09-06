@@ -19,25 +19,10 @@
   tincan does what Discord does, without needing anyone's server: the first person to open the app creates the room, sends the invite code it prints to their friends, and they connect with that code from anywhere in the world. No VPN, no port forwarding, no accounts.
 </p>
 
-```
- TINCAN  lobby #general                                       DIRECT  18ms
- CHANNELS                   ⟩ 01:13   bob  hey, bob here
- ▸ ● general             2  │              can you hear me alright?
-     gaming              1  │ 01:14 alice  loud and clear
-     music                  │ 01:14   bob  oh that is the round trip time
-                            │              on the string?
- ON THE LINE · 3            │ 01:15 alice  yes, and the pulse speed is the
- ▁·· alice you     general  │              latency
- ▃▅▇ bob           general  │ 01:15   cem  cem here, joining from gaming
- ▁·· cem            gaming  │ 01:16   bob  nice
-                            │ 01:16 alice  it frays when audio drops out
-                            │              too
- AUDIO · F6                 │ 01:17   bob  and the meters move with each
- mic  MacBook Pro Microph…  │              voice
- out  AirPods Pro           │ 01:17 alice  that is the whole idea
-                            │  #general the names hug the messages now▏
-tab channel · f2 talk · f3 mute · f6 audio · ctrl+c     f1 code n73w-kuqc…
-```
+<p align="center">
+  <img src="assets/room.svg" width="100%"
+       alt="The tincan interface: a rail of channels and who is on the line, the two cans and the string between them with the round trip time written on it, and the conversation below. One person in the roster is marked silenced.">
+</p>
 
 The palette is metal: a brown tin ground, brass for the string and the invite code,
 and the two greens copper actually turns — bright patina for what is live, deeper
@@ -60,6 +45,11 @@ quieter than that mark never leaves your machine, which is how a fan or a noisy 
 stays out of the call. `←`/`→` move the floor a step at a time, and `a` listens to the
 room for a second and a half and sets it just above whatever it hears. It is remembered
 per microphone, because a laptop microphone and a headset do not share a noise floor.
+
+<p align="center">
+  <img src="assets/audio.svg" width="100%"
+       alt="The audio screen: the microphones and speakers on this machine with the ones in use marked, the noise floor set to 29 percent with the level meter showing the voice above it, and the key click volume.">
+</p>
 
 `F5` deafens you against the whole room, which is a blunt instrument. For one person
 there are the arrow keys: `↑`/`↓` moves a cursor down the names under `ON THE LINE`,

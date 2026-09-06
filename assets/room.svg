@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="750" height="424" viewBox="0 0 750 424" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace" font-size="14.5">
+<rect width="750" height="424" rx="8" fill="#14100c"/>
+<rect x="14.0" y="14.0" width="8.6" height="18" fill="#211a14"/>
+<rect x="22.6" y="14.0" width="68.8" height="18" fill="#3ec5bc"/>
+<rect x="91.4" y="14.0" width="524.6" height="18" fill="#211a14"/>
+<rect x="616.0" y="14.0" width="68.8" height="18" fill="#2c9c97"/>
+<rect x="684.8" y="14.0" width="51.6" height="18" fill="#211a14"/>
+<text x="22.6" y="27.3" fill="#14100c" font-weight="600" textLength="68.8" lengthAdjust="spacing" xml:space="preserve"> TINCAN </text>
+<text x="100.0" y="27.3" fill="#dcd5cb" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">lobby</text>
+<text x="151.6" y="27.3" fill="#3ec5bc" font-weight="600" textLength="68.8" lengthAdjust="spacing" xml:space="preserve">#general</text>
+<text x="616.0" y="27.3" fill="#14100c" font-weight="600" textLength="68.8" lengthAdjust="spacing" xml:space="preserve"> DIRECT </text>
+<text x="684.8" y="27.3" fill="#8a8177" textLength="43.0" lengthAdjust="spacing" xml:space="preserve"> 18ms</text>
+<rect x="14.0" y="32.0" width="8.6" height="18" fill="#211a14"/>
+<rect x="22.6" y="32.0" width="86.0" height="18" fill="#dcd5cb"/>
+<rect x="108.6" y="32.0" width="146.2" height="18" fill="#211a14"/>
+<text x="22.6" y="45.3" fill="#14100c" font-weight="600" textLength="86.0" lengthAdjust="spacing" xml:space="preserve"> CHANNELS </text>
+<text x="263.4" y="45.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<rect x="14.0" y="50.0" width="240.8" height="18" fill="#211a14"/>
+<text x="31.2" y="63.3" fill="#3ec5bc" font-weight="600" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">▸</text>
+<text x="48.4" y="63.3" fill="#3ec5bc" font-weight="600" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">●</text>
+<text x="65.6" y="63.3" fill="#dcd5cb" font-weight="600" textLength="60.2" lengthAdjust="spacing" xml:space="preserve">general</text>
+<text x="237.6" y="63.3" fill="#8a8177" textLength="17.2" lengthAdjust="spacing" xml:space="preserve">2 </text>
+<text x="263.4" y="63.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<rect x="14.0" y="68.0" width="240.8" height="18" fill="#211a14"/>
+<text x="57.0" y="81.3" fill="#dcd5cb" textLength="180.6" lengthAdjust="spacing" xml:space="preserve"> gaming              </text>
+<text x="237.6" y="81.3" fill="#8a8177" textLength="17.2" lengthAdjust="spacing" xml:space="preserve">1 </text>
+<text x="263.4" y="81.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="297.8" y="81.3" fill="#8a8177" textLength="404.2" lengthAdjust="spacing" xml:space="preserve">  you                                       bob</text>
+<rect x="14.0" y="86.0" width="240.8" height="18" fill="#211a14"/>
+<text x="57.0" y="99.3" fill="#dcd5cb" textLength="206.4" lengthAdjust="spacing" xml:space="preserve"> music                  </text>
+<text x="263.4" y="99.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="297.8" y="99.3" fill="#d9a441" textLength="421.4" lengthAdjust="spacing" xml:space="preserve"> ( o )                                     ( o ) </text>
+<rect x="14.0" y="104.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="117.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="272.0" y="117.3" fill="#dcd5cb" textLength="86.0" lengthAdjust="spacing" xml:space="preserve">   ┌─────┐</text>
+<text x="358.0" y="117.3" fill="#8a8177" textLength="301.0" lengthAdjust="spacing" xml:space="preserve">           18ms · direct           </text>
+<text x="659.0" y="117.3" fill="#dcd5cb" textLength="77.4" lengthAdjust="spacing" xml:space="preserve">┌─────┐  </text>
+<rect x="14.0" y="122.0" width="8.6" height="18" fill="#211a14"/>
+<rect x="22.6" y="122.0" width="189.2" height="18" fill="#dcd5cb"/>
+<rect x="211.8" y="122.0" width="43.0" height="18" fill="#211a14"/>
+<text x="22.6" y="135.3" fill="#14100c" font-weight="600" textLength="189.2" lengthAdjust="spacing" xml:space="preserve"> ON THE LINE · 3 · ↑↓ </text>
+<text x="263.4" y="135.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="272.0" y="135.3" fill="#dcd5cb" textLength="86.0" lengthAdjust="spacing" xml:space="preserve">   │     │</text>
+<text x="358.0" y="135.3" fill="#2c9c97" textLength="301.0" lengthAdjust="spacing" xml:space="preserve">╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌</text>
+<text x="659.0" y="135.3" fill="#dcd5cb" textLength="77.4" lengthAdjust="spacing" xml:space="preserve">│     │  </text>
+<rect x="14.0" y="140.0" width="240.8" height="18" fill="#211a14"/>
+<text x="39.8" y="153.3" fill="#8a8177" textLength="25.8" lengthAdjust="spacing" xml:space="preserve">···</text>
+<text x="65.6" y="153.3" fill="#dcd5cb" textLength="51.6" lengthAdjust="spacing" xml:space="preserve"> alice</text>
+<text x="117.2" y="153.3" fill="#8a8177" textLength="34.4" lengthAdjust="spacing" xml:space="preserve"> you</text>
+<text x="186.0" y="153.3" fill="#8a8177" textLength="60.2" lengthAdjust="spacing" xml:space="preserve">general</text>
+<text x="263.4" y="153.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="272.0" y="153.3" fill="#dcd5cb" textLength="464.4" lengthAdjust="spacing" xml:space="preserve">   └─────┘                                   └─────┘  </text>
+<rect x="14.0" y="158.0" width="240.8" height="18" fill="#211a14"/>
+<text x="39.8" y="171.3" fill="#2c9c97" textLength="25.8" lengthAdjust="spacing" xml:space="preserve">▁▃▅</text>
+<text x="74.2" y="171.3" fill="#dcd5cb" font-weight="600" textLength="25.8" lengthAdjust="spacing" xml:space="preserve">bob</text>
+<text x="186.0" y="171.3" fill="#8a8177" textLength="60.2" lengthAdjust="spacing" xml:space="preserve">general</text>
+<text x="263.4" y="171.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<rect x="14.0" y="176.0" width="240.8" height="18" fill="#211a14"/>
+<text x="39.8" y="189.3" fill="#8a8177" textLength="25.8" lengthAdjust="spacing" xml:space="preserve">╌╌╌</text>
+<text x="65.6" y="189.3" fill="#dcd5cb" textLength="111.8" lengthAdjust="spacing" xml:space="preserve"> cem         </text>
+<text x="177.4" y="189.3" fill="#8a8177" textLength="68.8" lengthAdjust="spacing" xml:space="preserve">silenced</text>
+<text x="263.4" y="189.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<rect x="14.0" y="194.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="207.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<rect x="14.0" y="212.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="225.3" fill="#3ec5bc" font-weight="600" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">⟩</text>
+<text x="280.6" y="225.3" fill="#8a8177" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">18:33 </text>
+<text x="332.2" y="225.3" fill="#dcd5cb" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">  bob</text>
+<text x="375.2" y="225.3" fill="#dcd5cb" textLength="361.2" lengthAdjust="spacing" xml:space="preserve">  hey, bob here                           </text>
+<rect x="14.0" y="230.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="243.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="272.0" y="243.3" fill="#dcd5cb" textLength="464.4" lengthAdjust="spacing" xml:space="preserve">              can you hear me alright?                </text>
+<rect x="14.0" y="248.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="261.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="280.6" y="261.3" fill="#8a8177" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">18:34 </text>
+<text x="332.2" y="261.3" fill="#3ec5bc" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">alice</text>
+<text x="375.2" y="261.3" fill="#dcd5cb" textLength="361.2" lengthAdjust="spacing" xml:space="preserve">  loud and clear                          </text>
+<rect x="14.0" y="266.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="279.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="280.6" y="279.3" fill="#8a8177" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">18:35 </text>
+<text x="332.2" y="279.3" fill="#dcd5cb" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">  bob</text>
+<text x="375.2" y="279.3" fill="#dcd5cb" textLength="361.2" lengthAdjust="spacing" xml:space="preserve">  oh that is the round trip time on the   </text>
+<rect x="14.0" y="284.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="297.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="272.0" y="297.3" fill="#dcd5cb" textLength="464.4" lengthAdjust="spacing" xml:space="preserve">              string?                                 </text>
+<rect x="14.0" y="302.0" width="240.8" height="18" fill="#211a14"/>
+<text x="263.4" y="315.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="280.6" y="315.3" fill="#8a8177" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">18:36 </text>
+<text x="332.2" y="315.3" fill="#3ec5bc" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">alice</text>
+<text x="375.2" y="315.3" fill="#dcd5cb" textLength="361.2" lengthAdjust="spacing" xml:space="preserve">  yes, and the pulse speed is the latency </text>
+<rect x="14.0" y="320.0" width="8.6" height="18" fill="#211a14"/>
+<rect x="22.6" y="320.0" width="103.2" height="18" fill="#dcd5cb"/>
+<rect x="125.8" y="320.0" width="129.0" height="18" fill="#211a14"/>
+<text x="22.6" y="333.3" fill="#14100c" font-weight="600" textLength="103.2" lengthAdjust="spacing" xml:space="preserve"> AUDIO · F6 </text>
+<text x="263.4" y="333.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="280.6" y="333.3" fill="#8a8177" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">18:37 </text>
+<text x="332.2" y="333.3" fill="#dcd5cb" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">  cem</text>
+<text x="375.2" y="333.3" fill="#dcd5cb" textLength="361.2" lengthAdjust="spacing" xml:space="preserve">  cem here, joining from gaming           </text>
+<rect x="14.0" y="338.0" width="240.8" height="18" fill="#211a14"/>
+<text x="31.2" y="351.3" fill="#8a8177" textLength="25.8" lengthAdjust="spacing" xml:space="preserve">mic</text>
+<text x="57.0" y="351.3" fill="#dcd5cb" textLength="206.4" lengthAdjust="spacing" xml:space="preserve">  MacBook Pro Microph…  </text>
+<text x="263.4" y="351.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="280.6" y="351.3" fill="#8a8177" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">18:38 </text>
+<text x="332.2" y="351.3" fill="#3ec5bc" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">alice</text>
+<text x="375.2" y="351.3" fill="#dcd5cb" textLength="361.2" lengthAdjust="spacing" xml:space="preserve">  it frays when audio drops out too       </text>
+<rect x="14.0" y="356.0" width="240.8" height="18" fill="#211a14"/>
+<text x="31.2" y="369.3" fill="#8a8177" textLength="25.8" lengthAdjust="spacing" xml:space="preserve">out</text>
+<text x="57.0" y="369.3" fill="#dcd5cb" textLength="206.4" lengthAdjust="spacing" xml:space="preserve">  AirPods Pro           </text>
+<text x="263.4" y="369.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="280.6" y="369.3" fill="#8a8177" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">18:38 </text>
+<text x="332.2" y="369.3" fill="#dcd5cb" font-weight="600" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">  bob</text>
+<text x="375.2" y="369.3" fill="#dcd5cb" textLength="361.2" lengthAdjust="spacing" xml:space="preserve">  and the meters move with each voice     </text>
+<rect x="14.0" y="374.0" width="240.8" height="18" fill="#211a14"/>
+<rect x="280.6" y="374.0" width="455.8" height="18" fill="#211a14"/>
+<text x="263.4" y="387.3" fill="#2c9c97" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
+<text x="280.6" y="387.3" fill="#8a8177" textLength="197.8" lengthAdjust="spacing" xml:space="preserve"> #general say something</text>
+<text x="478.4" y="387.3" fill="#3ec5bc" font-weight="600" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">▏</text>
+<rect x="14.0" y="392.0" width="722.4" height="18" fill="#211a14"/>
+<text x="22.6" y="405.3" fill="#8a8177" textLength="481.6" lengthAdjust="spacing" xml:space="preserve">tab channel · f2 talk · f3 mute · f6 audio · ctrl+c quit</text>
+<text x="573.0" y="405.3" fill="#8a8177" textLength="68.8" lengthAdjust="spacing" xml:space="preserve">f1 code </text>
+<text x="641.8" y="405.3" fill="#d9a441" textLength="86.0" lengthAdjust="spacing" xml:space="preserve">n73w-kuqc…</text>
+</svg>
