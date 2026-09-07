@@ -321,6 +321,7 @@ fn setup_voice(
                 hearing: io.hearing,
                 mic_level: io.mic_level,
                 peer_levels: io.peer_levels,
+                peer_gains: io.peer_gains,
                 mic_test: io.mic_test,
                 gate: io.gate,
                 health: io.health,

@@ -47,6 +47,10 @@ pub struct Glyphs {
     pub on_air: char,
     /// Five steps of the three-cell level meter, silence first.
     pub meter: [&'static str; 5],
+    /// Stands in for the meter of someone you have silenced. Deliberately unlike any
+    /// step of it, including the silent one: they may well still be talking, and a row
+    /// that reads as "gone quiet" would be telling you the wrong thing.
+    pub silenced: &'static str,
     /// The long meter on the microphone test: a lit cell and an unlit one.
     pub bar: [char; 2],
     /// The text cursor in the message field.
@@ -66,6 +70,7 @@ const UNICODE: Glyphs = Glyphs {
     cursor: '▸',
     on_air: '●',
     meter: ["···", "▁··", "▁▃·", "▁▃▅", "▃▅▇"],
+    silenced: "╌╌╌",
     bar: ['█', '░'],
     caret: '▏',
     note: '·',
@@ -87,6 +92,7 @@ const ASCII: Glyphs = Glyphs {
     cursor: '>',
     on_air: '*',
     meter: ["...", "-..", "--.", "---", "==="],
+    silenced: "xxx",
     bar: ['#', '.'],
     caret: '_',
     note: '-',

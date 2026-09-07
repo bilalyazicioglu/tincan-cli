@@ -42,6 +42,12 @@ pub const METER_CELLS: usize = 28;
 pub const GATE_STEP: f32 = 1.0 / METER_CELLS as f32;
 /// One press of the key-click volume.
 pub const VOLUME_STEP: f32 = 0.05;
+/// One press of a single person's volume.
+pub const PEER_VOLUME_STEP: f32 = 0.1;
+/// The loudest a single person can be made. Boosting is allowed because a quiet
+/// talker is a real problem, but not without end: past this the limiter would spend
+/// the call pulling the whole room down to make room for one voice.
+pub const PEER_VOLUME_MAX: f32 = 2.0;
 
 /// A measurement of the room in progress.
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +112,17 @@ pub struct App {
     pub speaking: HashSet<PeerId>,
     /// How loud each of the others is, 0-4, for the meters beside their names.
     pub peer_levels: HashMap<PeerId, u8>,
+    /// Whose row the roster cursor is on, if any. Held as an identity rather than a
+    /// row number so that someone leaving cannot silently move the cursor onto
+    /// somebody else.
+    pub selected_peer: Option<PeerId>,
+    /// How loud each person is played back, where a missing entry means untouched.
+    /// Local and for this session only: peer identities are regenerated on every run,
+    /// so there is nothing stable to write these against.
+    pub peer_gains: HashMap<PeerId, f32>,
+    /// Where a silenced person's volume was before they were silenced, so that letting
+    /// them back in returns the level you had chosen rather than jumping to full.
+    before_silence: HashMap<PeerId, f32>,
     /// Where the microphone's noise floor sits, as a position on the level meter.
     /// Anything quieter than this never leaves the machine.
     pub input_gate: f32,
@@ -175,6 +192,9 @@ impl App {
             input: String::new(),
             speaking: HashSet::new(),
             peer_levels: HashMap::new(),
+            selected_peer: None,
+            peer_gains: HashMap::new(),
+            before_silence: HashMap::new(),
             input_gate: crate::config::DEFAULT_GATE,
             calibrating: None,
             motion: true,
@@ -223,6 +243,13 @@ impl App {
                 self.peers = peers;
                 self.remember_names();
                 self.sync_self_from_roster();
+                // Someone who has left is no longer something the arrow keys may
+                // point at — otherwise a press adjusts a person who is not there.
+                if let Some(selected) = self.selected_peer
+                    && !self.peers.iter().any(|peer| peer.id == selected)
+                {
+                    self.selected_peer = None;
+                }
             }
             Event::Chat(line) => {
                 // Something said in a channel you are not reading is the only thing
@@ -370,6 +397,70 @@ impl App {
             return crate::audio::bar(self.mic_level);
         }
         self.peer_levels.get(&peer).copied().unwrap_or(0)
+    }
+
+    /// Everyone in the room whose volume you can actually change.
+    ///
+    /// Your own row is not one of them: you do not hear yourself, so there is nothing
+    /// there to turn down.
+    fn adjustable(&self) -> Vec<PeerId> {
+        self.peers
+            .iter()
+            .map(|peer| peer.id)
+            .filter(|id| *id != self.me)
+            .collect()
+    }
+
+    /// How loud one person is played back, where 1.0 is untouched.
+    pub fn gain_of(&self, peer: PeerId) -> f32 {
+        self.peer_gains.get(&peer).copied().unwrap_or(1.0)
+    }
+
+    /// Moves the volume of whoever the roster cursor is on.
+    pub fn nudge_peer_volume(&mut self, delta: f32) {
+        let Some(peer) = self.selected_peer else {
+            return;
+        };
+        let level = (self.gain_of(peer) + delta).clamp(0.0, PEER_VOLUME_MAX);
+        self.peer_gains.insert(peer, level);
+    }
+
+    /// Silences whoever the roster cursor is on, or lets them back in.
+    pub fn toggle_peer_silence(&mut self) {
+        let Some(peer) = self.selected_peer else {
+            return;
+        };
+        if self.gain_of(peer) == 0.0 {
+            let restored = self.before_silence.remove(&peer).unwrap_or(1.0);
+            self.peer_gains.insert(peer, restored);
+        } else {
+            self.before_silence.insert(peer, self.gain_of(peer));
+            self.peer_gains.insert(peer, 0.0);
+        }
+    }
+
+    /// Moves the roster cursor one row.
+    pub fn select_peer(&mut self, forward: bool) {
+        let others = self.adjustable();
+        let Some(last) = others.len().checked_sub(1) else {
+            self.selected_peer = None;
+            return;
+        };
+
+        let at = self
+            .selected_peer
+            .and_then(|current| others.iter().position(|id| *id == current));
+
+        self.selected_peer = Some(match at {
+            Some(index) => {
+                let step = if forward { 1 } else { others.len() - 1 };
+                others[(index + step) % others.len()]
+            }
+            // Nothing selected, or whoever was selected has left: come in from the
+            // edge the cursor is travelling from.
+            None if forward => others[0],
+            None => others[last],
+        });
     }
 
     /// Whether anything on screen is still moving. The event loop asks before waking
@@ -1194,5 +1285,105 @@ mod tests {
             "a departed peer's old message must not turn into a raw id"
         );
         assert_eq!(app.peers.len(), 1, "the people list must still be updated");
+    }
+
+    #[test]
+    fn moving_through_the_roster_never_lands_on_you() {
+        let mut app = welcomed();
+        app.peers.push(peer(3, None));
+
+        app.select_peer(true);
+        assert_eq!(
+            app.selected_peer,
+            Some(PeerId([2; 32])),
+            "the first press picks the first other person"
+        );
+
+        app.select_peer(true);
+        assert_eq!(app.selected_peer, Some(PeerId([3; 32])));
+
+        app.select_peer(true);
+        assert_eq!(
+            app.selected_peer,
+            Some(PeerId([2; 32])),
+            "it wraps past you rather than onto you — your own volume is not a thing you hear"
+        );
+    }
+
+    #[test]
+    fn everyone_is_at_full_volume_until_you_turn_them_down() {
+        let mut app = welcomed();
+        let other = PeerId([2; 32]);
+        assert_eq!(
+            app.gain_of(other),
+            1.0,
+            "nobody arrives quieter than the rest of the room"
+        );
+
+        app.select_peer(true);
+        app.nudge_peer_volume(-PEER_VOLUME_STEP);
+        assert!(
+            (app.gain_of(other) - (1.0 - PEER_VOLUME_STEP)).abs() < 1e-6,
+            "got {}",
+            app.gain_of(other)
+        );
+
+        for _ in 0..100 {
+            app.nudge_peer_volume(-PEER_VOLUME_STEP);
+        }
+        assert_eq!(
+            app.gain_of(other),
+            0.0,
+            "the bottom of the range is silence, never a negative gain"
+        );
+    }
+
+    #[test]
+    fn a_quiet_talker_can_be_turned_up_but_only_so_far() {
+        let mut app = welcomed();
+        let other = PeerId([2; 32]);
+        app.select_peer(true);
+
+        for _ in 0..100 {
+            app.nudge_peer_volume(PEER_VOLUME_STEP);
+        }
+        assert_eq!(
+            app.gain_of(other),
+            PEER_VOLUME_MAX,
+            "boosting has to stop somewhere, or the limiter spends the call pulling the room back down"
+        );
+    }
+
+    #[test]
+    fn letting_someone_back_in_returns_the_level_you_had_chosen() {
+        let mut app = welcomed();
+        let other = PeerId([2; 32]);
+        app.select_peer(true);
+        app.nudge_peer_volume(-PEER_VOLUME_STEP * 3.0);
+        let chosen = app.gain_of(other);
+
+        app.toggle_peer_silence();
+        assert_eq!(app.gain_of(other), 0.0, "silence is silence");
+
+        app.toggle_peer_silence();
+        assert!(
+            (app.gain_of(other) - chosen).abs() < 1e-6,
+            "coming back must restore the level you picked, not jump to full: got {}",
+            app.gain_of(other)
+        );
+    }
+
+    #[test]
+    fn the_cursor_lets_go_of_someone_who_leaves() {
+        let mut app = welcomed();
+        app.select_peer(true);
+        assert_eq!(app.selected_peer, Some(PeerId([2; 32])));
+
+        app.apply(Event::Roster(vec![peer(1, None)]));
+
+        assert_eq!(
+            app.selected_peer, None,
+            "an arrow key must never quietly adjust somebody who has gone"
+        );
     }
 }
