@@ -128,23 +128,26 @@ tincan devices
 
 ### Shortcuts
 
-| Key                 | Action                                        |
-| ------------------- | --------------------------------------------- |
-| `Tab` / `Shift+Tab` | Move between channels                         |
-| `F2` (or `Ctrl+G`)  | Join / leave the voice of the channel you see |
-| `F3` (or `Ctrl+T`)  | Mute / unmute your microphone                 |
-| `F4`                | Push-to-talk (only in `--ptt` mode)           |
-| `F5`                | Deafen: hear nobody (also closes your mic)    |
-| `F1`                | Show the full invite code (and copy it)       |
-| `↑` / `↓`           | Pick someone out of the roster                |
-| `←` / `→`           | Turn that person down or up                   |
-| `Ctrl+K`            | Silence that person, or let them back in      |
-| `PageUp` / `PageDn` | Scroll chat history up or down                |
-| `Shift+↑` / `↓`     | Scroll chat history smoothly (2 lines)        |
-| `End`               | Jump to latest message                        |
-| `Esc`               | Let go of the roster, or jump to latest chat  |
-| `Enter`             | Send the message                              |
-| `Ctrl+C`            | Quit                                          |
+| Key                        | Action                                        |
+| -------------------------- | --------------------------------------------- |
+| `Tab` / `Shift+Tab`        | Move between channels                         |
+| `F2` (or `Ctrl+G`)         | Join / leave the voice of the channel you see |
+| `F3` (or `Ctrl+T`)         | Mute / unmute your microphone                 |
+| `F4`                       | Push-to-talk (only in `--ptt` mode)           |
+| `F5`                       | Deafen: hear nobody (also closes your mic)    |
+| `F6` (or `Ctrl+,`)         | Open audio settings                           |
+| `F1`                       | Show the full invite code (and copy it)       |
+| `↑` / `↓`                  | Pick someone out of the roster                |
+| `←` / `→`                  | Turn that person down or up                   |
+| `Ctrl+K`                   | Silence selected person (or Vim scroll up)    |
+| `Ctrl+J` / `Ctrl+K`        | Vim scroll down / up (also `Alt+J` / `Alt+K`) |
+| `PageUp` / `PageDn`        | Scroll chat history up or down (15 lines)     |
+| `Shift+↑` / `↓`            | Scroll chat history smoothly (also `Ctrl+↑/↓`)|
+| Scroll wheel / Trackpad    | Scroll chat history smoothly (3 lines)        |
+| `End`                      | Jump to latest message                        |
+| `Esc`                      | Let go of the roster, or jump to latest chat  |
+| `Enter`                    | Send the message                              |
+| `Ctrl+C`                   | Quit                                          |
 
 To pick a device, list them with `tincan devices` first, then pass part of a name:
 
