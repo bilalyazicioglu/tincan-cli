@@ -12,8 +12,7 @@ use crate::net::Event;
 use crate::net::voice::LinkStatus;
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
 
-/// The most lines kept in the chat pane.
-const VISIBLE_HISTORY: usize = 500;
+
 
 /// How long a dropout keeps being reported after the audio recovers.
 const DROPOUT_MEMORY: std::time::Duration = std::time::Duration::from_secs(6);
@@ -92,6 +91,12 @@ pub struct App {
     /// roster does, so old messages in the history keep their author's name.
     names: HashMap<PeerId, String>,
     pub lines: Vec<Line>,
+    /// How far back in the conversation history we are scrolled (0 = bottom / latest).
+    pub scroll_offset: usize,
+    /// How many new messages arrived while we were scrolled up reading history.
+    pub unread_while_scrolled: usize,
+    /// Maximum number of messages kept in memory for the chat pane.
+    pub history_limit: usize,
     /// The channel on screen — a typed message goes here.
     pub viewing: ChannelId,
     /// Channels somebody has written in since you last looked at them.
@@ -182,6 +187,9 @@ impl App {
             peers: Vec::new(),
             names: HashMap::new(),
             lines: Vec::new(),
+            scroll_offset: 0,
+            unread_while_scrolled: 0,
+            history_limit: crate::config::DEFAULT_HISTORY_LIMIT,
             viewing: ChannelId(0),
             unread: HashSet::new(),
             voice: None,
@@ -286,10 +294,41 @@ impl App {
     }
 
     fn push(&mut self, line: Line) {
-        self.lines.push(line);
-        if self.lines.len() > VISIBLE_HISTORY {
-            self.lines.drain(..self.lines.len() - VISIBLE_HISTORY);
+        let is_current_channel = match &line {
+            Line::Chat(chat) => chat.channel == self.viewing,
+            Line::Notice { .. } => true,
+        };
+        if self.scroll_offset > 0 && is_current_channel {
+            self.scroll_offset += 1;
+            self.unread_while_scrolled += 1;
         }
+
+        self.lines.push(line);
+        if self.lines.len() > self.history_limit {
+            self.lines.drain(..self.lines.len() - self.history_limit);
+        }
+    }
+
+    /// Scrolls up into older messages.
+    pub fn scroll_up(&mut self, amount: usize) {
+        let total = self.visible_lines().len();
+        let max_offset = total.saturating_sub(1);
+        self.scroll_offset = (self.scroll_offset + amount).min(max_offset);
+    }
+
+    /// Scrolls down toward the latest message.
+    pub fn scroll_down(&mut self, amount: usize) {
+        if self.scroll_offset <= amount {
+            self.scroll_to_bottom();
+        } else {
+            self.scroll_offset -= amount;
+        }
+    }
+
+    /// Returns view to the latest message.
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+        self.unread_while_scrolled = 0;
     }
 
     fn remember_names(&mut self) {
@@ -349,11 +388,13 @@ impl App {
         });
         // Looking at a channel is what reading it means.
         self.unread.remove(&self.viewing);
+        self.scroll_to_bottom();
     }
 
     /// Toggles between Chat and Settings views.
     pub fn toggle_settings(&mut self) {
         self.mode_transition_at = Some(std::time::Instant::now());
+        self.scroll_to_bottom();
         match self.view_mode {
             ViewMode::Chat => {
                 self.view_mode = ViewMode::Settings;
@@ -1002,10 +1043,11 @@ mod tests {
     #[test]
     fn history_is_bounded() {
         let mut app = welcomed();
-        for i in 0..VISIBLE_HISTORY + 100 {
+        app.history_limit = 50;
+        for i in 0..100 {
             app.apply(Event::Notice(format!("bildirim {i}")));
         }
-        assert_eq!(app.lines.len(), VISIBLE_HISTORY);
+        assert_eq!(app.lines.len(), 50);
     }
 
     #[test]
@@ -1386,4 +1428,84 @@ mod tests {
             "an arrow key must never quietly adjust somebody who has gone"
         );
     }
+
+    #[test]
+    fn scrolling_up_and_down_moves_within_bounds() {
+        let mut app = welcomed();
+        for i in 0..30 {
+            app.apply(Event::Chat(ChatLine {
+                channel: ChannelId(0),
+                from: PeerId([2; 32]),
+                text: format!("msg {i}"),
+                at: 1000 + i,
+            }));
+        }
+
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.unread_while_scrolled, 0);
+
+        app.scroll_up(10);
+        assert_eq!(app.scroll_offset, 10);
+
+        app.scroll_down(4);
+        assert_eq!(app.scroll_offset, 6);
+
+        // Scrolling down past 0 resets cleanly
+        app.scroll_down(20);
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn new_message_while_scrolled_anchors_view_and_increments_unread() {
+        let mut app = welcomed();
+        for i in 0..20 {
+            app.apply(Event::Chat(ChatLine {
+                channel: ChannelId(0),
+                from: PeerId([2; 32]),
+                text: format!("msg {i}"),
+                at: 1000 + i,
+            }));
+        }
+
+        app.scroll_up(5);
+        assert_eq!(app.scroll_offset, 5);
+        assert_eq!(app.unread_while_scrolled, 0);
+
+        // New message arrives on viewed channel while scrolled up
+        app.apply(Event::Chat(ChatLine {
+            channel: ChannelId(0),
+            from: PeerId([2; 32]),
+            text: "new message".into(),
+            at: 2000,
+        }));
+
+        // Offset is anchored (+1) so current lines on screen don't move
+        assert_eq!(app.scroll_offset, 6);
+        assert_eq!(app.unread_while_scrolled, 1);
+
+        // Returning to bottom resets offset and unread
+        app.scroll_to_bottom();
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.unread_while_scrolled, 0);
+    }
+
+    #[test]
+    fn switching_channel_resets_scroll_offset() {
+        let mut app = welcomed();
+        for i in 0..10 {
+            app.apply(Event::Chat(ChatLine {
+                channel: ChannelId(0),
+                from: PeerId([2; 32]),
+                text: format!("msg {i}"),
+                at: 1000 + i,
+            }));
+        }
+
+        app.scroll_up(4);
+        assert_eq!(app.scroll_offset, 4);
+
+        app.view_next(true);
+        assert_eq!(app.scroll_offset, 0, "switching channel must reset scroll offset");
+    }
 }
+

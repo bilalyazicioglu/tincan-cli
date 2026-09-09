@@ -139,7 +139,10 @@ tincan devices
 | `↑` / `↓`           | Pick someone out of the roster                |
 | `←` / `→`           | Turn that person down or up                   |
 | `Ctrl+K`            | Silence that person, or let them back in      |
-| `Esc`               | Let go of the roster                          |
+| `PageUp` / `PageDn` | Scroll chat history up or down                |
+| `Shift+↑` / `↓`     | Scroll chat history smoothly (2 lines)        |
+| `End`               | Jump to latest message                        |
+| `Esc`               | Let go of the roster, or jump to latest chat  |
 | `Enter`             | Send the message                              |
 | `Ctrl+C`            | Quit                                          |
 

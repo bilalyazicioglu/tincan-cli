@@ -162,7 +162,9 @@ pub async fn run(
     ptt_mode: bool,
 ) -> Result<()> {
     let theme = Theme::from_env();
+    let config = Config::load();
     let mut app = App::new(session.me, session.invite_code.clone());
+    app.history_limit = config.history_limit();
     app.voice_available = voice.is_some();
     app.ptt_mode = ptt_mode && app.voice_available;
     app.motion = theme.motion;
@@ -172,7 +174,6 @@ pub async fn run(
         // user to visit the settings screen.
         app.active_input_name = voice.active_input();
         app.active_output_name = voice.active_output();
-        let config = Config::load();
         app.input_gate = config.gate_for(app.active_input_name.as_deref());
         app.typing_clicks = config.typing_clicks;
         app.typing_volume = config.typing_loudness();
@@ -564,7 +565,16 @@ async fn handle_key(
         return Ok(false);
     }
 
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
     match key.code {
+        KeyCode::PageUp => app.scroll_up(15),
+        KeyCode::PageDown => app.scroll_down(15),
+        KeyCode::Up if shift || alt => app.scroll_up(2),
+        KeyCode::Down if shift || alt => app.scroll_down(2),
+        KeyCode::End => app.scroll_to_bottom(),
+
         KeyCode::Tab => app.view_next(true),
         KeyCode::BackTab => app.view_next(false),
 
@@ -580,9 +590,16 @@ async fn handle_key(
                 v.set_peer_gains(&app.peer_gains);
             }
         }
-        KeyCode::Esc => app.selected_peer = None,
+        KeyCode::Esc => {
+            if app.scroll_offset > 0 {
+                app.scroll_to_bottom();
+            } else {
+                app.selected_peer = None;
+            }
+        }
 
         KeyCode::Enter => {
+            app.scroll_to_bottom();
             if let Some(text) = app.take_input() {
                 let channel = app.viewing;
                 let _ = commands.send(Command::Chat { channel, text }).await;
