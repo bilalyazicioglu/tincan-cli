@@ -13,7 +13,7 @@ use chrono::{Local, TimeZone};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line as TextLine, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use super::{clip, strand};
 use crate::proto::PeerId;
@@ -67,18 +67,64 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     // drawing stays up there rather than the room going blank the moment someone
     // says hello.
     let lines = transcript(talk.width, app, theme);
-    let start = lines.len().saturating_sub(height);
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(height);
+    let offset = app.scroll_offset.min(max_scroll);
+    let end = total.saturating_sub(offset);
+    let start = end.saturating_sub(height);
+
     let mut shown: Vec<TextLine> = Vec::with_capacity(height);
 
-    let spare = height.saturating_sub(lines.len());
-    if spare >= CANS_ROWS + CANS_GAP && talk.width >= DIAGRAM_NEEDS_WIDTH {
+    let spare = height.saturating_sub(end.saturating_sub(start));
+    if offset == 0 && spare >= CANS_ROWS + CANS_GAP && talk.width >= DIAGRAM_NEEDS_WIDTH {
         // Centred in the air it is filling, rather than pinned to the top of it.
         shown.resize((spare - CANS_ROWS) / 2, TextLine::from(""));
         shown.extend(cans(talk.width, app, theme));
     }
     shown.resize(spare, TextLine::from(""));
-    shown.extend_from_slice(&lines[start..]);
+
+    // If scrolled all the way to the top and history is large, show beginning of history marker
+    if start == 0 && offset > 0 {
+        let marker = format!("─── {} ───", theme.plainly("Beginning of conversation"));
+        shown.push(TextLine::from(vec![Span::styled(marker, theme.dim())]));
+    }
+
+    shown.extend_from_slice(&lines[start..end]);
     frame.render_widget(Paragraph::new(shown), talk);
+
+    if total > height {
+        let mut scrollbar_state = ScrollbarState::new(max_scroll).position(start);
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .thumb_symbol("█")
+            .track_symbol(Some("░"));
+        frame.render_stateful_widget(scrollbar, talk, &mut scrollbar_state);
+    }
+
+    if offset > 0 {
+        let badge_text = if app.unread_while_scrolled > 0 {
+            format!(" ▼ +{} new · Esc to bottom ", app.unread_while_scrolled)
+        } else {
+            " 📜 History · Esc to bottom ".to_string()
+        };
+        let badge_len = badge_text.chars().count() as u16;
+        if talk.width > badge_len + 3 && talk.height > 1 {
+            let badge_area = Rect {
+                x: talk.x + talk.width.saturating_sub(badge_len + 2),
+                y: talk.y + talk.height.saturating_sub(1),
+                width: badge_len,
+                height: 1,
+            };
+            let style = if app.unread_while_scrolled > 0 {
+                theme.chip_on()
+            } else {
+                theme.chip()
+            };
+            frame.render_widget(Paragraph::new(Span::styled(badge_text, style)), badge_area);
+        }
+    }
 
     draw_field(frame, field, app, theme);
 }

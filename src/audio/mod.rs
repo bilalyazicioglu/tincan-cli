@@ -114,6 +114,10 @@ pub struct VoiceIo {
     /// interface can draw. Quantising here is what lets the interface sleep: it
     /// wakes only when a bar would actually change, not fifty times a second.
     pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
+    /// How loud each person is played back, where a missing entry means untouched.
+    /// The interface writes it and the playback loop reads it, so turning someone down
+    /// takes effect on the next frame.
+    pub peer_gains: watch::Sender<HashMap<PeerId, f32>>,
     /// What the microphone test is doing, as `MicTest::bits`.
     pub mic_test: Arc<AtomicU8>,
     /// The RMS floor under which the microphone is treated as room noise, held as
@@ -136,6 +140,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
     let (speaking_tx, speaking_rx) = watch::channel(HashSet::new());
     let (mic_level_tx, mic_level_rx) = watch::channel(0.0f32);
     let (peer_levels_tx, peer_levels_rx) = watch::channel(HashMap::new());
+    let (peer_gains_tx, peer_gains_rx) = watch::channel(HashMap::new());
     let (loopback_tx, mut loopback_rx) = mpsc::channel::<Vec<f32>>(16);
 
     let gate = Arc::new(AtomicU32::new(
@@ -314,21 +319,32 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
                         let mut sources: Vec<Vec<f32>> = Vec::new();
                         let mut active: HashSet<PeerId> = HashSet::new();
 
+                        let gains = peer_gains_rx.borrow();
                         for (peer, stream) in streams.iter_mut() {
                             let frame = stream.buffer.pop();
                             let speaking = !matches!(frame, Frame::Silence);
                             match stream.decoder.decode(&frame, &mut decoded) {
                                 Ok(written) if speaking => {
+                                    // Both of these come before the volume is applied.
+                                    // Someone you have turned down is still speaking,
+                                    // and their meter still has to say so — otherwise
+                                    // a silenced peer is indistinguishable from one
+                                    // who has gone quiet.
                                     active.insert(*peer);
                                     let heard = loudness(&decoded[..written]);
                                     let level = levels.entry(*peer).or_insert(0.0);
                                     *level = level.max(heard);
-                                    sources.push(decoded[..written].to_vec());
+
+                                    let gain = gains.get(peer).copied().unwrap_or(1.0);
+                                    if let Some(source) = at_volume(&decoded[..written], gain) {
+                                        sources.push(source);
+                                    }
                                 }
                                 Ok(_) => {}
                                 Err(err) => tracing::warn!("decoding error: {err:#}"),
                             }
                         }
+                        drop(gains);
 
                         // Everything the program itself makes, as opposed to the room:
                         // its own sounds, and your own microphone played back at you.
@@ -392,6 +408,7 @@ pub fn start(me: PeerId, choice: &device::DeviceChoice) -> Result<VoiceIo> {
         hearing,
         mic_level: mic_level_rx,
         peer_levels: peer_levels_rx,
+        peer_gains: peer_gains_tx,
         mic_test,
         gate,
         health,
@@ -447,6 +464,21 @@ fn speaker_bus<'a>(room: &'a [Vec<f32>], interface: &'a [f32], hearing: bool) ->
     }
     bus.push(interface);
     bus
+}
+
+/// One person's decoded audio at the volume you have chosen for them.
+///
+/// Returns nothing for someone you have silenced. Leaving them off the bus rather than
+/// mixing in a frame of zeroes is the same reasoning as deafening: the limiter should
+/// never be working against audio nobody is going to hear.
+fn at_volume(pcm: &[f32], gain: f32) -> Option<Vec<f32>> {
+    if gain <= 0.0 {
+        return None;
+    }
+    if gain == 1.0 {
+        return Some(pcm.to_vec());
+    }
+    Some(pcm.iter().map(|sample| sample * gain).collect())
 }
 
 /// Adds a sound to whatever is already waiting, starting now.
@@ -690,5 +722,28 @@ mod tests {
         }
         assert!(level < 0.125, "the meter still showed {level} after 200 ms of silence");
         assert_eq!(bar(level), 0);
+    }
+
+    #[test]
+    fn someone_you_silenced_never_reaches_the_bus() {
+        assert!(
+            at_volume(&tone(0.5), 0.0).is_none(),
+            "a silenced peer must be left off the bus entirely, not mixed in as zeroes"
+        );
+    }
+
+    #[test]
+    fn turning_someone_down_scales_their_voice() {
+        let voice = tone(0.8);
+        let quieter = at_volume(&voice, 0.25).expect("a quiet peer is still on the bus");
+
+        assert_eq!(quieter.len(), voice.len(), "the frame must keep its length");
+        for (scaled, original) in quieter.iter().zip(voice.iter()) {
+            assert!(
+                (scaled - original * 0.25).abs() < 1e-6,
+                "expected {} at a quarter, got {scaled}",
+                original * 0.25
+            );
+        }
     }
 }

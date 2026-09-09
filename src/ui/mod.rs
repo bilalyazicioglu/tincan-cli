@@ -9,7 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use anyhow::Result;
-use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers, MouseEventKind,
+};
 use tokio::sync::{mpsc, watch};
 
 use crate::audio::MicTest;
@@ -19,7 +22,7 @@ use crate::config::Config;
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
 use crate::proto::{ChannelId, PeerId};
-use state::{App, GATE_STEP, SettingsSection, VOLUME_STEP, ViewMode};
+use state::{App, GATE_STEP, PEER_VOLUME_STEP, SettingsSection, VOLUME_STEP, ViewMode};
 use theme::Theme;
 
 /// Where the interface holds on to the audio side. Never built if audio failed to
@@ -36,6 +39,9 @@ pub struct VoiceControl {
     pub mic_level: watch::Receiver<f32>,
     /// How loud each of the others is, 0-4, for the meters in the roster.
     pub peer_levels: watch::Receiver<HashMap<PeerId, u8>>,
+    /// How loud each of them is played back — the other direction: the interface
+    /// writes this one and the engine reads it.
+    pub peer_gains: watch::Sender<HashMap<PeerId, f32>>,
     /// What the microphone test is doing, as `MicTest::bits`.
     pub mic_test: Arc<AtomicU8>,
     /// The microphone's noise floor, as the capture loop reads it.
@@ -69,6 +75,11 @@ impl VoiceControl {
     pub fn set_gate(&self, level: f32) {
         self.gate
             .store(crate::audio::rms_for(level).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Hands the engine the volume you have set for each person.
+    pub fn set_peer_gains(&self, gains: &HashMap<PeerId, f32>) {
+        let _ = self.peer_gains.send(gains.clone());
     }
 
     pub fn active_input(&self) -> Option<String> {
@@ -154,7 +165,9 @@ pub async fn run(
     ptt_mode: bool,
 ) -> Result<()> {
     let theme = Theme::from_env();
+    let config = Config::load();
     let mut app = App::new(session.me, session.invite_code.clone());
+    app.history_limit = config.history_limit();
     app.voice_available = voice.is_some();
     app.ptt_mode = ptt_mode && app.voice_available;
     app.motion = theme.motion;
@@ -164,14 +177,15 @@ pub async fn run(
         // user to visit the settings screen.
         app.active_input_name = voice.active_input();
         app.active_output_name = voice.active_output();
-        let config = Config::load();
         app.input_gate = config.gate_for(app.active_input_name.as_deref());
         app.typing_clicks = config.typing_clicks;
         app.typing_volume = config.typing_loudness();
         voice.set_gate(app.input_gate);
     }
+    let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+    let _mouse_guard = MouseCaptureGuard;
     let mut terminal = ratatui::init();
-    let mut keys = spawn_key_reader();
+    let mut events = spawn_event_reader();
     let mut chime = JoinChime::default();
     let mut own_state = SelfChime::default();
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -273,12 +287,26 @@ pub async fn run(
                     }
                 }
 
-                key = keys.recv() => match key {
-                    Some(key) => {
+                event = events.recv() => match event {
+                    Some(UiEvent::Key(key)) => {
                         if handle_key(&mut app, key, &session.commands, voice.as_ref()).await? {
                             break;
                         }
                         apply_local_audio_state(&app, voice.as_ref());
+                    }
+                    Some(UiEvent::ScrollUp) => {
+                        if app.view_mode == ViewMode::Chat {
+                            app.scroll_up(3);
+                        } else if app.view_mode == ViewMode::Settings {
+                            app.settings_navigate_item(false);
+                        }
+                    }
+                    Some(UiEvent::ScrollDown) => {
+                        if app.view_mode == ViewMode::Chat {
+                            app.scroll_down(3);
+                        } else if app.view_mode == ViewMode::Settings {
+                            app.settings_navigate_item(true);
+                        }
                     }
                     None => break,
                 },
@@ -295,6 +323,7 @@ pub async fn run(
     }
     .await;
 
+    drop(_mouse_guard);
     ratatui::restore();
     drop(voice);
     if let Some(reason) = app.ended {
@@ -303,14 +332,40 @@ pub async fn run(
     result
 }
 
-/// Reading keys blocks, so it runs on its own thread and is piped into a channel.
-fn spawn_key_reader() -> mpsc::Receiver<KeyEvent> {
+/// Events delivered to the main interface loop.
+enum UiEvent {
+    Key(KeyEvent),
+    ScrollUp,
+    ScrollDown,
+}
+
+/// RAII guard ensuring terminal mouse capture is released when exiting or on panic.
+struct MouseCaptureGuard;
+
+impl Drop for MouseCaptureGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+    }
+}
+
+/// Reading keys and mouse wheel blocks, so it runs on its own thread and is piped into a channel.
+fn spawn_event_reader() -> mpsc::Receiver<UiEvent> {
     let (tx, rx) = mpsc::channel(64);
     std::thread::spawn(move || {
         loop {
             match crossterm::event::read() {
                 Ok(TermEvent::Key(key)) if key.kind == KeyEventKind::Press => {
-                    if tx.blocking_send(key).is_err() {
+                    if tx.blocking_send(UiEvent::Key(key)).is_err() {
+                        return;
+                    }
+                }
+                Ok(TermEvent::Mouse(mouse)) => {
+                    let ev = match mouse.kind {
+                        MouseEventKind::ScrollUp => UiEvent::ScrollUp,
+                        MouseEventKind::ScrollDown => UiEvent::ScrollDown,
+                        _ => continue,
+                    };
+                    if tx.blocking_send(ev).is_err() {
                         return;
                     }
                 }
@@ -536,11 +591,75 @@ async fn handle_key(
         return Ok(false);
     }
 
+    // Silencing one person. Not Ctrl+S, which is XOFF in most terminals and would
+    // freeze the session rather than quieten anybody — the same trap that keeps mute
+    // off Ctrl+M.
+    if ctrl
+        && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+        && let Some(peer) = app.selected_peer
+    {
+        app.toggle_peer_silence();
+        if let Some(v) = voice {
+            v.set_peer_gains(&app.peer_gains);
+            // Closing your ears on one person is the same act as closing them on
+            // the room, so it borrows the same pair of notes. Every other state
+            // this loud already has a sound; this one was the odd silence.
+            v.play(match app.gain_of(peer) {
+                0.0 => Blip::EarsOff,
+                _ => Blip::EarsOn,
+            });
+        }
+        return Ok(false);
+    }
+
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    // Vim-style history navigation: Ctrl+K / Alt+K to scroll up, Ctrl+J / Alt+J to scroll down
+    let is_vim_up = (alt || ctrl) && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'));
+    let is_vim_down = (alt || ctrl) && matches!(key.code, KeyCode::Char('j') | KeyCode::Char('J'));
+
+    if is_vim_up {
+        app.scroll_up(2);
+        return Ok(false);
+    }
+    if is_vim_down {
+        app.scroll_down(2);
+        return Ok(false);
+    }
+
     match key.code {
+        KeyCode::PageUp => app.scroll_up(15),
+        KeyCode::PageDown => app.scroll_down(15),
+        KeyCode::Up if shift || alt || ctrl => app.scroll_up(2),
+        KeyCode::Down if shift || alt || ctrl => app.scroll_down(2),
+        KeyCode::End => app.scroll_to_bottom(),
+
         KeyCode::Tab => app.view_next(true),
         KeyCode::BackTab => app.view_next(false),
 
+        // The roster cursor. Arrows are free here — letters go to the message being
+        // typed, so this is the one kind of key that can steer the rail without
+        // taking anything away from writing.
+        KeyCode::Down => app.select_peer(true),
+        KeyCode::Up => app.select_peer(false),
+        KeyCode::Left | KeyCode::Right if app.selected_peer.is_some() => {
+            let direction = if key.code == KeyCode::Right { 1.0 } else { -1.0 };
+            app.nudge_peer_volume(direction * PEER_VOLUME_STEP);
+            if let Some(v) = voice {
+                v.set_peer_gains(&app.peer_gains);
+            }
+        }
+        KeyCode::Esc => {
+            if app.scroll_offset > 0 {
+                app.scroll_to_bottom();
+            } else {
+                app.selected_peer = None;
+            }
+        }
+
         KeyCode::Enter => {
+            app.scroll_to_bottom();
             if let Some(text) = app.take_input() {
                 let channel = app.viewing;
                 let _ = commands.send(Command::Chat { channel, text }).await;
@@ -925,5 +1044,108 @@ mod tests {
 
         let app = room(vec![peer(1, None)]);
         assert!(!chime.on_roster(&app, Some(ChannelId(0))));
+    }
+
+    // ── Scrolling and Vim-style navigation ───────────────────────────────────
+
+    fn test_chat_app(lines_count: usize) -> App {
+        use crate::proto::ChatLine;
+        use crate::ui::state::Line;
+
+        let mut app = App::new(PeerId([1; 32]), "code".into());
+        app.channels = vec!["general".into()];
+        app.viewing = ChannelId(0);
+        for i in 0..lines_count {
+            app.lines.push(Line::Chat(ChatLine {
+                channel: ChannelId(0),
+                from: PeerId([2; 32]),
+                text: format!("message {i}"),
+                at: 1000 + i as u64,
+            }));
+        }
+        app
+    }
+
+    #[tokio::test]
+    async fn ctrl_k_scrolls_up_when_no_peer_selected() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+
+        let key = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        handle_key(&mut app, key, &cmd_tx, None).await.unwrap();
+
+        assert_eq!(app.scroll_offset, 2);
+    }
+
+    #[tokio::test]
+    async fn ctrl_j_scrolls_down() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        app.scroll_offset = 5;
+
+        let key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        handle_key(&mut app, key, &cmd_tx, None).await.unwrap();
+
+        assert_eq!(app.scroll_offset, 3);
+    }
+
+    #[tokio::test]
+    async fn alt_j_and_alt_k_scroll() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+
+        let key_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT);
+        handle_key(&mut app, key_k, &cmd_tx, None).await.unwrap();
+        assert_eq!(app.scroll_offset, 2);
+
+        let key_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT);
+        handle_key(&mut app, key_j, &cmd_tx, None).await.unwrap();
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn ctrl_k_silences_peer_when_selected() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        let other = PeerId([2; 32]);
+        app.peers = vec![peer(2, None)];
+        app.select_peer(true);
+        assert_eq!(app.selected_peer, Some(other));
+
+        let key = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        handle_key(&mut app, key, &cmd_tx, None).await.unwrap();
+
+        // Must silence peer instead of scrolling
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.gain_of(other), 0.0);
+    }
+
+    #[tokio::test]
+    async fn ctrl_up_down_smooth_scroll() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+
+        let key_up = KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL);
+        handle_key(&mut app, key_up, &cmd_tx, None).await.unwrap();
+        assert_eq!(app.scroll_offset, 2);
+
+        let key_down = KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL);
+        handle_key(&mut app, key_down, &cmd_tx, None).await.unwrap();
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn plain_j_and_k_type_characters() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+
+        let key_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        handle_key(&mut app, key_j, &cmd_tx, None).await.unwrap();
+
+        let key_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
+        handle_key(&mut app, key_k, &cmd_tx, None).await.unwrap();
+
+        assert_eq!(app.input, "jk");
+        assert_eq!(app.scroll_offset, 0);
     }
 }

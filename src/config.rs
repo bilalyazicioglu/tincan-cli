@@ -20,6 +20,9 @@ pub const DEFAULT_GATE: f32 = 0.23;
 /// keyboard should sit beneath what you are writing rather than over it.
 pub const DEFAULT_TYPING_VOLUME: f32 = 0.4;
 
+/// How many messages are kept in memory for the chat pane by default.
+pub const DEFAULT_HISTORY_LIMIT: usize = 5000;
+
 /// Persistent application configuration.
 ///
 /// Not `Eq`: the gate is a float. `PartialEq` is all the comparisons here need.
@@ -41,6 +44,9 @@ pub struct Config {
     /// How loud those clicks are, 0.0 to 1.0. `None` means never adjusted.
     #[serde(default)]
     pub typing_volume: Option<f32>,
+    /// Maximum number of lines kept in memory for scrollback.
+    #[serde(default)]
+    pub history_limit: Option<usize>,
 }
 
 impl Config {
@@ -58,6 +64,13 @@ impl Config {
         self.typing_volume
             .unwrap_or(DEFAULT_TYPING_VOLUME)
             .clamp(0.0, 1.0)
+    }
+
+    /// The maximum number of lines kept in memory, or the default (5000).
+    pub fn history_limit(&self) -> usize {
+        self.history_limit
+            .unwrap_or(DEFAULT_HISTORY_LIMIT)
+            .max(100)
     }
 
     pub fn set_gate(&mut self, device: &str, level: f32) {
@@ -182,6 +195,7 @@ mod tests {
             input_gates: HashMap::from([("MacBook Pro Microphone".to_string(), 0.31)]),
             typing_clicks: true,
             typing_volume: Some(0.6),
+            history_limit: Some(8000),
         };
 
         original.save_to(&path).expect("saving config should succeed");

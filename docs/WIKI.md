@@ -55,6 +55,12 @@ Welcome to the official **Tincan CLI** Technical Wiki. Tincan is a serverless, p
    - Branch Hierarchy (`main`, `develop`, `feature/*`, `fix/*`)
    - PR Review & Automated Release Workflow
 
+9. **[Interface Design](wiki/9-Interface-Design.md)**
+   - The Audio Screen and the Microphone Noise Floor
+   - Per-Person Volume and Silencing
+   - Meters, Marks, and What the Roster Says
+   - Sounds, Key Clicks, and Remembered Settings
+
 ---
 
 ## ⚡ Quick Navigation

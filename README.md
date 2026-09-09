@@ -16,28 +16,22 @@
 </p>
 
 <p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#shortcuts">Shortcuts</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#security">Security</a> ·
+  <a href="docs/wiki/9-Interface-Design.md">Design notes</a>
+</p>
+
+<p align="center">
   tincan does what Discord does, without needing anyone's server: the first person to open the app creates the room, sends the invite code it prints to their friends, and they connect with that code from anywhere in the world. No VPN, no port forwarding, no accounts.
 </p>
 
-```
- TINCAN  lobby #general                                       DIRECT  18ms
- CHANNELS                   ⟩ 01:13   bob  hey, bob here
- ▸ ● general             2  │              can you hear me alright?
-     gaming              1  │ 01:14 alice  loud and clear
-     music                  │ 01:14   bob  oh that is the round trip time
-                            │              on the string?
- ON THE LINE · 3            │ 01:15 alice  yes, and the pulse speed is the
- ▁·· alice you     general  │              latency
- ▃▅▇ bob           general  │ 01:15   cem  cem here, joining from gaming
- ▁·· cem            gaming  │ 01:16   bob  nice
-                            │ 01:16 alice  it frays when audio drops out
-                            │              too
- AUDIO · F6                 │ 01:17   bob  and the meters move with each
- mic  MacBook Pro Microph…  │              voice
- out  AirPods Pro           │ 01:17 alice  that is the whole idea
-                            │  #general the names hug the messages now▏
-tab channel · f2 talk · f3 mute · f6 audio · ctrl+c     f1 code n73w-kuqc…
-```
+<p align="center">
+  <img src="assets/room.svg" width="100%"
+       alt="The tincan interface: a rail of channels and who is on the line, the two cans and the string between them with the round trip time written on it, and the conversation below. One person in the roster is marked silenced.">
+</p>
 
 The palette is metal: a brown tin ground, brass for the string and the invite code,
 and the two greens copper actually turns — bright patina for what is live, deeper
@@ -54,33 +48,9 @@ string, their can, with the latency written on it and your invite code underneat
 stays up there while the conversation is short enough to leave the room for it, so a
 full-screen terminal is never a wall of nothing.
 
-`F6` opens the audio screen: which microphone and speaker are in use, a way to hear
-yourself, and the level meter with your noise floor marked on it. Anything
-quieter than that mark never leaves your machine, which is how a fan or a noisy room
-stays out of the call. `←`/`→` move the floor a step at a time, and `a` listens to the
-room for a second and a half and sets it just above whatever it hears. It is remembered
-per microphone, because a laptop microphone and a headset do not share a noise floor.
-
-A channel with something said in it since you last looked turns brass in the rail, so
-the list tells you where to go without a count or a badge. Every message makes a sound
-— one short note, the same whether you sent it or it arrived, deliberately the only
-single note in a set of two-note gestures.
-
-`space` records three seconds and plays them back. It records and plays in separate
-stages rather than monitoring live, because on a laptop the microphone can hear the
-speakers, and anything that opens both at once closes a loop between them that grows
-until it clips. `m` gives you live monitoring anyway for when you are on headphones,
-and cuts itself off if it starts feeding back.
-
-Under `TYPING` the keyboard can be given a voice: a short burst of noise per key, off
-until you ask for it and adjustable with `←`/`→`. Each key is seeded from the character
-itself, so the same key always sounds the same and two keys never sound alike — a
-keyboard rather than a random generator. The spacebar is lower and longer, and
-backspace is duller.
-
-Set `NO_COLOR` for a colourless interface, `TINCAN_ASCII=1` if your terminal has no
-box-drawing, `TINCAN_NO_MOTION=1` to hold the string still, and `TINCAN_THEME=light`
-for the same palette on a light background.
+Everything underneath that — the audio screen and its noise floor, turning one person
+down without deafening the room, and the sounds the interface makes — is written up in
+the [interface design notes](docs/wiki/9-Interface-Design.md).
 
 ## Install
 
@@ -158,16 +128,26 @@ tincan devices
 
 ### Shortcuts
 
-| Key                 | Action                                        |
-| ------------------- | --------------------------------------------- |
-| `Tab` / `Shift+Tab` | Move between channels                         |
-| `F2` (or `Ctrl+G`)  | Join / leave the voice of the channel you see |
-| `F3` (or `Ctrl+T`)  | Mute / unmute your microphone                 |
-| `F4`                | Push-to-talk (only in `--ptt` mode)           |
-| `F5`                | Deafen: hear nobody (also closes your mic)    |
-| `F1`                | Show the full invite code (and copy it)       |
-| `Enter`             | Send the message                              |
-| `Ctrl+C`            | Quit                                          |
+| Key                        | Action                                        |
+| -------------------------- | --------------------------------------------- |
+| `Tab` / `Shift+Tab`        | Move between channels                         |
+| `F2` (or `Ctrl+G`)         | Join / leave the voice of the channel you see |
+| `F3` (or `Ctrl+T`)         | Mute / unmute your microphone                 |
+| `F4`                       | Push-to-talk (only in `--ptt` mode)           |
+| `F5`                       | Deafen: hear nobody (also closes your mic)    |
+| `F6` (or `Ctrl+,`)         | Open audio settings                           |
+| `F1`                       | Show the full invite code (and copy it)       |
+| `↑` / `↓`                  | Pick someone out of the roster                |
+| `←` / `→`                  | Turn that person down or up                   |
+| `Ctrl+K`                   | Silence selected person (or Vim scroll up)    |
+| `Ctrl+J` / `Ctrl+K`        | Vim scroll down / up (also `Alt+J` / `Alt+K`) |
+| `PageUp` / `PageDn`        | Scroll chat history up or down (15 lines)     |
+| `Shift+↑` / `↓`            | Scroll chat history smoothly (also `Ctrl+↑/↓`)|
+| Scroll wheel / Trackpad    | Scroll chat history smoothly (3 lines)        |
+| `End`                      | Jump to latest message                        |
+| `Esc`                      | Let go of the roster, or jump to latest chat  |
+| `Enter`                    | Send the message                              |
+| `Ctrl+C`                   | Quit                                          |
 
 To pick a device, list them with `tincan devices` first, then pass part of a name:
 
@@ -187,6 +167,12 @@ The footer shows link status: how many peers you reach directly, how many flow t
 relay, the worst latency, and whether you have had audio dropouts. When everything is
 fine it shows shortcut hints instead — technical detail only surfaces when there is a
 problem.
+
+### Environment
+
+Set `NO_COLOR` for a colourless interface, `TINCAN_ASCII=1` if your terminal has no
+box-drawing, `TINCAN_NO_MOTION=1` to hold the string still, and `TINCAN_THEME=light`
+for the same palette on a light background.
 
 ## How it works
 
