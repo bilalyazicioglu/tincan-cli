@@ -660,10 +660,10 @@ impl App {
         Some(self.input_gate)
     }
 
-    /// Returns true if a mode switch happened recently (< 180 ms).
+    /// Returns true if a mode switch happened recently (< 200 ms).
     pub fn is_transitioning(&self) -> bool {
         self.mode_transition_at
-            .map(|at| at.elapsed().as_millis() < 180)
+            .map(|at| at.elapsed().as_millis() < 200)
             .unwrap_or(false)
     }
 

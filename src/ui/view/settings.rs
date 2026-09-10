@@ -29,7 +29,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     // together instead of drifting apart down an empty screen.
     let problem = if app.settings_error.is_some() { 2 } else { 0 };
     let rows_for = |count: usize| (count.max(1) as u16).saturating_add(2);
-    let [banner, input, output, test, typing, _rest] = Layout::vertical([
+    let [sep_area, banner, input, output, test, typing, _rest] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(problem),
         Constraint::Max(rows_for(app.input_devices.len())),
         Constraint::Max(rows_for(app.output_devices.len())),
@@ -38,6 +39,35 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Constraint::Min(0),
     ])
     .areas(area);
+
+    if sep_area.height > 0 && sep_area.width > 0 {
+        let (title_chip_style, bar_style) = if app.is_transitioning() {
+            (theme.chip_on(), theme.accent())
+        } else {
+            (theme.chip(), theme.dim())
+        };
+        let bar_char = if theme.ascii { '-' } else { '─' };
+        let title = " AUDIO SETTINGS ";
+        let total_width = sep_area.width as usize;
+        if total_width > title.len() + 2 {
+            let side_len = (total_width - title.len()) / 2;
+            let right_len = total_width - title.len() - side_len;
+            let left_bar: String = std::iter::repeat_n(bar_char, side_len).collect();
+            let right_bar: String = std::iter::repeat_n(bar_char, right_len).collect();
+            let line = TextLine::from(vec![
+                Span::styled(left_bar, bar_style),
+                Span::styled(title, title_chip_style),
+                Span::styled(right_bar, bar_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), sep_area);
+        } else {
+            let line = TextLine::from(vec![Span::styled(
+                clip(title.trim(), total_width, theme),
+                title_chip_style,
+            )]);
+            frame.render_widget(Paragraph::new(line), sep_area);
+        }
+    }
 
     if let Some(message) = &app.settings_error {
         frame.render_widget(

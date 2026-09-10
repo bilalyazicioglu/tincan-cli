@@ -78,11 +78,28 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         left.push(Span::styled(app.room_name.clone(), theme.strong()));
         left.push(Span::raw(" "));
     }
-    if !app.channels.is_empty() {
-        left.push(Span::styled(
-            format!("#{}", app.channel_name(app.viewing)),
-            theme.accent(),
-        ));
+    match app.view_mode {
+        ViewMode::Settings => {
+            let chip_style = if app.is_transitioning() {
+                theme.chip_on()
+            } else {
+                theme.chip()
+            };
+            left.push(Span::styled(" SETTINGS ", chip_style));
+        }
+        ViewMode::Chat => {
+            if !app.channels.is_empty() {
+                let channel_style = if app.is_transitioning() {
+                    theme.strong()
+                } else {
+                    theme.accent()
+                };
+                left.push(Span::styled(
+                    format!("#{}", app.channel_name(app.viewing)),
+                    channel_style,
+                ));
+            }
+        }
     }
 
     let strand = strand::of(app);
@@ -241,6 +258,19 @@ mod tests {
         assert!(header.contains("TINCAN"), "{header}");
         assert!(header.contains("lobby"), "{header}");
         assert!(header.contains("#general"), "{header}");
+    }
+
+    #[test]
+    fn settings_mode_names_settings_in_the_header_and_separator_in_body() {
+        let mut app = room();
+        app.view_mode = ViewMode::Settings;
+        let screen = rendered(80, 24, &app);
+        let header = screen.lines().next().unwrap().to_string();
+        assert!(header.contains("TINCAN"), "{header}");
+        assert!(header.contains("lobby"), "{header}");
+        assert!(header.contains("SETTINGS"), "{header}");
+        assert!(!header.contains("#general"), "{header}");
+        assert!(screen.contains("AUDIO SETTINGS"), "{screen}");
     }
 
     #[test]
