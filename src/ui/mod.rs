@@ -171,6 +171,8 @@ pub async fn run(
     app.voice_available = voice.is_some();
     app.ptt_mode = ptt_mode && app.voice_available;
     app.motion = theme.motion;
+    app.typing_clicks = config.typing_clicks;
+    app.typing_volume = config.typing_loudness();
     if let Some(voice) = voice.as_ref() {
         // The rail names the microphone and speaker in use from the first frame, so
         // it has to ask the engine what it actually opened rather than wait for the
@@ -178,8 +180,6 @@ pub async fn run(
         app.active_input_name = voice.active_input();
         app.active_output_name = voice.active_output();
         app.input_gate = config.gate_for(app.active_input_name.as_deref());
-        app.typing_clicks = config.typing_clicks;
-        app.typing_volume = config.typing_loudness();
         voice.set_gate(app.input_gate);
     }
     let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
@@ -323,6 +323,7 @@ pub async fn run(
     }
     .await;
 
+    remember_settings(&app);
     drop(_mouse_guard);
     ratatui::restore();
     drop(voice);
@@ -396,7 +397,7 @@ async fn handle_key(
     let toggle_settings_key = key.code == KeyCode::F(6) || (ctrl && key.code == KeyCode::Char(','));
     if toggle_settings_key {
         if app.view_mode == ViewMode::Settings {
-            remember_gate(app, voice);
+            remember_settings(app);
         }
         app.toggle_settings();
         if let Some(v) = voice {
@@ -410,7 +411,7 @@ async fn handle_key(
     if app.view_mode == ViewMode::Settings {
         match key.code {
             KeyCode::Esc => {
-                remember_gate(app, voice);
+                remember_settings(app);
                 app.toggle_settings();
                 if let Some(v) = voice {
                     v.play(Blip::Chime);
@@ -454,6 +455,7 @@ async fn handle_key(
                 match app.settings_section {
                     SettingsSection::Typing => {
                         app.toggle_typing_clicks();
+                        remember_settings(app);
                         // Hearing it is the only way to know what you just switched on.
                         if let (Some(v), Some(click)) = (voice, app.click_for('k')) {
                             v.play(click);
@@ -503,6 +505,8 @@ async fn handle_key(
                                         app.input_gate = cfg.gate_for(Some(&activated));
                                         v.set_gate(app.input_gate);
                                         cfg.input_device = Some(activated);
+                                        cfg.typing_clicks = app.typing_clicks;
+                                        cfg.typing_volume = Some(app.typing_volume);
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
@@ -528,6 +532,8 @@ async fn handle_key(
                                         app.settings_error = None;
                                         let mut cfg = Config::load();
                                         cfg.output_device = Some(activated);
+                                        cfg.typing_clicks = app.typing_clicks;
+                                        cfg.typing_volume = Some(app.typing_volume);
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
@@ -543,7 +549,10 @@ async fn handle_key(
                             v.set_mic_test(app.mic_test);
                         }
                     }
-                    SettingsSection::Typing => app.toggle_typing_clicks(),
+                    SettingsSection::Typing => {
+                        app.toggle_typing_clicks();
+                        remember_settings(app);
+                    }
                 }
                 return Ok(false);
             }
@@ -725,33 +734,46 @@ fn settle_calibration(app: &mut App, voice: Option<&VoiceControl>) {
         if let Some(voice) = voice {
             voice.set_gate(app.input_gate);
         }
-        remember_gate(app, voice);
+        remember_settings(app);
     }
+}
+
+/// Applies settings-screen adjustments from the App state into a Config struct,
+/// returning the updated config and whether any values were modified.
+pub(crate) fn remember_settings_into(app: &App, mut config: Config) -> (Config, bool) {
+    let mut changed = false;
+
+    if let Some(device) = app.active_input_name.as_deref()
+        && (config.gate_for(Some(device)) - app.input_gate).abs() >= f32::EPSILON
+    {
+        config.set_gate(device, app.input_gate);
+        changed = true;
+    }
+
+    if config.typing_clicks != app.typing_clicks {
+        config.typing_clicks = app.typing_clicks;
+        changed = true;
+    }
+
+    if (config.typing_loudness() - app.typing_volume).abs() >= f32::EPSILON {
+        config.typing_volume = Some(app.typing_volume);
+        changed = true;
+    }
+
+    (config, changed)
 }
 
 /// Writes the settings-screen dials to the config — the gate under the name of the
 /// microphone it was set for, the keyboard globally.
 ///
-/// Called when leaving the screen rather than on every keypress: dragging a dial across
-/// its range is twenty-odd presses, and none of them is worth a file write.
-fn remember_gate(app: &App, voice: Option<&VoiceControl>) {
-    if voice.is_none() {
-        return;
+/// Called when leaving the screen or exiting the app rather than on every keypress:
+/// dragging a dial across its range is twenty-odd presses, and none of them is worth a file write.
+pub(crate) fn remember_settings(app: &App) {
+    let config = Config::load();
+    let (config, changed) = remember_settings_into(app, config);
+    if changed {
+        let _ = config.save();
     }
-    let Some(device) = app.active_input_name.as_deref() else {
-        return;
-    };
-    let mut config = Config::load();
-    let same = (config.gate_for(Some(device)) - app.input_gate).abs() < f32::EPSILON
-        && config.typing_clicks == app.typing_clicks
-        && (config.typing_loudness() - app.typing_volume).abs() < f32::EPSILON;
-    if same {
-        return;
-    }
-    config.set_gate(device, app.input_gate);
-    config.typing_clicks = app.typing_clicks;
-    config.typing_volume = Some(app.typing_volume);
-    let _ = config.save();
 }
 
 /// When the roster changes, updates the voice mesh to the new membership and aligns
@@ -1147,5 +1169,68 @@ mod tests {
 
         assert_eq!(app.input, "jk");
         assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn remember_settings_persists_typing_clicks_and_volume_without_voice() {
+        let mut app = test_chat_app(20);
+        app.active_input_name = None;
+        app.typing_clicks = true;
+        app.typing_volume = 0.75;
+
+        let base_config = Config::default();
+        let (updated, changed) = remember_settings_into(&app, base_config);
+
+        assert!(changed);
+        assert!(updated.typing_clicks);
+        assert_eq!(updated.typing_volume, Some(0.75));
+        assert_eq!(updated.typing_loudness(), 0.75);
+    }
+
+    #[test]
+    fn remember_settings_persists_microphone_gate_when_device_is_active() {
+        let mut app = test_chat_app(20);
+        app.active_input_name = Some("Studio USB Mic".into());
+        app.input_gate = 0.42;
+
+        let base_config = Config::default();
+        let (updated, changed) = remember_settings_into(&app, base_config);
+
+        assert!(changed);
+        assert_eq!(updated.gate_for(Some("Studio USB Mic")), 0.42);
+    }
+
+    #[test]
+    fn remember_settings_detects_no_change_when_matching() {
+        let mut app = test_chat_app(20);
+        app.active_input_name = Some("Mic".into());
+        app.input_gate = 0.23;
+        app.typing_clicks = false;
+        app.typing_volume = 0.4;
+
+        let mut config = Config::default();
+        config.set_gate("Mic", 0.23);
+        config.typing_clicks = false;
+        config.typing_volume = Some(0.4);
+
+        let (_updated, changed) = remember_settings_into(&app, config);
+        assert!(!changed);
+    }
+
+    #[tokio::test]
+    async fn space_and_enter_toggle_typing_clicks_in_settings() {
+        let (cmd_tx, _cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        app.view_mode = ViewMode::Settings;
+        app.settings_section = SettingsSection::Typing;
+        assert!(!app.typing_clicks);
+
+        let space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        handle_key(&mut app, space, &cmd_tx, None).await.unwrap();
+        assert!(app.typing_clicks);
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
+        assert!(!app.typing_clicks);
     }
 }
