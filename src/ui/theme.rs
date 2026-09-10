@@ -189,7 +189,7 @@ pub struct Theme {
     /// Whether the string may animate.
     pub motion: bool,
     mono: bool,
-    ascii: bool,
+    pub ascii: bool,
 }
 
 impl Theme {
