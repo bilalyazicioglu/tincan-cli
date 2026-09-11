@@ -29,8 +29,8 @@
 </p>
 
 <p align="center">
-  <img src="assets/room.svg" width="100%"
-       alt="The tincan interface: a rail of channels and who is on the line, the two cans and the string between them with the round trip time written on it, and the conversation below. One person in the roster is marked silenced.">
+  <img src="assets/demo.gif" width="100%"
+       alt="tincan terminal demo: Screen Studio style animated overview showing real-time audio meters, travelling pulse latency, chat messaging, and audio settings transition.">
 </p>
 
 The palette is metal: a brown tin ground, brass for the string and the invite code,

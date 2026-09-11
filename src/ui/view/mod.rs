@@ -615,4 +615,347 @@ mod pictures {
             println!("{path} — {} bytes", picture.len());
         }
     }
+
+    #[derive(Clone, Copy)]
+    struct Camera {
+        x: f32,
+        y: f32,
+        zoom: f32,
+    }
+
+    impl Camera {
+        fn lerp(&self, target: &Camera, t: f32) -> Camera {
+            let t = t.clamp(0.0, 1.0);
+            let s = t * t * (3.0 - 2.0 * t); // smoothstep
+            Camera {
+                x: self.x + (target.x - self.x) * s,
+                y: self.y + (target.y - self.y) * s,
+                zoom: self.zoom + (target.zoom - self.zoom) * s,
+            }
+        }
+    }
+
+    const CANVAS_W: f32 = 1280.0;
+    const CANVAS_H: f32 = 720.0;
+    const WIN_BAR_H: f32 = 36.0;
+
+    fn studio_svg(app: &App, cols: u16, rows: u16, camera: &Camera) -> String {
+        let theme = Theme::dark_true();
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
+        terminal.draw(|frame| draw(frame, app, &theme)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let ground = hex(theme.surface().bg.unwrap_or(Color::Reset), "#14100c");
+        let ink = hex(theme.surface().fg.unwrap_or(Color::Reset), "#dcd5cb");
+
+        let vw = CANVAS_W / camera.zoom;
+        let vh = CANVAS_H / camera.zoom;
+        let vx = camera.x - vw / 2.0;
+        let vy = camera.y - vh / 2.0;
+
+        let win_w = cols as f32 * CELL_W + PAD * 2.0;
+        let win_h = rows as f32 * CELL_H + PAD * 2.0 + WIN_BAR_H;
+        let win_x = (CANVAS_W - win_w) / 2.0;
+        let win_y = (CANVAS_H - win_h) / 2.0;
+        let content_x = win_x + PAD;
+        let content_y = win_y + WIN_BAR_H + PAD;
+
+        let room_title = if app.room_name.is_empty() {
+            "tincan".to_string()
+        } else {
+            format!("tincan — {} (#{})", app.room_name, app.channel_name(app.viewing))
+        };
+
+        let mut out = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{CANVAS_W:.0}\" height=\"{CANVAS_H:.0}\" \
+             viewBox=\"{vx:.2} {vy:.2} {vw:.2} {vh:.2}\" font-family=\"ui-monospace,SFMono-Regular,\
+             Menlo,Consolas,'Liberation Mono',monospace\" font-size=\"{FONT}\">\n\
+             <defs>\n\
+               <filter id=\"shadow\" x=\"-15%\" y=\"-15%\" width=\"130%\" height=\"135%\">\n\
+                 <feDropShadow dx=\"0\" dy=\"20\" stdDeviation=\"28\" flood-color=\"#000000\" flood-opacity=\"0.65\"/>\n\
+               </filter>\n\
+               <clipPath id=\"window-clip\">\n\
+                 <rect x=\"{win_x:.1}\" y=\"{win_y:.1}\" width=\"{win_w:.1}\" height=\"{win_h:.1}\" rx=\"12\"/>\n\
+               </clipPath>\n\
+             </defs>\n\
+             <rect width=\"{CANVAS_W:.0}\" height=\"{CANVAS_H:.0}\" fill=\"#0e0b08\"/>\n\
+             <g filter=\"url(#shadow)\">\n\
+               <rect x=\"{win_x:.1}\" y=\"{win_y:.1}\" width=\"{win_w:.1}\" height=\"{win_h:.1}\" rx=\"12\" fill=\"#211a14\" stroke=\"#382d23\" stroke-width=\"1.5\"/>\n\
+             </g>\n\
+             <g clip-path=\"url(#window-clip)\">\n\
+               <rect x=\"{win_x:.1}\" y=\"{win_y:.1}\" width=\"{win_w:.1}\" height=\"{win_h:.1}\" fill=\"#211a14\"/>\n\
+               <circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"5.5\" fill=\"#ff5f56\"/>\n\
+               <circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"5.5\" fill=\"#ffbd2e\"/>\n\
+               <circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"5.5\" fill=\"#27c93f\"/>\n\
+               <text x=\"{:.1}\" y=\"{:.1}\" fill=\"#8a8177\" font-family=\"-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif\" font-size=\"12\" font-weight=\"500\" text-anchor=\"middle\">{}</text>\n\
+               <rect x=\"{win_x:.1}\" y=\"{:.1}\" width=\"{win_w:.1}\" height=\"{:.1}\" fill=\"{ground}\"/>\n",
+            win_x + 20.0, win_y + 18.0,
+            win_x + 38.0, win_y + 18.0,
+            win_x + 56.0, win_y + 18.0,
+            win_x + win_w / 2.0, win_y + 22.0,
+            escape(&room_title),
+            win_y + WIN_BAR_H,
+            win_h - WIN_BAR_H
+        );
+
+        for y in 0..rows {
+            let mut x = 0;
+            while x < cols {
+                let bg = hex(buffer[(x, y)].bg, &ground);
+                let start = x;
+                while x < cols && hex(buffer[(x, y)].bg, &ground) == bg {
+                    x += 1;
+                }
+                if bg != ground {
+                    out.push_str(&format!(
+                        "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{CELL_H}\" fill=\"{bg}\"/>\n",
+                        content_x + start as f32 * CELL_W,
+                        content_y + y as f32 * CELL_H,
+                        (x - start) as f32 * CELL_W,
+                    ));
+                }
+            }
+
+            let mut x = 0;
+            while x < cols {
+                let look = |at: u16| {
+                    let cell = &buffer[(at, y)];
+                    (hex(cell.fg, &ink), cell.modifier.contains(Modifier::BOLD))
+                };
+                let (fg, bold) = look(x);
+                let start = x;
+                let mut run = String::new();
+                while x < cols && look(x) == (fg.clone(), bold) {
+                    run.push_str(buffer[(x, y)].symbol());
+                    x += 1;
+                }
+                if run.trim().is_empty() {
+                    continue;
+                }
+                let weight = if bold { " font-weight=\"600\"" } else { "" };
+                out.push_str(&format!(
+                    "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"{fg}\"{weight} \
+                     textLength=\"{:.1}\" lengthAdjust=\"spacing\" xml:space=\"preserve\">{}</text>\n",
+                    content_x + start as f32 * CELL_W,
+                    content_y + y as f32 * CELL_H + CELL_H * 0.74,
+                    (x - start) as f32 * CELL_W,
+                    escape(&run),
+                ));
+            }
+        }
+        out.push_str("</g>\n</svg>\n");
+        out
+    }
+
+    #[test]
+    #[ignore = "generates assets/demo.mp4 and assets/demo.gif using rsvg-convert and ffmpeg"]
+    fn demo_video() {
+        let has_rsvg = std::process::Command::new("which")
+            .arg("rsvg-convert")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let has_ffmpeg = std::process::Command::new("which")
+            .arg("ffmpeg")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if !has_rsvg || !has_ffmpeg {
+            eprintln!("rsvg-convert or ffmpeg is not available; skipping demo_video");
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join("tincan_demo_render");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let me = PeerId([1; 32]);
+        let bob = PeerId([2; 32]);
+
+        // Start with clean room and cans diagram clearly visible
+        let mut app = App::new(me, "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into());
+        app.apply(Event::Welcome {
+            me,
+            room: RoomSnapshot {
+                room_name: "lobby".into(),
+                channels: vec!["general".into(), "gaming".into(), "music".into()],
+                peers: vec![
+                    peer(1, "alice", Some(ChannelId(0))),
+                    peer(2, "bob", Some(ChannelId(0))),
+                    peer(3, "cem", Some(ChannelId(1))),
+                ],
+                recent_chat: vec![],
+            },
+        });
+        app.voice = Some(ChannelId(0));
+        app.voice_available = true;
+        app.motion = true;
+        app.link = crate::net::voice::LinkStatus {
+            direct: 2,
+            relayed: 0,
+            worst_rtt: Some(std::time::Duration::from_millis(18)),
+        };
+        app.active_input_name = Some("MacBook Pro Microphone".into());
+        app.active_output_name = Some("AirPods Pro".into());
+        app.input_gate = 0.23;
+        app.typing_volume = 0.4;
+        app.peer_gains.insert(PeerId([3; 32]), 0.0);
+
+        const TOTAL_FRAMES: usize = 240;
+        const OVERVIEW: Camera = Camera { x: 640.0, y: 360.0, zoom: 1.0 };
+        const VOICE_FOCUS: Camera = Camera { x: 570.0, y: 350.0, zoom: 1.35 };
+        const CHAT_FOCUS: Camera = Camera { x: 670.0, y: 400.0, zoom: 1.35 };
+        const SETTINGS_FOCUS: Camera = Camera { x: 640.0, y: 320.0, zoom: 1.30 };
+
+        let prompt_text = "loud and clear! tincan is fast";
+
+        println!("Rendering {TOTAL_FRAMES} SVG frames...");
+        for f in 0..TOTAL_FRAMES {
+            let cam = if f < 35 {
+                OVERVIEW
+            } else if f < 55 {
+                OVERVIEW.lerp(&VOICE_FOCUS, (f - 35) as f32 / 20.0)
+            } else if f < 85 {
+                VOICE_FOCUS
+            } else if f < 105 {
+                VOICE_FOCUS.lerp(&CHAT_FOCUS, (f - 85) as f32 / 20.0)
+            } else if f < 165 {
+                CHAT_FOCUS
+            } else if f < 185 {
+                CHAT_FOCUS.lerp(&SETTINGS_FOCUS, (f - 165) as f32 / 20.0)
+            } else if f < 215 {
+                SETTINGS_FOCUS
+            } else if f < 235 {
+                SETTINGS_FOCUS.lerp(&OVERVIEW, (f - 215) as f32 / 20.0)
+            } else {
+                OVERVIEW
+            };
+
+            let now = std::time::Instant::now();
+            let sim_ms = f as u64 * 50;
+            app.started = now - std::time::Duration::from_millis(sim_ms);
+
+            // Voice & Pulse simulation (Bob speaks)
+            if (35..85).contains(&f) {
+                app.speaking.insert(bob);
+                let level = match (f / 3) % 4 { 0 => 2, 1 => 4, 2 => 3, _ => 5 };
+                app.peer_levels.insert(bob, level);
+            } else {
+                app.speaking.clear();
+                app.peer_levels.clear();
+            }
+
+            if f == 65 {
+                app.apply(Event::Chat(ChatLine {
+                    channel: ChannelId(0),
+                    from: bob,
+                    text: "hey, can you hear me alright?".into(),
+                    at: 1_757_000_100,
+                }));
+            }
+
+            // Typing simulation (Alice types)
+            if (110..155).contains(&f) {
+                let count = ((f - 110) * prompt_text.len() / 40).min(prompt_text.len());
+                app.input = prompt_text[..count].to_string();
+            } else if (155..165).contains(&f) {
+                app.input = prompt_text.to_string();
+            } else if f == 165 {
+                app.apply(Event::Chat(ChatLine {
+                    channel: ChannelId(0),
+                    from: me,
+                    text: prompt_text.into(),
+                    at: 1_757_000_105,
+                }));
+                app.input.clear();
+            }
+
+            // F6 Settings simulation
+            if (180..220).contains(&f) {
+                app.view_mode = ViewMode::Settings;
+                app.settings_section = if f < 195 {
+                    SettingsSection::InputDevice
+                } else {
+                    SettingsSection::Typing
+                };
+                app.input_devices = vec![
+                    device("MacBook Pro Microphone", 48_000, true),
+                    device("AirPods Pro", 48_000, false),
+                ];
+                app.output_devices = vec![
+                    device("MacBook Pro Speakers", 48_000, true),
+                    device("AirPods Pro", 48_000, false),
+                ];
+                let trans_ms = (f - 180) as u64 * 50;
+                app.mode_transition_at = Some(now - std::time::Duration::from_millis(trans_ms));
+            } else if f >= 220 {
+                app.view_mode = ViewMode::Chat;
+                let trans_ms = (f - 220) as u64 * 50;
+                app.mode_transition_at = Some(now - std::time::Duration::from_millis(trans_ms));
+            }
+
+            let svg_content = studio_svg(&app, 84, 22, &cam);
+            let frame_svg = temp_dir.join(format!("frame_{f:04}.svg"));
+            std::fs::write(&frame_svg, svg_content).unwrap();
+        }
+
+        println!("Rasterizing SVG frames to PNG in parallel...");
+        let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let chunk_size = TOTAL_FRAMES.div_ceil(num_threads);
+
+        std::thread::scope(|s| {
+            for thread_id in 0..num_threads {
+                let start = thread_id * chunk_size;
+                let end = (start + chunk_size).min(TOTAL_FRAMES);
+                let dir = temp_dir.clone();
+                s.spawn(move || {
+                    for i in start..end {
+                        let svg_path = dir.join(format!("frame_{i:04}.svg"));
+                        let png_path = dir.join(format!("frame_{i:04}.png"));
+                        let _ = std::process::Command::new("rsvg-convert")
+                            .args(["-w", "1280", "-h", "720", "-a", "-f", "png", "-o"])
+                            .arg(&png_path)
+                            .arg(&svg_path)
+                            .status();
+                    }
+                });
+            }
+        });
+
+        let _ = std::fs::create_dir_all("assets");
+
+        println!("Encoding assets/demo.mp4 via ffmpeg...");
+        let mp4_status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-framerate", "20",
+                "-i", temp_dir.join("frame_%04d.png").to_str().unwrap(),
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-crf", "18",
+                "-preset", "medium",
+                "assets/demo.mp4",
+            ])
+            .status()
+            .expect("ffmpeg failed to encode mp4");
+        assert!(mp4_status.success(), "ffmpeg mp4 encoding failed");
+
+        println!("Encoding assets/demo.gif via ffmpeg (2-pass palette)...");
+        let gif_status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-framerate", "20",
+                "-i", temp_dir.join("frame_%04d.png").to_str().unwrap(),
+                "-filter_complex",
+                "[0:v] fps=16,scale=880:-1:flags=lanczos,split [a][b];[a] palettegen=max_colors=128:stats_mode=diff [p];[b][p] paletteuse=dither=bayer:bayer_scale=3",
+                "assets/demo.gif",
+            ])
+            .status()
+            .expect("ffmpeg failed to encode gif");
+        assert!(gif_status.success(), "ffmpeg gif encoding failed");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        println!("Successfully generated assets/demo.mp4 and assets/demo.gif!");
+    }
 }
