@@ -226,6 +226,17 @@ impl Theme {
         }
     }
 
+    /// Full-colour dark theme using TrueColor palette and Unicode glyphs.
+    pub fn dark_true() -> Self {
+        Self {
+            palette: DARK_TRUE,
+            glyphs: UNICODE,
+            motion: true,
+            mono: false,
+            ascii: false,
+        }
+    }
+
     /// The narrowest terminal tincan supports: no colour, no glyph outside ASCII, no
     /// motion. The tests draw against this to keep the fallback honest.
     pub fn austere() -> Self {
