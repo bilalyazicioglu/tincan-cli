@@ -286,3 +286,44 @@ async fn three_participants_stay_in_sync() -> Result<()> {
     wait_for_chat(&mut host, "carol can you hear me").await?;
     Ok(())
 }
+
+/// When the coordinator leaves, clients receive a disconnection notice and
+/// their endpoints close gracefully without dropping unclosed.
+#[tokio::test]
+async fn host_quitting_notifies_and_gracefully_disconnects_guest() -> Result<()> {
+    let host_ep = bind_offline().await?;
+    let host_addr = host_ep.addr();
+    let mut host = Coordinator::spawn(host_ep, test_room(), String::new(), "alice", None).await?;
+    wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
+
+    let guest_ep = bind_offline().await?;
+    let mut guest = Client::connect(guest_ep, host_addr, "", "bob", None).await?;
+    wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
+    wait_for_roster(&mut host, 2).await?;
+
+    // Host quits.
+    host.commands.send(Command::Quit).await?;
+
+    // Guest should receive the notice and disconnection.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let mut saw_notice = false;
+    let mut saw_disconnect = false;
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, guest.events.recv()).await {
+        match event {
+            Event::Notice(text) if text.contains("the coordinator left") => saw_notice = true,
+            Event::Disconnected(_) => {
+                saw_disconnect = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_notice, "guest should have received the closing notice");
+    assert!(saw_disconnect, "guest should have received Event::Disconnected");
+
+    // Dropping guest's commands should close client_writer and terminate cleanly.
+    drop(guest.commands);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    Ok(())
+}
+

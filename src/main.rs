@@ -4,7 +4,7 @@ use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use iroh::Endpoint;
 use tincan::audio;
 use tincan::clipboard;
@@ -66,6 +66,11 @@ enum Sub {
     },
     /// List the audio devices tincan can see.
     Devices,
+    /// Generate shell auto-completion scripts.
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
+    },
 }
 
 /// Flags shared by the commands that use audio.
@@ -90,6 +95,10 @@ async fn main() -> Result<()> {
     // Parsed first: `--help` and a bad argument both exit here, and neither should
     // leave a log file behind.
     let command = Cli::parse().command;
+    if let Sub::Completions { shell } = command {
+        clap_complete::generate(shell, &mut Cli::command(), "tincan", &mut std::io::stdout());
+        return Ok(());
+    }
     let log = start_logging();
 
     let result = run(command).await;
@@ -176,6 +185,10 @@ async fn run(command: Sub) -> Result<()> {
         } => join(code, name, password, audio).await,
         Sub::Devices => {
             println!("{}", audio::device::describe_devices()?);
+            Ok(())
+        }
+        Sub::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "tincan", &mut std::io::stdout());
             Ok(())
         }
     }
@@ -344,3 +357,24 @@ fn nickname(explicit: Option<String>) -> String {
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "guest".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completions_generate_for_supported_shells() {
+        use clap_complete::Shell;
+
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell] {
+            let mut buf = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "tincan", &mut buf);
+            let script = String::from_utf8(buf).expect("completion script should be valid utf-8");
+            assert!(!script.is_empty(), "completions for {shell:?} must not be empty");
+            assert!(script.contains("host"), "must mention host command for {shell:?}");
+            assert!(script.contains("join"), "must mention join command for {shell:?}");
+            assert!(script.contains("completions"), "must mention completions command for {shell:?}");
+        }
+    }
+}
+

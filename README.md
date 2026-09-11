@@ -113,6 +113,14 @@ tincan join n73w-kuqc-uog2-... --name bob --password secret
 tincan devices
 ```
 
+**Shell auto-completions:**
+
+```bash
+tincan completions zsh > ~/.zfunc/_tincan        # zsh
+source <(tincan completions bash)               # bash
+tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
+```
+
 ### Options
 
 | Option             | Description                                                    |

@@ -174,15 +174,15 @@ async fn host_commands(
             });
             // A short breath so the broadcast reaches the clients.
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            endpoint.close().await;
             let _ = events.send(Event::Disconnected("the room was closed".into())).await;
-            return;
+            break;
         }
         if let Err(err) = shared.apply(me, into_wire(command)).await {
             // The host's own error is not broadcast; it lands on their screen only.
             let _ = events.send(Event::Notice(format!("that did not work: {err}"))).await;
         }
     }
+    endpoint.close().await;
 }
 
 /// Routes incoming connections by their ALPN.
@@ -402,7 +402,7 @@ impl Client {
         if let Some(mesh) = voice {
             super::voice::spawn_accept(endpoint.clone(), mesh);
         }
-        tokio::spawn(client_reader(recv, event_tx.clone()));
+        tokio::spawn(client_reader(recv, event_tx.clone(), endpoint.clone()));
         tokio::spawn(client_writer(send, command_rx, conn, endpoint, event_tx));
 
         Ok(Session {
@@ -414,14 +414,18 @@ impl Client {
     }
 }
 
-async fn client_reader(mut recv: RecvStream, events: mpsc::Sender<Event>) {
+async fn client_reader(
+    mut recv: RecvStream,
+    events: mpsc::Sender<Event>,
+    endpoint: Endpoint,
+) {
     loop {
         match read_msg::<ToPeer>(&mut recv).await {
             Ok(message) => {
                 if let Some(event) = wire_to_event(message)
                     && events.send(event).await.is_err()
                 {
-                    return;
+                    break;
                 }
             }
             Err(_) => {
@@ -432,10 +436,11 @@ async fn client_reader(mut recv: RecvStream, events: mpsc::Sender<Event>) {
                         "lost contact with the room — the coordinator may have left".into(),
                     ))
                     .await;
-                return;
+                break;
             }
         }
     }
+    endpoint.close().await;
 }
 
 async fn client_writer(
@@ -452,16 +457,16 @@ async fn client_writer(
             let _ = events
                 .send(Event::Disconnected("cannot reach the coordinator".into()))
                 .await;
-            return;
+            break;
         }
         if quitting {
             let _ = send.finish();
             conn.close(0u32.into(), b"ayrildi");
-            endpoint.close().await;
             let _ = events.send(Event::Disconnected("you left the room".into())).await;
-            return;
+            break;
         }
     }
+    endpoint.close().await;
 }
 
 // ── Conversions ────────────────────────────────────────────────────────────────
