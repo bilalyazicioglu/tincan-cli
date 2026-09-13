@@ -12,7 +12,8 @@
   <a href="https://github.com/bilalyazicioglu/tincan-cli/actions"><img src="https://img.shields.io/github/actions/workflow/status/bilalyazicioglu/tincan-cli/ci.yml?branch=main&style=flat-square&logo=github&label=build" alt="Build Status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
   <a href="docs/WIKI.md"><img src="https://img.shields.io/badge/wiki-architecture-orange?style=flat-square" alt="Wiki"></a>
-  <a href="https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet"><img src="https://img.shields.io/badge/blog-developer%20story-purple?style=flat-square" alt="Developer Blog"></a>
+  <a href="https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal"><img src="https://img.shields.io/badge/blog-developer%20story%20(en)-purple?style=flat-square" alt="Developer Blog (EN)"></a>
+  <a href="https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet"><img src="https://img.shields.io/badge/blog-developer%20story%20(tr)-purple?style=flat-square" alt="Developer Blog (TR)"></a>
 </p>
 
 <p align="center">
@@ -21,7 +22,9 @@
   <a href="#shortcuts">Shortcuts</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#security">Security</a> ·
-  <a href="docs/wiki/9-Interface-Design.md">Design notes</a>
+  <a href="docs/wiki/9-Interface-Design.md">Design notes</a> ·
+  <a href="https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal">Blog (EN)</a> ·
+  <a href="https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet">Blog (TR)</a>
 </p>
 
 <p align="center">
@@ -50,7 +53,7 @@ full-screen terminal is never a wall of nothing.
 
 Everything underneath that — the audio screen and its noise floor, turning one person
 down without deafening the room, and the sounds the interface makes — is written up in
-the [interface design notes](docs/wiki/9-Interface-Design.md).
+the [interface design notes](docs/wiki/9-Interface-Design.md), with the background story in the developer blog ([English](https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal) / [Türkçe](https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet)).
 
 ## Install
 

@@ -66,5 +66,6 @@ Welcome to the official **Tincan CLI** Technical Wiki. Tincan is a serverless, p
 ## ⚡ Quick Navigation
 
 - **Main Repository**: [github.com/bilalyazicioglu/tincan-cli](https://github.com/bilalyazicioglu/tincan-cli)
+- **Developer Story**: [Blog Post (EN)](https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal) · [Blog Post (TR)](https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet)
 - **Contributing Guidelines**: [CONTRIBUTING.md](../CONTRIBUTING.md)
 - **Issue Tracker**: [GitHub Issues](https://github.com/bilalyazicioglu/tincan-cli/issues)
