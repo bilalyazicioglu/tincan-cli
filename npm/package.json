@@ -1,0 +1,35 @@
+{
+  "name": "tincan-cli",
+  "version": "0.2.3",
+  "description": "Serverless peer-to-peer voice and text chat for your terminal",
+  "bin": {
+    "tincan": "bin/tincan.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bilalyazicioglu/tincan-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bilalyazicioglu/tincan-cli/issues"
+  },
+  "homepage": "https://github.com/bilalyazicioglu/tincan-cli#readme",
+  "keywords": [
+    "voice",
+    "chat",
+    "p2p",
+    "terminal",
+    "tui",
+    "serverless",
+    "audio",
+    "cli"
+  ],
+  "author": "Bilal Yazıcıoğlu",
+  "license": "MIT",
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

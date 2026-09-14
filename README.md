@@ -57,6 +57,24 @@ the [interface design notes](docs/wiki/9-Interface-Design.md), with the backgrou
 
 ## Install
 
+**Homebrew (macOS & Linux):**
+
+```bash
+brew tap bilalyazicioglu/tap && brew install tincan
+```
+
+**NPM:**
+
+```bash
+# Run directly without installing:
+npx tincan-cli host
+
+# Or install globally:
+npm install -g tincan-cli
+```
+
+**Shell script:**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bilalyazicioglu/tincan-cli/main/install.sh | sh
 ```
