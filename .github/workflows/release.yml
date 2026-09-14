@@ -169,7 +169,8 @@ jobs:
       - name: Update Homebrew Tap
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
           VERSION="${TAG#v}"
@@ -179,7 +180,16 @@ jobs:
           LINUX_ARM_SHA=$(cut -d' ' -f1 artifacts/tincan-aarch64-unknown-linux-gnu.tar.gz.sha256)
           SOURCE_SHA=$(curl -fsSL "https://github.com/bilalyazicioglu/tincan-cli/archive/refs/tags/${TAG}.tar.gz" | sha256sum | cut -d' ' -f1)
 
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/bilalyazicioglu/homebrew-tap.git" tap || exit 0
+          # Without an explicit token this falls back to github.token, which is
+          # scoped to this repository and cannot push to the tap. That is not a
+          # condition to paper over: it silently left `brew install tincan` on
+          # v0.2.3 through two releases, because the push failed and the step
+          # swallowed it.
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set; the tap cannot be updated and brew users would stay on the previous release"
+            exit 1
+          fi
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/bilalyazicioglu/homebrew-tap.git" tap
           cat <<EOF > tap/Formula/tincan.rb
           class Tincan < Formula
             desc "Serverless peer-to-peer voice and text chat for your terminal"
@@ -223,5 +233,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/tincan.rb
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore(release): bump tincan to ${TAG}" && git push origin main) || true
+          if git diff --staged --quiet; then
+            echo "the formula already describes ${TAG}; nothing to push"
+          else
+            git commit -m "chore(release): bump tincan to ${TAG}"
+            git push origin main
+          fi
 
