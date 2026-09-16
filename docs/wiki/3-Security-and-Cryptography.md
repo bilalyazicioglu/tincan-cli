@@ -63,6 +63,7 @@ proof and do not interoperate.
 - **Room Name + Passphrase = Derived Key**: A room opened by name has a coordinator key derived from the two. Its addresses are published through pkarr under that key, and a joiner who derives the same key finds them through the same lookup an invite code uses.
 - **Relay Privacy**: When direct P2P hole punching fails, traffic flows through n0's relay servers. A relay cannot read audio or text payloads because it holds no key to the QUIC session, which is established between the two peers rather than with it.
 - **Relay Metadata**: A relay does observe the shape of what it forwards — which two public keys are talking, when, and how much. The payload is private; the fact of the conversation is not.
+- **Address Exposure**: For a public key to be enough to find an endpoint, iroh publishes that endpoint's reachable addresses — IP addresses and relay URL — as a record signed under the key, and those records are public. Anyone with the invite code can resolve it to an address, as can anyone who derives the same key from a room name and passphrase. Direct connections then reveal each peer's address to every other peer in the room. This is inherent to having no server in the middle, not a defect in the implementation.
 - **Dependency on Public Infrastructure**: Discovery (n0's pkarr relay and DNS) and hole punching (n0's relay servers) are third-party services, and tincan does not currently expose a way to substitute your own. Availability, not confidentiality, is what rests on them: without those services peers cannot find each other at all.
 
 ---
@@ -76,6 +77,7 @@ proof and do not interoperate.
 | **Wire Eavesdropping** | Low | QUIC TLS 1.3 encryption for streams & datagrams |
 | **Man-in-the-Middle** | Low | Iroh Ed25519 public key verification |
 | **Relay Tampering** | Low | E2E encrypted QUIC payload |
+| **IP Address Disclosure to Peers and Code Holders** | Accepted | Inherent to direct connections; use a VPN if the address is the secret |
 | **Traffic Metadata at a Relay** | Accepted | Payload is sealed; who-talks-to-whom is not hidden |
 | **Loss of n0's Discovery or Relays** | Accepted | Availability only; no fallback or self-hosting yet |
 | **Rival Room / Takeover by a Passphrase Holder** (named rooms) | Accepted | Insider attack; use the invite code if it matters |

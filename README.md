@@ -336,6 +336,19 @@ runs between the two peers and the relay holds no key to it. It does see the sha
 traffic — which two public keys are talking, when, and how much — which is more than
 nothing if that pattern is the part you were hoping to keep to yourself.
 
+Your address is published, not only your key. For a public key to be enough to find you,
+iroh announces the endpoint's reachable addresses — its IP addresses and its relay URL —
+as a record signed under that key, and those records are public. Anyone holding the invite
+code can resolve it to an address, and so can anyone who derives the same key from a room
+name and passphrase. Peers then connect to each other directly whenever hole punching
+works, so everyone in a room learns everyone else's IP address.
+
+This is the part of the two-cans-and-a-string picture that is true in a way you might not
+want: on a real string, the other end knows where you are. A service with servers in the
+middle can stand between you and hide it. tincan has no such middle, and that cuts both
+ways — nobody is keeping your conversation, and nobody is keeping your address out of it
+either.
+
 A room opened by name goes further: its coordinator key *is* `Argon2id(passphrase, room
 name)`, so the passphrase is the room's address as well as its lock. That is what makes
 the invite speakable, and it has costs, listed under [Known limits](#known-limits).
@@ -397,6 +410,13 @@ decisions and are not used in the product.
   and playback are resampled to and from Opus's 48 kHz with cubic interpolation, 16 kHz
   Bluetooth headsets included — but a device that will not say what format it runs at is
   refused rather than guessed at, and tincan says so and falls back to text chat.
+- **Everyone in a room can see everyone's IP address**, and so can anyone who has the
+  invite code, because addresses are published under the public key for the key to be
+  enough to find you. Set out under [Security](#security). There is no middle to hide
+  behind; that is the same property that keeps your conversation off anyone's server.
+- **The coordinator keeps the last 200 lines of chat** and hands them to whoever joins
+  next, so someone arriving late reads what was said before they got there. It is held in
+  memory, never written to disk, and gone when the room closes.
 - **Noise suppression costs 10 ms.** It is a fixed price on the capture path, paid
   whether or not there is any noise to remove, and it is the reason the switch exists.
   `n` on the settings screen gives the 10 ms back.
