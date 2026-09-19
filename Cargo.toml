@@ -1,5 +1,9 @@
 [package]
-name = "tincan"
+# `tincan` and `tincan-cli` were both taken on crates.io by unrelated crates
+# before this project existed. Only the published crate name moves; the binary,
+# the repository and the npm package stay as they are, which is what the [lib]
+# and [[bin]] sections below pin down.
+name = "tincan-chat"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.91"
@@ -7,6 +11,16 @@ description = "Serverless peer-to-peer voice and text chat for your terminal"
 repository = "https://github.com/bilalyazicioglu/tincan-cli"
 readme = "README.md"
 license = "MIT"
+
+# Published as `tincan-chat`, but `use tincan::` keeps working in the tests and
+# the installed command is still `tincan`.
+[lib]
+name = "tincan"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tincan"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
