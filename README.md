@@ -10,10 +10,15 @@
 
 <p align="center">
   <a href="https://github.com/bilalyazicioglu/tincan-cli/actions"><img src="https://img.shields.io/github/actions/workflow/status/bilalyazicioglu/tincan-cli/ci.yml?branch=main&style=flat-square&logo=github&label=build" alt="Build Status"></a>
+  <a href="https://crates.io/crates/tincan-chat"><img src="https://img.shields.io/crates/v/tincan-chat?style=flat-square&logo=rust&label=crates.io" alt="crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
   <a href="docs/WIKI.md"><img src="https://img.shields.io/badge/wiki-architecture-orange?style=flat-square" alt="Wiki"></a>
   <a href="https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal"><img src="https://img.shields.io/badge/blog-developer%20story%20(en)-purple?style=flat-square" alt="Developer Blog (EN)"></a>
   <a href="https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet"><img src="https://img.shields.io/badge/blog-developer%20story%20(tr)-purple?style=flat-square" alt="Developer Blog (TR)"></a>
+</p>
+
+<p align="center">
+  <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built With Ratatui"></a>
 </p>
 
 <p align="center">
