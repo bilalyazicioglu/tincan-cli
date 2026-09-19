@@ -106,7 +106,17 @@ terminal UI, WASAPI device enumeration and the microphone permission prompt have
 been exercised on a real Windows machine. If you try it, [say how it
 went](https://github.com/bilalyazicioglu/tincan-cli/issues).
 
-**From source**, if you prefer it or your platform has no prebuilt binary:
+**Cargo**, if you have a Rust toolchain:
+
+```bash
+cargo install tincan-chat     # the command it installs is still `tincan`
+```
+
+The crate is `tincan-chat` because `tincan` and `tincan-cli` were both taken on
+crates.io by unrelated projects before this one existed. Only the published name
+differs; the binary, this repository and the npm package are all `tincan`.
+
+**From git**, to build whatever is on `main`:
 
 ```bash
 cargo install --git https://github.com/bilalyazicioglu/tincan-cli
