@@ -514,8 +514,8 @@ mod tests {
                 room_name: "lobby".into(),
                 channels: vec!["general".into()],
                 peers: vec![
-                    PeerInfo { id: PeerId([1; 32]), name: "alice".into(), channel: None, muted: false, deafened: false },
-                    PeerInfo { id: PeerId([2; 32]), name: "bob".into(), channel: None, muted: false, deafened: false },
+                    PeerInfo { id: PeerId([1; 32]), name: "alice".into(), channel: None, muted: false, deafened: false, afk: false },
+                    PeerInfo { id: PeerId([2; 32]), name: "bob".into(), channel: None, muted: false, deafened: false, afk: false },
                 ],
                 recent_chat: vec![],
             },

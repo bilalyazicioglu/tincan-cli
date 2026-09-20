@@ -109,6 +109,8 @@ pub struct PeerInfo {
     /// Headphones off — they cannot hear anyone. This is shared so that others do not
     /// talk into the void; kept purely local, nobody would ever notice.
     pub deafened: bool,
+    /// Inactive or marked away from keyboard.
+    pub afk: bool,
 }
 
 /// The complete state handed to a peer that has just joined the room.
@@ -140,6 +142,7 @@ pub enum ToCoordinator {
     Chat { channel: ChannelId, text: String },
     SetMuted { muted: bool },
     SetDeafened { deafened: bool },
+    SetAfk { afk: bool },
     /// A graceful goodbye. Without it, the coordinator finds out when the link drops.
     Leave,
 }
@@ -191,6 +194,7 @@ mod tests {
             channel: Some(ChannelId(1)),
             muted: false,
             deafened: false,
+            afk: false,
         }
     }
 
@@ -235,6 +239,7 @@ mod tests {
             ToCoordinator::Chat { channel: ChannelId(0), text: "nice one".into() },
             ToCoordinator::SetMuted { muted: true },
             ToCoordinator::SetDeafened { deafened: true },
+            ToCoordinator::SetAfk { afk: true },
             ToCoordinator::Leave,
         ];
 

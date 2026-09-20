@@ -175,15 +175,19 @@ fn people_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
                 Span::raw(" "),
                 Span::styled(
                     clip(&peer.name, NAME_ROOM, theme),
-                    if talking { theme.strong() } else { theme.text() },
+                    if talking {
+                        theme.strong()
+                    } else if peer.afk {
+                        theme.dim()
+                    } else {
+                        theme.text()
+                    },
                 ),
             ];
             if peer.id == app.me {
                 left.push(Span::styled(" you", theme.dim()));
             }
 
-            // Being deafened is the bigger fact about someone than being muted, and
-            // both matter more than which channel they are sitting in.
             // Being deafened is the bigger fact about someone than being muted, and
             // both matter more than which channel they are sitting in.
             //
@@ -200,6 +204,8 @@ fn people_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
                 "silenced".to_string()
             } else if selected && gain != 1.0 {
                 format!("{}%", (gain * 100.0).round())
+            } else if peer.afk {
+                "afk".to_string()
             } else {
                 peer.channel
                     .map(|channel| app.channel_name(channel).to_string())
@@ -249,6 +255,7 @@ mod tests {
                 channel: Some(ChannelId(0)),
                 muted: false,
                 deafened: false,
+                afk: false,
             },
             PeerInfo {
                 id: PeerId([2; 32]),
@@ -256,6 +263,7 @@ mod tests {
                 channel: None,
                 muted: true,
                 deafened: false,
+                afk: false,
             },
         ];
         app
@@ -335,7 +343,34 @@ mod tests {
             channel: Some(ChannelId(0)),
             muted: false,
             deafened: false,
+            afk: false,
         }
+    }
+
+    #[test]
+    fn an_afk_peer_shows_afk_tag_and_dimmed_name() {
+        let mut app = room();
+        app.peers[0].afk = true;
+        let theme = Theme::from_env();
+        let rows = people_rows(28, &app, &theme);
+        assert!(text(&rows[0]).contains("afk"), "{}", text(&rows[0]));
+
+        // Name span should be styled with theme.dim()
+        let name_span = rows[0].spans.iter().find(|s| s.content.contains("alice")).unwrap();
+        assert_eq!(name_span.style, theme.dim());
+    }
+
+    #[test]
+    fn deafened_and_muted_take_precedence_over_afk_in_tag() {
+        let mut app = room();
+        app.peers[1].muted = true;
+        app.peers[1].afk = true;
+        let rows = people_rows(28, &app, &Theme::from_env());
+        assert!(text(&rows[1]).contains("muted"), "tag should be muted");
+
+        app.peers[1].deafened = true;
+        let rows = people_rows(28, &app, &Theme::from_env());
+        assert!(text(&rows[1]).contains("deafened"), "tag should be deafened");
     }
 
     #[test]

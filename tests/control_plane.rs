@@ -403,3 +403,45 @@ async fn host_quitting_notifies_and_gracefully_disconnects_guest() -> Result<()>
     Ok(())
 }
 
+/// Setting AFK status must broadcast the updated roster to all peers in the room.
+#[tokio::test]
+async fn afk_status_is_visible_to_everyone() -> Result<()> {
+    let host_ep = bind_offline().await?;
+    let host_addr = host_ep.addr();
+    let mut host = Coordinator::spawn(host_ep, test_room(), admits(&host_addr, ""), "alice", None).await?;
+    wait_for(&mut host, "host welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
+
+    let guest_ep = bind_offline().await?;
+    let mut guest = Client::connect(guest_ep, host_addr.clone(), &key_for(&host_addr, ""), "bob", None).await?;
+    wait_for(&mut guest, "guest welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
+    wait_for_roster(&mut host, 2).await?;
+
+    // Guest marks itself as AFK.
+    guest.commands.send(Command::SetAfk(true)).await?;
+
+    // Host should see Bob as AFK in the roster.
+    wait_for(&mut host, "bob marked afk in host roster", |e| match e {
+        Event::Roster(peers) => {
+            let bob = peers.iter().find(|p| p.name == "bob")?;
+            bob.afk.then_some(())
+        }
+        _ => None,
+    })
+    .await?;
+
+    // Guest clears AFK.
+    guest.commands.send(Command::SetAfk(false)).await?;
+
+    // Host should see Bob as no longer AFK.
+    wait_for(&mut host, "bob un-afk in host roster", |e| match e {
+        Event::Roster(peers) => {
+            let bob = peers.iter().find(|p| p.name == "bob")?;
+            (!bob.afk).then_some(())
+        }
+        _ => None,
+    })
+    .await?;
+
+    Ok(())
+}
+
