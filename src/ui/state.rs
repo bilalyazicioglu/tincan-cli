@@ -318,6 +318,15 @@ impl App {
         }
     }
 
+    /// Clears chat messages for a specific channel from local memory.
+    pub fn clear_channel_chat(&mut self, channel: ChannelId) {
+        self.lines.retain(|line| match line {
+            Line::Chat(chat) => chat.channel != channel,
+            Line::Notice { .. } => true,
+        });
+        self.scroll_to_bottom();
+    }
+
     /// Scrolls up into older messages.
     pub fn scroll_up(&mut self, amount: usize) {
         let total = self.visible_lines().len();

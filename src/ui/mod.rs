@@ -742,13 +742,24 @@ async fn handle_key(
         KeyCode::Enter => {
             app.scroll_to_bottom();
             if let Some(text) = app.take_input() {
-                if text.trim() == "/afk" {
+                let trimmed = text.trim();
+                if trimmed == "/afk" {
                     let new_afk = !app.afk;
                     app.afk = new_afk;
                     if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
                         me.afk = new_afk;
                     }
                     let _ = commands.send(Command::SetAfk(new_afk)).await;
+                    return Ok(false);
+                }
+                if trimmed == "/help" {
+                    app.notice("commands: /afk (toggle away) · /clear (clear chat) · /help".into());
+                    app.notice("shortcuts: F1 invite · F2 mute · F3 deafen · F4 voice · F5 chat · F6 audio · ↑↓ peer · ←→ vol · Ctrl+K silence".into());
+                    return Ok(false);
+                }
+                if trimmed == "/clear" {
+                    app.clear_channel_chat(app.viewing);
+                    app.notice("chat cleared".into());
                     return Ok(false);
                 }
                 let channel = app.viewing;
@@ -1393,5 +1404,33 @@ mod tests {
         handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
         assert!(!app.afk);
         assert_eq!(cmd_rx.recv().await, Some(Command::SetAfk(false)));
+    }
+
+    #[tokio::test]
+    async fn help_chat_command_posts_local_notices_without_sending() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        app.input = "/help".into();
+        let prev_lines = app.lines.len();
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
+
+        assert_eq!(cmd_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        assert!(app.lines.len() >= prev_lines + 2);
+    }
+
+    #[tokio::test]
+    async fn clear_chat_command_clears_channel_messages() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        assert!(!app.visible_lines().is_empty());
+
+        app.input = "/clear".into();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
+
+        assert_eq!(cmd_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        assert_eq!(app.visible_lines().len(), 1);
     }
 }
