@@ -87,7 +87,20 @@ fn section(
         Span::raw(" "),
         Span::styled(format!(" {label} "), style),
     ])];
-    lines.extend(rows.into_iter().take(area.height.saturating_sub(1) as usize));
+    let available = area.height.saturating_sub(1) as usize;
+    if rows.len() <= available {
+        lines.extend(rows);
+    } else if available > 1 {
+        let shown = available - 1;
+        let hidden = rows.len() - shown;
+        lines.extend(rows.into_iter().take(shown));
+        lines.push(TextLine::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("+{hidden} more"), theme.dim()),
+        ]));
+    } else {
+        lines.extend(rows.into_iter().take(available));
+    }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -175,15 +188,19 @@ fn people_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
                 Span::raw(" "),
                 Span::styled(
                     clip(&peer.name, NAME_ROOM, theme),
-                    if talking { theme.strong() } else { theme.text() },
+                    if talking {
+                        theme.strong()
+                    } else if peer.afk {
+                        theme.dim()
+                    } else {
+                        theme.text()
+                    },
                 ),
             ];
             if peer.id == app.me {
                 left.push(Span::styled(" you", theme.dim()));
             }
 
-            // Being deafened is the bigger fact about someone than being muted, and
-            // both matter more than which channel they are sitting in.
             // Being deafened is the bigger fact about someone than being muted, and
             // both matter more than which channel they are sitting in.
             //
@@ -200,6 +217,8 @@ fn people_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
                 "silenced".to_string()
             } else if selected && gain != 1.0 {
                 format!("{}%", (gain * 100.0).round())
+            } else if peer.afk {
+                "afk".to_string()
             } else {
                 peer.channel
                     .map(|channel| app.channel_name(channel).to_string())
@@ -249,6 +268,7 @@ mod tests {
                 channel: Some(ChannelId(0)),
                 muted: false,
                 deafened: false,
+                afk: false,
             },
             PeerInfo {
                 id: PeerId([2; 32]),
@@ -256,6 +276,7 @@ mod tests {
                 channel: None,
                 muted: true,
                 deafened: false,
+                afk: false,
             },
         ];
         app
@@ -335,7 +356,64 @@ mod tests {
             channel: Some(ChannelId(0)),
             muted: false,
             deafened: false,
+            afk: false,
         }
+    }
+
+    #[test]
+    fn an_afk_peer_shows_afk_tag_and_dimmed_name() {
+        let mut app = room();
+        app.peers[0].afk = true;
+        let theme = Theme::from_env();
+        let rows = people_rows(28, &app, &theme);
+        assert!(text(&rows[0]).contains("afk"), "{}", text(&rows[0]));
+
+        // Name span should be styled with theme.dim()
+        let name_span = rows[0].spans.iter().find(|s| s.content.contains("alice")).unwrap();
+        assert_eq!(name_span.style, theme.dim());
+    }
+
+    #[test]
+    fn deafened_and_muted_take_precedence_over_afk_in_tag() {
+        let mut app = room();
+        app.peers[1].muted = true;
+        app.peers[1].afk = true;
+        let rows = people_rows(28, &app, &Theme::from_env());
+        assert!(text(&rows[1]).contains("muted"), "tag should be muted");
+
+        app.peers[1].deafened = true;
+        let rows = people_rows(28, &app, &Theme::from_env());
+        assert!(text(&rows[1]).contains("deafened"), "tag should be deafened");
+    }
+
+    #[test]
+    fn rail_shows_overflow_indicator_when_people_exceed_height() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = room();
+        for i in 3..=12 {
+            app.peers.push(PeerInfo {
+                id: PeerId([i; 32]),
+                name: format!("peer{i}"),
+                channel: None,
+                muted: false,
+                deafened: false,
+                afk: false,
+            });
+        }
+        let theme = Theme::from_env();
+        let backend = TestBackend::new(30, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, frame.area(), &app, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let screen = format!("{buffer:?}");
+        assert!(screen.contains("more"), "screen should contain overflow count: {screen}");
     }
 
     #[test]

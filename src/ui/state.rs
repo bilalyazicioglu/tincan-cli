@@ -107,6 +107,10 @@ pub struct App {
     pub muted: bool,
     /// Deafened: we hear nobody. Comes from the roster, so everyone can see it.
     pub deafened: bool,
+    /// Inactive or marked away from keyboard.
+    pub afk: bool,
+    /// Last detected user activity.
+    pub last_activity: std::time::Instant,
     /// Whether push-to-talk mode is on (`--ptt`).
     pub ptt_mode: bool,
     /// Whether the push-to-talk key is currently active.
@@ -197,6 +201,8 @@ impl App {
             voice: None,
             muted: false,
             deafened: false,
+            afk: false,
+            last_activity: std::time::Instant::now(),
             ptt_mode: false,
             ptt_active: false,
             input: String::new(),
@@ -312,6 +318,15 @@ impl App {
         }
     }
 
+    /// Clears chat messages for a specific channel from local memory.
+    pub fn clear_channel_chat(&mut self, channel: ChannelId) {
+        self.lines.retain(|line| match line {
+            Line::Chat(chat) => chat.channel != channel,
+            Line::Notice { .. } => true,
+        });
+        self.scroll_to_bottom();
+    }
+
     /// Scrolls up into older messages.
     pub fn scroll_up(&mut self, amount: usize) {
         let total = self.visible_lines().len();
@@ -340,13 +355,19 @@ impl App {
         }
     }
 
-    /// Aligns the voice/mute state with what the coordinator reports.
+    /// Aligns the voice/mute/afk state with what the coordinator reports.
     fn sync_self_from_roster(&mut self) {
         if let Some(me) = self.peers.iter().find(|p| p.id == self.me) {
             self.voice = me.channel;
             self.muted = me.muted;
             self.deafened = me.deafened;
+            self.afk = me.afk;
         }
+    }
+
+    /// Resets the idle timer when user interaction or voice activity occurs.
+    pub fn touch_activity(&mut self) {
+        self.last_activity = std::time::Instant::now();
     }
 
     /// The lines belonging to the channel on screen. Notices show in every channel.
@@ -794,6 +815,7 @@ mod tests {
             channel,
             muted: false,
             deafened: false,
+            afk: false,
         }
     }
 
@@ -1278,6 +1300,17 @@ mod tests {
         me.deafened = true;
         app.apply(Event::Roster(vec![me]));
         assert!(app.deafened, "the deafened flag comes from the coordinator");
+    }
+
+    #[test]
+    fn afk_state_comes_from_the_roster() {
+        let mut app = welcomed();
+        assert!(!app.afk);
+
+        let mut me = peer(1, None);
+        me.afk = true;
+        app.apply(Event::Roster(vec![me]));
+        assert!(app.afk, "the afk flag comes from the coordinator");
     }
 
     #[test]

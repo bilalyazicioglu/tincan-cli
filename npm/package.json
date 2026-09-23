@@ -1,6 +1,6 @@
 {
   "name": "tincan-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Serverless peer-to-peer voice and text chat for your terminal",
   "bin": {
     "tincan": "bin/tincan.js"

@@ -357,6 +357,7 @@ mod tests {
             channel: Some(crate::proto::ChannelId(0)),
             muted: false,
             deafened: false,
+            afk: false,
         }];
         app.voice_available = true;
 
@@ -512,6 +513,7 @@ mod pictures {
             channel,
             muted: false,
             deafened: false,
+            afk: false,
         }
     }
 

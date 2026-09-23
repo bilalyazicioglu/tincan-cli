@@ -96,6 +96,11 @@ impl Shared {
                 let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
             }
 
+            ToCoordinator::SetAfk { afk } => {
+                room.set_afk(&from, afk)?;
+                let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
+            }
+
             ToCoordinator::Leave => {
                 if let Some(peer) = room.leave(&from) {
                     let _ = self.broadcast.send(ToPeer::Notice {
@@ -477,6 +482,7 @@ fn into_wire(command: Command) -> ToCoordinator {
         Command::Chat { channel, text } => ToCoordinator::Chat { channel, text },
         Command::SetMuted(muted) => ToCoordinator::SetMuted { muted },
         Command::SetDeafened(deafened) => ToCoordinator::SetDeafened { deafened },
+        Command::SetAfk(afk) => ToCoordinator::SetAfk { afk },
         Command::Quit => ToCoordinator::Leave,
     }
 }

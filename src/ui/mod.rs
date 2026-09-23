@@ -118,6 +118,9 @@ const BACKSPACE: char = '\u{8}';
 /// leave a laptop alone.
 const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(70);
 
+/// Inactivity time before marking a user away from keyboard automatically.
+const AFK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Decides what the interface says about your own microphone and ears.
 ///
 /// The keys only send a command — the state that matters comes back from the
@@ -249,6 +252,16 @@ pub async fn run(
                 // The speaking indicator comes from the audio engine.
                 changed = next_speakers(speaking_rx.as_mut()) => {
                     app.speaking = changed;
+                    if app.speaking.contains(&app.me) {
+                        app.touch_activity();
+                        if app.afk {
+                            app.afk = false;
+                            if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
+                                me.afk = false;
+                            }
+                            let _ = session.commands.send(Command::SetAfk(false)).await;
+                        }
+                    }
                 }
 
                 // Live microphone level: our own meter and the settings screen.
@@ -269,6 +282,13 @@ pub async fn run(
                 }
 
                 _ = quality_tick.tick() => {
+                    if !app.afk && app.last_activity.elapsed() >= AFK_TIMEOUT {
+                        app.afk = true;
+                        if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
+                            me.afk = true;
+                        }
+                        let _ = session.commands.send(Command::SetAfk(true)).await;
+                    }
                     if let Some(voice) = voice.as_ref() {
                         app.link = voice.mesh.link_status().await;
                         app.note_dropouts(voice.health.underruns());
@@ -303,12 +323,29 @@ pub async fn run(
 
                 event = events.recv() => match event {
                     Some(UiEvent::Key(key)) => {
+                        let was_afk = app.afk;
                         if handle_key(&mut app, key, &session.commands, voice.as_ref()).await? {
                             break;
                         }
                         apply_local_audio_state(&app, voice.as_ref());
+                        if was_afk && app.afk {
+                            app.afk = false;
+                            if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
+                                me.afk = false;
+                            }
+                            let _ = session.commands.send(Command::SetAfk(false)).await;
+                        }
+                        app.touch_activity();
                     }
                     Some(UiEvent::ScrollUp) => {
+                        app.touch_activity();
+                        if app.afk {
+                            app.afk = false;
+                            if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
+                                me.afk = false;
+                            }
+                            let _ = session.commands.send(Command::SetAfk(false)).await;
+                        }
                         if app.view_mode == ViewMode::Chat {
                             app.scroll_up(3);
                         } else if app.view_mode == ViewMode::Settings {
@@ -316,6 +353,14 @@ pub async fn run(
                         }
                     }
                     Some(UiEvent::ScrollDown) => {
+                        app.touch_activity();
+                        if app.afk {
+                            app.afk = false;
+                            if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
+                                me.afk = false;
+                            }
+                            let _ = session.commands.send(Command::SetAfk(false)).await;
+                        }
                         if app.view_mode == ViewMode::Chat {
                             app.scroll_down(3);
                         } else if app.view_mode == ViewMode::Settings {
@@ -697,6 +742,26 @@ async fn handle_key(
         KeyCode::Enter => {
             app.scroll_to_bottom();
             if let Some(text) = app.take_input() {
+                let trimmed = text.trim();
+                if trimmed == "/afk" {
+                    let new_afk = !app.afk;
+                    app.afk = new_afk;
+                    if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
+                        me.afk = new_afk;
+                    }
+                    let _ = commands.send(Command::SetAfk(new_afk)).await;
+                    return Ok(false);
+                }
+                if trimmed == "/help" {
+                    app.notice("commands: /afk (toggle away) · /clear (clear chat) · /help".into());
+                    app.notice("shortcuts: F1 invite · F2 mute · F3 deafen · F4 voice · F5 chat · F6 audio · ↑↓ peer · ←→ vol · Ctrl+K silence".into());
+                    return Ok(false);
+                }
+                if trimmed == "/clear" {
+                    app.clear_channel_chat(app.viewing);
+                    app.notice("chat cleared".into());
+                    return Ok(false);
+                }
                 let channel = app.viewing;
                 let _ = commands.send(Command::Chat { channel, text }).await;
                 // Locally, now, rather than waiting for the coordinator to echo it
@@ -1014,6 +1079,7 @@ mod tests {
             channel: channel.map(ChannelId),
             muted: false,
             deafened: false,
+            afk: false,
         }
     }
 
@@ -1318,5 +1384,53 @@ mod tests {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
         assert!(!app.typing_clicks);
+    }
+
+    #[tokio::test]
+    async fn afk_chat_command_toggles_afk_and_sends_command() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        app.input = "/afk".into();
+        assert!(!app.afk);
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
+        assert!(app.afk);
+        assert_eq!(cmd_rx.recv().await, Some(Command::SetAfk(true)));
+
+        // Toggling /afk again sets afk back to false
+        app.input = "/afk".into();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
+        assert!(!app.afk);
+        assert_eq!(cmd_rx.recv().await, Some(Command::SetAfk(false)));
+    }
+
+    #[tokio::test]
+    async fn help_chat_command_posts_local_notices_without_sending() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        app.input = "/help".into();
+        let prev_lines = app.lines.len();
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
+
+        assert_eq!(cmd_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        assert!(app.lines.len() >= prev_lines + 2);
+    }
+
+    #[tokio::test]
+    async fn clear_chat_command_clears_channel_messages() {
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+        let mut app = test_chat_app(20);
+        assert!(!app.visible_lines().is_empty());
+
+        app.input = "/clear".into();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle_key(&mut app, enter, &cmd_tx, None).await.unwrap();
+
+        assert_eq!(cmd_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        assert_eq!(app.visible_lines().len(), 1);
     }
 }

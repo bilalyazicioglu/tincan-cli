@@ -79,6 +79,7 @@ impl Room {
                 channel: None,
                 muted: false,
                 deafened: false,
+                afk: false,
             },
         );
         Ok(name)
@@ -109,6 +110,12 @@ impl Room {
     pub fn set_deafened(&mut self, id: &PeerId, deafened: bool) -> Result<()> {
         let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
         peer.deafened = deafened;
+        Ok(())
+    }
+
+    pub fn set_afk(&mut self, id: &PeerId, afk: bool) -> Result<()> {
+        let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
+        peer.afk = afk;
         Ok(())
     }
 
@@ -289,6 +296,20 @@ mod tests {
         assert!(room.post_chat(&id(99), ChannelId(0), "hello", 1).is_err());
         assert!(room.switch_channel(&id(99), Some(ChannelId(0))).is_err());
         assert!(room.set_muted(&id(99), true).is_err());
+        assert!(room.set_afk(&id(99), true).is_err());
+    }
+
+    #[test]
+    fn afk_status_can_be_toggled() {
+        let mut room = room();
+        room.join(id(1), "alice").unwrap();
+        assert!(!room.get(&id(1)).unwrap().afk);
+
+        room.set_afk(&id(1), true).unwrap();
+        assert!(room.get(&id(1)).unwrap().afk);
+
+        room.set_afk(&id(1), false).unwrap();
+        assert!(!room.get(&id(1)).unwrap().afk);
     }
 
     #[test]

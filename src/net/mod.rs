@@ -19,6 +19,7 @@ pub enum Command {
     Chat { channel: ChannelId, text: String },
     SetMuted(bool),
     SetDeafened(bool),
+    SetAfk(bool),
     Quit,
 }
 
