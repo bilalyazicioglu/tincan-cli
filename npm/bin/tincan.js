@@ -25,7 +25,7 @@ const target = PLATFORMS[key];
 if (!target) {
   console.error(`\x1b[31m[tincan]\x1b[0m Unsupported platform: ${key}.`);
   console.error(`Prebuilt binaries are available for macOS (arm64, x64), Linux (x64, arm64) and Windows (x64).`);
-  console.error(`To build from source on this platform, run: cargo install tincan`);
+  console.error(`To build from source on this platform, run: cargo install tincan-chat`);
   process.exit(1);
 }
 
