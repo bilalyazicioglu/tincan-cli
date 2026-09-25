@@ -15,6 +15,7 @@
 //! ```
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use iroh::{Endpoint, EndpointAddr};
@@ -37,6 +38,11 @@ use crate::room::Room;
 const BROADCAST_DEPTH: usize = 512;
 /// The interface event queue.
 const EVENT_DEPTH: usize = 256;
+/// How long `join --retry` waits between attempts to reach the room.
+const RETRY_PAUSE: Duration = Duration::from_secs(2);
+/// What a join that never reached the room says.
+const UNREACHABLE: &str =
+    "could not reach the room — the code, room name or passphrase may be wrong, or the room closed";
 
 // ── Framing ─────────────────────────────────────────────────────────────────────
 
@@ -179,6 +185,9 @@ async fn host_commands(
             });
             // A short breath so the broadcast reaches the clients.
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            // Before saying so: once the room has closed the interface exits, and the
+            // process with it.
+            super::endpoint::close_and_retract(&endpoint).await;
             let _ = events.send(Event::Disconnected("the room was closed".into())).await;
             break;
         }
@@ -365,12 +374,53 @@ impl Client {
         name: &str,
         voice: Option<VoiceMesh>,
     ) -> Result<Session> {
+        Self::connect_patiently(endpoint, target, key, name, voice, Duration::ZERO, |_| {}).await
+    }
+
+    /// [`connect`](Self::connect), but a room that cannot be reached yet is tried again
+    /// until `patience` runs out, with `waiting` told how long is left before each new
+    /// attempt. This is `join --retry`: a script that starts the host and the joiner
+    /// together should not have to know which one comes up first.
+    ///
+    /// Only reaching the room is retried. A room that answers and turns you away has
+    /// said all it will say, and asking again would not change it.
+    pub async fn connect_patiently(
+        endpoint: Endpoint,
+        target: impl Into<EndpointAddr>,
+        key: &Key,
+        name: &str,
+        voice: Option<VoiceMesh>,
+        patience: Duration,
+        mut waiting: impl FnMut(Duration),
+    ) -> Result<Session> {
         let target: EndpointAddr = target.into();
         let coordinator = to_peer_id(target.id);
-        let conn = endpoint
-            .connect(target, proto::ALPN)
-            .await
-            .context("could not reach the room — the code, room name or passphrase may be wrong, or the room closed")?;
+        let deadline = tokio::time::Instant::now() + patience;
+        let conn = loop {
+            let attempt = endpoint.connect(target.clone(), proto::ALPN);
+            // One attempt at a room that is gone takes iroh's own 30 s to give up, which
+            // would carry a short `--retry` well past its end.
+            let reached = if patience.is_zero() {
+                attempt.await.map_err(anyhow::Error::from)
+            } else {
+                match tokio::time::timeout_at(deadline, attempt).await {
+                    Ok(reached) => reached.map_err(anyhow::Error::from),
+                    Err(_) => Err(anyhow::anyhow!("gave up after {} s", patience.as_secs())),
+                }
+            };
+            match reached {
+                Ok(conn) => break conn,
+                Err(err) => {
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if left <= RETRY_PAUSE {
+                        return Err(err).context(UNREACHABLE);
+                    }
+                    debug!("the room is not reachable yet: {err:#}");
+                    waiting(left);
+                    tokio::time::sleep(RETRY_PAUSE).await;
+                }
+            }
+        };
 
         let (mut send, mut recv) = conn.accept_bi().await.context("could not establish the control stream")?;
 

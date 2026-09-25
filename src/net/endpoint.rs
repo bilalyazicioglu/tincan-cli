@@ -1,8 +1,14 @@
 //! iroh endpoint setup and identity conversions.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
-use iroh::address_lookup::MemoryLookup;
+use iroh::address_lookup::{
+    DEFAULT_PKARR_TTL, EndpointInfo, MemoryLookup, N0_DNS_PKARR_RELAY_PROD, PkarrRelayClient,
+};
 use iroh::{Endpoint, EndpointId, RelayMode, SecretKey, endpoint::presets};
+
+use tracing::debug;
 
 use crate::proto::{self, PeerId};
 
@@ -28,6 +34,51 @@ pub async fn bind(identity: Option<SecretKey>) -> Result<Endpoint> {
         .context("could not open the network interface")?;
     endpoint.online().await;
     Ok(endpoint)
+}
+
+/// Closes the endpoint and takes its address record down with it.
+///
+/// iroh's pkarr publisher stops when the endpoint does, but leaves its last record up,
+/// so a joiner who looks the room up afterwards is sent to an address nobody answers
+/// and waits out iroh's 30 s connection timeout before hearing the room is gone.
+/// Measured against n0's servers: with an empty record published on the way out the
+/// same joiner is told in about 3 s, and a host restarted under the same name and
+/// passphrase is reached as quickly as before, because its fresh record replaces this one.
+/// The empty record takes a moment to reach n0's lookups: a joiner who asks the instant
+/// the host leaves still gets the old one, and in about one run in ten so did one who
+/// asked a few seconds later.
+///
+/// An endpoint with no relay publishes nothing to take down (the offline test
+/// endpoints), and one that cannot reach n0 quickly is left as it is: leaving a room
+/// never waits on this for long.
+pub async fn close_and_retract(endpoint: &Endpoint) {
+    const RETRACT_TIMEOUT: Duration = Duration::from_secs(2);
+
+    let publishes = endpoint.addr().relay_urls().next().is_some();
+    let client = match (endpoint.dns_resolver(), N0_DNS_PKARR_RELAY_PROD.parse()) {
+        (Ok(resolver), Ok(relay)) if publishes => {
+            Some(PkarrRelayClient::new(relay, endpoint.tls_config().clone(), resolver.clone()))
+        }
+        _ => None,
+    };
+    let secret = endpoint.secret_key().clone();
+    endpoint.close().await;
+
+    let Some(client) = client else {
+        return;
+    };
+    let empty = match EndpointInfo::new(secret.public()).to_pkarr_signed_packet(&secret, DEFAULT_PKARR_TTL) {
+        Ok(packet) => packet,
+        Err(err) => {
+            debug!("could not sign the empty address record: {err:#}");
+            return;
+        }
+    };
+    match tokio::time::timeout(RETRACT_TIMEOUT, client.publish(&empty)).await {
+        Ok(Ok(())) => debug!("address record retracted"),
+        Ok(Err(err)) => debug!("could not retract the address record: {err:#}"),
+        Err(_) => debug!("gave up retracting the address record"),
+    }
 }
 
 /// An endpoint for tests: no relays, no discovery, never reaches the outside network.

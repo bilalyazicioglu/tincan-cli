@@ -172,6 +172,128 @@ async fn a_named_room_is_found_over_the_network() -> Result<()> {
     Ok(())
 }
 
+/// Over the real network: a room whose host has left says so in seconds. Without the
+/// retraction the joiner is sent to the host's last address and waits out iroh's 30 s.
+/// (Measured: ~33 s without it, and the same when the joiner asks the moment the host
+/// has left. Asked a second or more later, 9 runs in 10 heard in ~3 s.)
+#[tokio::test]
+#[ignore = "needs the internet and n0's discovery servers"]
+async fn a_closed_named_room_says_so_quickly() -> Result<()> {
+    let room = format!("test-{}", tincan::passphrase::generate());
+    let passphrase = tincan::passphrase::generate();
+    let secret = RoomSecret::derive(&room, &passphrase)?;
+    let admission = Admission::room(&secret, &passphrase)?;
+    let host = Coordinator::spawn(bind(Some(secret.identity())).await?, test_room(), admission, "alice", None).await?;
+
+    let target = to_endpoint_id(&secret.coordinator())?;
+    let mut guest = Client::connect_patiently(bind(None).await?, target, secret.key(), "bob", None, Duration::from_secs(60), |_| {}).await?;
+    wait_for(&mut guest, "welcome", |e| matches!(e, Event::Welcome { .. }).then_some(())).await?;
+
+    let mut host = host;
+    host.commands.send(Command::Quit).await?;
+    // The host hears the room has closed only once its record is down.
+    loop {
+        match tokio::time::timeout(PATIENCE, host.events.recv()).await? {
+            Some(Event::Disconnected(_)) => break,
+            Some(_) => {}
+            None => bail!("the host's events ended before the room closed"),
+        }
+    }
+
+    // The empty record takes a moment to reach n0's lookups: asked at once, they still
+    // hand out the old one.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let started = tokio::time::Instant::now();
+    let late = Client::connect(bind(None).await?, target, secret.key(), "carol", None).await;
+    assert!(late.is_err(), "the room is gone");
+    assert!(started.elapsed() < Duration::from_secs(15), "took {:?} to hear the room is gone", started.elapsed());
+    Ok(())
+}
+
+/// `join --retry` keeps asking for a room with no address yet (a host that has not come
+/// up, or one whose record was taken down), says how long is left before each new
+/// attempt, and gives up on time.
+#[tokio::test]
+async fn a_retry_asks_again_and_ends_on_time() -> Result<()> {
+    let gone = bind_offline().await?;
+    let gone_addr = gone.addr();
+    gone.close().await;
+    let no_address = EndpointAddr::from(gone_addr.id);
+
+    let mut waits = Vec::new();
+    let started = tokio::time::Instant::now();
+    let result = Client::connect_patiently(
+        bind_offline().await?,
+        no_address,
+        &key_for(&gone_addr, ""),
+        "bob",
+        None,
+        Duration::from_secs(5),
+        |left| waits.push(left),
+    )
+    .await;
+
+    let err = format!("{:#}", result.err().expect("nobody is there"));
+    assert!(err.contains("could not reach the room"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(8), "took {:?}", started.elapsed());
+    assert!(waits.len() >= 2, "each new attempt is announced: {waits:?}");
+    assert!(waits.windows(2).all(|w| w[0] > w[1]), "the time left counts down: {waits:?}");
+    Ok(())
+}
+
+/// A single attempt that hangs (an address nobody answers) is cut off at the deadline,
+/// rather than running on for iroh's 30 s.
+#[tokio::test]
+async fn a_retry_cuts_a_hanging_attempt_off_at_the_deadline() -> Result<()> {
+    let gone = bind_offline().await?;
+    let gone_addr = gone.addr();
+    gone.close().await;
+
+    let started = tokio::time::Instant::now();
+    let result = Client::connect_patiently(
+        bind_offline().await?,
+        gone_addr.clone(),
+        &key_for(&gone_addr, ""),
+        "bob",
+        None,
+        Duration::from_secs(4),
+        |_| {},
+    )
+    .await;
+
+    let err = format!("{:#}", result.err().expect("nobody is there"));
+    assert!(err.contains("could not reach the room"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(7), "took {:?}", started.elapsed());
+    Ok(())
+}
+
+/// A room that answers and turns the joiner away is not asked again.
+#[tokio::test]
+async fn a_retry_does_not_repeat_a_refusal() -> Result<()> {
+    let host_ep = bind_offline().await?;
+    let host_addr = host_ep.addr();
+    let _host = Coordinator::spawn(host_ep, test_room(), admits(&host_addr, "right-password"), "alice", None).await?;
+
+    let started = tokio::time::Instant::now();
+    let mut waits = 0;
+    let result = Client::connect_patiently(
+        bind_offline().await?,
+        host_addr.clone(),
+        &key_for(&host_addr, "wrong-password"),
+        "uninvited",
+        None,
+        Duration::from_secs(30),
+        |_| waits += 1,
+    )
+    .await;
+
+    let err = result.err().expect("a wrong password must not be accepted").to_string();
+    assert!(err.contains("password"), "the error must point at the password: {err}");
+    assert_eq!(waits, 0);
+    assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    Ok(())
+}
+
 /// An attempt with the wrong password must be rejected during the handshake.
 #[tokio::test]
 async fn wrong_password_is_refused() -> Result<()> {
