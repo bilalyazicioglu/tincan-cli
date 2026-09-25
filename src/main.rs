@@ -69,6 +69,10 @@ enum Sub {
         /// it out of the process list.
         #[arg(long, short)]
         password: Option<String>,
+        /// Keep trying to reach the room for up to this many seconds, for when the host
+        /// may not be up yet — a script starting both, or a host restarting.
+        #[arg(long, value_name = "SECS")]
+        retry: Option<u64>,
         #[command(flatten)]
         audio: AudioArgs,
     },
@@ -203,8 +207,9 @@ async fn run(command: Sub) -> Result<()> {
             room,
             name,
             password,
+            retry,
             audio,
-        } => join(room, name, password, audio).await,
+        } => join(room, name, password, retry, audio).await,
         Sub::Devices { all } => {
             println!("{}", audio::device::describe_devices(all)?);
             Ok(())
@@ -292,7 +297,8 @@ async fn host(
         // is never told it closed.
         println!();
         let _ = session.commands.send(Command::Quit).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), session.events.recv()).await;
+        // Long enough for the host to take its address record down on the way out.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(4), session.events.recv()).await;
         return Ok(());
     }
 
@@ -303,6 +309,7 @@ async fn join(
     room: String,
     name: Option<String>,
     password: Option<String>,
+    retry: Option<u64>,
     audio: AudioArgs,
 ) -> Result<()> {
     tincan::logo::print_banner();
@@ -326,7 +333,16 @@ async fn join(
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
 
     let target = endpoint::to_endpoint_id(&coordinator)?;
-    let session = Client::connect(endpoint, target, &key, &nickname(name), mesh).await?;
+    let patience = std::time::Duration::from_secs(retry.unwrap_or(0));
+    let waiting = |left: std::time::Duration| {
+        println!("{}", tincan::logo::heading(&format!(
+            "  the room is not up yet — trying again ({} s left)",
+            left.as_secs()
+        )));
+    };
+    let session =
+        Client::connect_patiently(endpoint, target, &key, &nickname(name), mesh, patience, waiting)
+            .await?;
 
     ui::run(session, control, audio.ptt).await
 }

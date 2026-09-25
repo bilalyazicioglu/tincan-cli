@@ -118,6 +118,9 @@ const BACKSPACE: char = '\u{8}';
 /// leave a laptop alone.
 const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(70);
 
+/// How long leaving waits for the room to finish closing (see the end of `run`).
+const QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// Inactivity time before marking a user away from keyboard automatically.
 const AFK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -224,6 +227,7 @@ pub async fn run(
     let mut mic_level_rx = voice.as_ref().map(|v| v.mic_level.clone());
     let mut peer_levels_rx = voice.as_ref().map(|v| v.peer_levels.clone());
 
+    let mut quitting = false;
     let result = async {
         loop {
             terminal.draw(|frame| view::draw(frame, &app, &theme))?;
@@ -333,6 +337,7 @@ pub async fn run(
                     Some(UiEvent::Key(key)) => {
                         let was_afk = app.afk;
                         if handle_key(&mut app, key, &session.commands, voice.as_ref()).await? {
+                            quitting = true;
                             break;
                         }
                         apply_local_audio_state(&app, voice.as_ref());
@@ -389,6 +394,21 @@ pub async fn run(
         anyhow::Ok(())
     }
     .await;
+
+    // Ctrl+C leaves at once, but the room still has something to do on the way out: a
+    // host takes its address record down, so nobody is sent to a room that is gone. It
+    // says it is done with `Disconnected`, and the wait for that is bounded, so a stuck
+    // network cannot hold the terminal.
+    if quitting {
+        let _ = tokio::time::timeout(QUIT_GRACE, async {
+            while let Some(event) = session.events.recv().await {
+                if matches!(event, Event::Disconnected(_)) {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
 
     remember_settings(&app);
     drop(_mouse_guard);

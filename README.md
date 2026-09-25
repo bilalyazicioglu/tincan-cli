@@ -190,6 +190,13 @@ the passphrase, which keeps it out of the process list. Case, spaces, dashes and
 underscores are forgiven in both room names and passphrases: `Chestnut Ferry Lens Moss`
 works.
 
+A join makes one attempt. When the host may not be up yet — a script that starts both,
+or a host restarting under the same name — `--retry` keeps trying for that many seconds:
+
+```bash
+tincan join lobby --name bob --retry 60
+```
+
 **See your audio devices:**
 
 ```bash
@@ -217,6 +224,7 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | `--input`          | Microphone to use (a distinctive part of the name is enough)   |
 | `--output`         | Speaker to use                                                 |
 | `--ptt`            | Push-to-talk: the microphone only opens with F4                |
+| `--retry`          | `join`: keep trying to reach the room for this many seconds    |
 
 ### Shortcuts
 
@@ -457,6 +465,15 @@ decisions and are not used in the product.
 - **A wrong room name or passphrase looks like a closed room.** It derives a different
   address, where nobody is listening, so tincan cannot tell you which of the two was
   wrong.
+- **A room that has just closed can take a moment to say so.** Leaving a room you host
+  takes its address record down, and someone who joins after that is told the room is
+  gone in about 3 s. Not always: n0's lookups need a moment to catch up, so a join in
+  the same instant still reaches for the old address and waits out iroh's 30 s
+  connection timeout, and in our measurements so did about one in ten a few seconds
+  later. A host that stops any other way — killed, crashed, cut off — leaves the record
+  up, with the same 30 s wait. A host restarted under the same name and passphrase is
+  reached as soon as it is up, since its new record replaces the old one; `--retry`
+  covers the gap before that.
 - **Scale is 2–6 people.** In a mesh everyone sends to everyone; past 8 you would need
   the coordinator to mix the audio (an SFU).
 - **Push-to-talk is not hold-to-talk.** Terminals generally do not report key-release
