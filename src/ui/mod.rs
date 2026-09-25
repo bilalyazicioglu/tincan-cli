@@ -204,6 +204,14 @@ pub async fn run(
     }
     let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
     let _mouse_guard = MouseCaptureGuard;
+    // Set before ratatui's own hook, which restores the terminal and then calls this
+    // one: a panic's message has to reach the screen, not the log.
+    let panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        crate::stderr::restore();
+        panic_hook(info);
+    }));
+    let diverted = crate::stderr::divert();
     let mut terminal = ratatui::init();
     let mut events = spawn_event_reader();
     let mut chime = JoinChime::default();
@@ -405,7 +413,9 @@ pub async fn run(
     remember_settings(&app);
     drop(_mouse_guard);
     ratatui::restore();
+    // Closing the streams is one more chance for ALSA to complain.
     drop(voice);
+    drop(diverted);
     if let Some(reason) = app.ended {
         println!("{reason}");
     }

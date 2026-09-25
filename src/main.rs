@@ -77,7 +77,11 @@ enum Sub {
         audio: AudioArgs,
     },
     /// List the audio devices tincan can see.
-    Devices,
+    Devices {
+        /// Include what the device picker leaves out: ALSA plugins and each card's raw PCMs.
+        #[arg(long)]
+        all: bool,
+    },
     /// Generate shell auto-completion scripts.
     Completions {
         /// Shell to generate completions for.
@@ -139,7 +143,17 @@ fn start_logging() -> Option<PathBuf> {
     // Nowhere to write is a reason to stay quiet, not a reason to scribble on the
     // interface: without `init` the macros do nothing at all.
     let path = log_path()?;
-    let file = std::fs::File::create(&path).ok()?;
+    // Appending, because the interface points stderr at this same file while it is up
+    // (see `tincan::stderr`), and two writers at their own offsets overwrite each other.
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    let _ = file.set_len(0);
+    if let Ok(copy) = file.try_clone() {
+        tincan::stderr::sink_into(copy);
+    }
     tracing_subscriber::fmt()
         .with_writer(std::sync::Arc::new(file))
         .with_ansi(false)
@@ -196,8 +210,8 @@ async fn run(command: Sub) -> Result<()> {
             retry,
             audio,
         } => join(room, name, password, retry, audio).await,
-        Sub::Devices => {
-            println!("{}", audio::device::describe_devices()?);
+        Sub::Devices { all } => {
+            println!("{}", audio::device::describe_devices(all)?);
             Ok(())
         }
         Sub::Completions { shell } => {

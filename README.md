@@ -200,7 +200,8 @@ tincan join lobby --name bob --retry 60
 **See your audio devices:**
 
 ```bash
-tincan devices
+tincan devices          # what the device picker offers
+tincan devices --all    # on Linux, ALSA's plugins and each card's raw PCMs too
 ```
 
 **Shell auto-completions:**

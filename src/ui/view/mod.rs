@@ -411,6 +411,7 @@ mod pictures {
     use crate::ui::state::{App, SettingsSection};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::style::{Color, Modifier};
 
     /// One character cell, in pixels. The ratio is the one monospace faces settle on.
@@ -475,34 +476,62 @@ mod pictures {
                 }
             }
 
-            let mut x = 0;
-            while x < cols {
-                let look = |at: u16| {
-                    let cell = &buffer[(at, y)];
-                    (hex(cell.fg, &ink), cell.modifier.contains(Modifier::BOLD))
-                };
-                let (fg, bold) = look(x);
-                let start = x;
-                let mut run = String::new();
-                while x < cols && look(x) == (fg.clone(), bold) {
+            out.push_str(&glyphs(&buffer, cols, y, PAD, PAD, &ink));
+        }
+        out.push_str("</svg>\n");
+        out
+    }
+
+    /// One row of the buffer's text, as `<text>` elements pinned to the cell grid.
+    ///
+    /// A run of plain ASCII shares one element stretched to its exact width. Anything
+    /// else, box drawing above all, gets an element of its own: the face that renders
+    /// it is often a fallback whose advance is not the ASCII one, and stretching a run
+    /// that mixes the two spreads the difference over every gap, so the far end of a
+    /// long row lands a column or so off.
+    fn glyphs(buffer: &Buffer, cols: u16, y: u16, left: f32, top: f32, ink: &str) -> String {
+        let mut out = String::new();
+        let look = |at: u16| {
+            let cell = &buffer[(at, y)];
+            (hex(cell.fg, ink), cell.modifier.contains(Modifier::BOLD))
+        };
+        let plain = |at: u16| {
+            let symbol = buffer[(at, y)].symbol();
+            symbol.is_ascii() && symbol != " "
+        };
+
+        let mut x = 0;
+        while x < cols {
+            let symbol = buffer[(x, y)].symbol();
+            if symbol.trim().is_empty() {
+                x += 1;
+                continue;
+            }
+            let (fg, bold) = look(x);
+            let start = x;
+            let mut run = symbol.to_string();
+            x += 1;
+            if plain(start) {
+                while x < cols && plain(x) && look(x) == (fg.clone(), bold) {
                     run.push_str(buffer[(x, y)].symbol());
                     x += 1;
                 }
-                if run.trim().is_empty() {
-                    continue;
+            } else {
+                // A wide glyph owns the blank cells that follow it.
+                while x < cols && buffer[(x, y)].symbol().is_empty() {
+                    x += 1;
                 }
-                let weight = if bold { " font-weight=\"600\"" } else { "" };
-                out.push_str(&format!(
-                    "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"{fg}\"{weight} \
-                     textLength=\"{:.1}\" lengthAdjust=\"spacing\" xml:space=\"preserve\">{}</text>\n",
-                    PAD + start as f32 * CELL_W,
-                    PAD + y as f32 * CELL_H + CELL_H * 0.74,
-                    (x - start) as f32 * CELL_W,
-                    escape(&run),
-                ));
             }
+            let weight = if bold { " font-weight=\"600\"" } else { "" };
+            out.push_str(&format!(
+                "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"{fg}\"{weight} \
+                 textLength=\"{:.1}\" lengthAdjust=\"spacing\" xml:space=\"preserve\">{}</text>\n",
+                left + start as f32 * CELL_W,
+                top + y as f32 * CELL_H + CELL_H * 0.74,
+                (x - start) as f32 * CELL_W,
+                escape(&run),
+            ));
         }
-        out.push_str("</svg>\n");
         out
     }
 
@@ -718,32 +747,7 @@ mod pictures {
                 }
             }
 
-            let mut x = 0;
-            while x < cols {
-                let look = |at: u16| {
-                    let cell = &buffer[(at, y)];
-                    (hex(cell.fg, &ink), cell.modifier.contains(Modifier::BOLD))
-                };
-                let (fg, bold) = look(x);
-                let start = x;
-                let mut run = String::new();
-                while x < cols && look(x) == (fg.clone(), bold) {
-                    run.push_str(buffer[(x, y)].symbol());
-                    x += 1;
-                }
-                if run.trim().is_empty() {
-                    continue;
-                }
-                let weight = if bold { " font-weight=\"600\"" } else { "" };
-                out.push_str(&format!(
-                    "<text x=\"{:.1}\" y=\"{:.1}\" fill=\"{fg}\"{weight} \
-                     textLength=\"{:.1}\" lengthAdjust=\"spacing\" xml:space=\"preserve\">{}</text>\n",
-                    content_x + start as f32 * CELL_W,
-                    content_y + y as f32 * CELL_H + CELL_H * 0.74,
-                    (x - start) as f32 * CELL_W,
-                    escape(&run),
-                ));
-            }
+            out.push_str(&glyphs(&buffer, cols, y, content_x, content_y, &ink));
         }
         out.push_str("</g>\n</svg>\n");
         out
