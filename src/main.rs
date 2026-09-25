@@ -73,7 +73,11 @@ enum Sub {
         audio: AudioArgs,
     },
     /// List the audio devices tincan can see.
-    Devices,
+    Devices {
+        /// Include what the device picker leaves out: ALSA plugins and each card's raw PCMs.
+        #[arg(long)]
+        all: bool,
+    },
     /// Generate shell auto-completion scripts.
     Completions {
         /// Shell to generate completions for.
@@ -191,8 +195,8 @@ async fn run(command: Sub) -> Result<()> {
             password,
             audio,
         } => join(room, name, password, audio).await,
-        Sub::Devices => {
-            println!("{}", audio::device::describe_devices()?);
+        Sub::Devices { all } => {
+            println!("{}", audio::device::describe_devices(all)?);
             Ok(())
         }
         Sub::Completions { shell } => {
