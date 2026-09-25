@@ -4311,6 +4311,7 @@ dependencies = [
  "crossterm",
  "data-encoding",
  "iroh",
+ "libc",
  "n0-future",
  "nnnoiseless",
  "postcard",
