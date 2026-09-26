@@ -24,7 +24,6 @@
 
 <p align="center">
   <a href="https://tincan.bilalyazicioglu.com">Website</a> ·
-  <a href="#why-tincan-the-unblockable-discord-alternative">Why tincan</a> ·
   <a href="#install">Install</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#shortcuts">Shortcuts</a> ·
@@ -63,21 +62,16 @@ Everything underneath that — the audio screen and its noise floor, turning one
 down without deafening the room, and the sounds the interface makes — is written up in
 the [interface design notes](docs/wiki/9-Interface-Design.md), with the background story in the developer blog ([English](https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal) / [Türkçe](https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet)).
 
-## Why tincan? (The Unblockable Discord Alternative)
+## Why tincan
 
-When Discord is blocked, experiencing outages, or restricted on corporate/campus networks, **tincan** keeps your voice line open. Because tincan operates on a pure serverless peer-to-peer (P2P) architecture, there is **no central server or domain for ISPs and firewalls to blacklist**.
+Discord runs on Discord's servers, and TeamSpeak or Mumble need someone to run one.
+tincan needs neither: whoever opens a room hosts it, and the invite code is its address.
+There is no account to make, nothing to rent and nothing to keep running.
 
-| Feature | **tincan** | **Discord** | **TeamSpeak / Mumble** |
-| :--- | :--- | :--- | :--- |
-| **Architecture** | **Serverless P2P** | Centralized Servers | Dedicated Server Required |
-| **Censorship / Ban Resistant** | **Yes (Direct QUIC)** | No (Easy DNS/IP Ban) | Partial (Server IP can be blocked) |
-| **VPN Needed in Blocked Regions** | **No (0 VPN)** | Yes (Mandatory) | No |
-| **Account & Registration** | **None (Instant code)** | Required (Email/Phone) | Optional |
-| **Memory Footprint** | **< 20 MB RAM** | 500+ MB (Electron) | ~50 MB |
-| **Voice Encryption** | **End-to-End (QUIC + Argon2id)** | Decrypted on Server | Configurable |
-| **License** | **MIT (100% Open Source)** | Proprietary | Mixed / Open Source |
-
-> **Discord Erişim Engeli & Kısıtlamalar:** Discord'un erişime engelli olduğu yerlerde VPN kurmadan, sunucu kiralamadan veya hesap açmadan doğrudan arkadaşlarınızla konuşabilirsiniz. Tek yapmanız gereken odayı açıp davet kodunu iletmektir.
+That is not the same as having no infrastructure. To find each other and get through
+routers, peers use public relays and a lookup service run by Number Zero, and a network
+that blocks those can stop new connections. [How it works](#how-it-works) says what they
+do and what they can see, and [Known limits](#known-limits) says what happens without them.
 
 ## Install
 
