@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const crypto = require('crypto');
 const { spawnSync, execSync } = require('child_process');
 
 const pkg = require('../package.json');
@@ -25,7 +26,7 @@ const target = PLATFORMS[key];
 if (!target) {
   console.error(`\x1b[31m[tincan]\x1b[0m Unsupported platform: ${key}.`);
   console.error(`Prebuilt binaries are available for macOS (arm64, x64), Linux (x64, arm64) and Windows (x64).`);
-  console.error(`To build from source on this platform, run: cargo install tincan`);
+  console.error(`To build from source on this platform, run: cargo install tincan-chat`);
   process.exit(1);
 }
 
@@ -53,7 +54,32 @@ function getCacheDir() {
 const cacheDir = getCacheDir();
 const binaryPath = path.join(cacheDir, binaryName);
 
-function downloadAndExtract(url, destBinary) {
+// Every release asset ships with a `<asset>.sha256` beside it, written by the
+// release workflow as `<hex digest>  <file name>`.
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return fetchText(res.headers.location).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+      }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => resolve(body));
+    }).on('error', reject);
+  });
+}
+
+function sha256File(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function downloadAndExtract(url, destBinary, expectedSha) {
   return new Promise((resolve, reject) => {
     const tempArchive = path.join(cacheDir, `download-${Date.now()}.${archiveExt}`);
     const file = fs.createWriteStream(tempArchive);
@@ -71,6 +97,10 @@ function downloadAndExtract(url, destBinary) {
         file.on('finish', () => {
           file.close(() => {
             try {
+              const actualSha = sha256File(tempArchive);
+              if (actualSha !== expectedSha) {
+                throw new Error(`Checksum mismatch for ${url}: expected ${expectedSha}, got ${actualSha}`);
+              }
               const extractDir = path.join(cacheDir, `extract-${Date.now()}`);
               fs.mkdirSync(extractDir, { recursive: true });
               if (isWindows) {
@@ -118,7 +148,11 @@ async function main() {
     const url = `https://github.com/bilalyazicioglu/tincan-cli/releases/download/v${VERSION}/tincan-${target}.${archiveExt}`;
     process.stderr.write(`\x1b[36m[tincan]\x1b[0m Downloading tincan v${VERSION} for ${key}...\n`);
     try {
-      await downloadAndExtract(url, binaryPath);
+      const expectedSha = (await fetchText(`${url}.sha256`)).trim().split(/\s+/)[0].toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(expectedSha)) {
+        throw new Error(`Malformed checksum file at ${url}.sha256`);
+      }
+      await downloadAndExtract(url, binaryPath, expectedSha);
     } catch (err) {
       console.error(`\x1b[31m[tincan]\x1b[0m Download failed: ${err.message}`);
       process.exit(1);

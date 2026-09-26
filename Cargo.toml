@@ -4,7 +4,7 @@
 # the repository and the npm package stay as they are, which is what the [lib]
 # and [[bin]] sections below pin down.
 name = "tincan-chat"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.91"
 description = "Serverless peer-to-peer voice and text chat for your terminal"
@@ -53,6 +53,9 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "io-std",
 toml = "0.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
 
 # Argon2 is unacceptably slow in a debug build; optimize just that package.
 [profile.dev.package.argon2]

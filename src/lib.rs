@@ -16,6 +16,7 @@ pub mod logo;
 pub mod passphrase;
 pub mod proto;
 pub mod room;
+pub mod stderr;
 
 pub mod net;
 pub mod ui;

@@ -533,6 +533,68 @@ fn pick(mut devices: impl Iterator<Item = cpal::Device>, wanted: &str) -> Option
     })
 }
 
+/// The devices worth offering someone choosing a microphone or a speaker.
+///
+/// On Linux, cpal hands back every PCM ALSA knows of. Most are plugins, not devices:
+/// `null` ("Discard all samples"), three sample-rate converters, upmix and downmix,
+/// the OSS and JACK bridges. Each card also appears several times over, as `hw`,
+/// `plughw`, `front`, one `surround*` per speaker layout, `dmix` and `dsnoop`.
+/// Listing them buried the two or three real choices, and opening each to ask for its
+/// format made alsa-lib complain on stderr about every one that would not open.
+///
+/// So they are left out before anything is opened. What stays is `default`, the sound
+/// servers, each card once, and anything ALSA's own configuration does not ship, such
+/// as a PCM someone defined in their `.asoundrc`. A device can still be named with
+/// `--input` or `--output`, listed or not.
+fn worth_showing(devices: impl Iterator<Item = cpal::Device>) -> Vec<cpal::Device> {
+    let devices: Vec<_> = devices.collect();
+    let names: Vec<(String, Option<String>)> = devices
+        .iter()
+        .map(|device| match device.description() {
+            Ok(desc) => (desc.name().to_string(), desc.driver().map(str::to_string)),
+            Err(_) => (String::new(), None),
+        })
+        .collect();
+    let keep = keep(&names);
+    devices
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(device, keep)| keep.then_some(device))
+        .collect()
+}
+
+/// Which of `(name, ALSA PCM)` to list. Only ALSA names a PCM, so off Linux nothing
+/// is dropped but a repeated name.
+fn keep(devices: &[(String, Option<String>)]) -> Vec<bool> {
+    let mut seen = std::collections::HashSet::new();
+    devices
+        .iter()
+        .map(|(name, pcm)| {
+            let wanted = !cfg!(target_os = "linux") || pcm.as_deref().is_none_or(alsa_worth_showing);
+            // A card reached as `sysdefault` and again as `plughw` has one name, and
+            // picking by name would only ever find the first.
+            wanted && seen.insert(name.clone())
+        })
+        .collect()
+}
+
+/// Whether an ALSA PCM (`plughw:CARD=PCH,DEV=0`, `pulse`, …) is a device to offer.
+fn alsa_worth_showing(pcm: &str) -> bool {
+    let kind = pcm.split(':').next().unwrap_or(pcm);
+    let plugin = matches!(
+        kind,
+        "null" | "lavrate" | "samplerate" | "speexrate" | "speex" | "upmix" | "vdownmix"
+            | "oss" | "jack" | "a52" | "usbstream" | "equal"
+    );
+    // Each card's other faces: the raw device without conversions, one PCM per speaker
+    // layout and digital output, and the halves of the mixing default already wraps.
+    let face = kind == "hw"
+        || kind == "front"
+        || kind.starts_with("surround")
+        || matches!(kind, "iec958" | "spdif" | "dmix" | "dsnoop" | "rear" | "center_lfe" | "side");
+    !plugin && !face
+}
+
 /// Lists all available input devices.
 pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>> {
     let host = cpal::default_host();
@@ -542,7 +604,7 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>> {
 
     let mut list = Vec::new();
     if let Ok(devices) = host.input_devices() {
-        for dev in devices {
+        for dev in worth_showing(devices) {
             let name = dev
                 .description()
                 .map(|d| d.name().to_string())
@@ -574,7 +636,7 @@ pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>> {
 
     let mut list = Vec::new();
     if let Ok(devices) = host.output_devices() {
-        for dev in devices {
+        for dev in worth_showing(devices) {
             let name = dev
                 .description()
                 .map(|d| d.name().to_string())
@@ -639,8 +701,9 @@ pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
     Ok((devices, capture_rx, playback_tx, health))
 }
 
-/// Lists the system's audio devices (`tincan devices`).
-pub fn describe_devices() -> Result<String> {
+/// Lists the system's audio devices (`tincan devices`). `all` includes what the
+/// interface leaves out: ALSA's plugins and each card's raw and per-channel-layout PCMs.
+pub fn describe_devices(all: bool) -> Result<String> {
     let host = cpal::default_host();
     let mut report = String::new();
 
@@ -651,12 +714,15 @@ pub fn describe_devices() -> Result<String> {
         .default_output_device()
         .and_then(|d| d.description().ok().map(|d| d.name().to_string()));
 
+    let shown = |devices: Vec<cpal::Device>| {
+        if all { devices } else { worth_showing(devices.into_iter()) }
+    };
     report.push_str("\n  MICROPHONES\n");
-    for device in host.input_devices()? {
+    for device in shown(host.input_devices()?.collect()) {
         report.push_str(&line(&device, &default_in, true));
     }
     report.push_str("\n  SPEAKERS\n");
-    for device in host.output_devices()? {
+    for device in shown(host.output_devices()?.collect()) {
         report.push_str(&line(&device, &default_out, false));
     }
     report.push_str("\n  Every rate is resampled — 16 kHz Bluetooth headsets included.\n");
@@ -685,6 +751,166 @@ fn line(device: &cpal::Device, default: &Option<String>, input: bool) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PipeWire laptop as ALSA describes it: hints first, then the cards cpal adds.
+    #[cfg(target_os = "linux")]
+    fn pipewire_laptop() -> Vec<(String, Option<String>)> {
+        [
+            ("Discard all samples (playback) or generate zero samples (capture)", "null"),
+            ("Rate Converter Plugin Using Libav/FFmpeg Library", "lavrate"),
+            ("Rate Converter Plugin Using Samplerate Library", "samplerate"),
+            ("Rate Converter Plugin Using Speex Resampler", "speexrate"),
+            ("JACK Audio Connection Kit", "jack"),
+            ("Open Sound System", "oss"),
+            ("PipeWire Sound Server", "pipewire"),
+            ("PulseAudio Sound Server", "pulse"),
+            ("Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)", "speex"),
+            ("Plugin for channel upmix (4,6,8)", "upmix"),
+            ("Plugin for channel downmix (stereo) with a simple spacialization", "vdownmix"),
+            ("Default ALSA Output (currently PipeWire Media Server)", "default"),
+            ("HDA Intel PCH, ALC257 Analog", "sysdefault:CARD=PCH"),
+            ("HDA Intel PCH, ALC257 Analog", "front:CARD=PCH,DEV=0"),
+            ("HDA Intel PCH, ALC257 Analog", "surround51:CARD=PCH,DEV=0"),
+            ("HDA Intel PCH, HDMI 0", "hdmi:CARD=PCH,DEV=0"),
+            ("HDA Intel PCH, ALC257 Analog", "dmix:CARD=PCH,DEV=0"),
+            ("HDA Intel PCH, ALC257 Analog", "hw:CARD=PCH,DEV=0"),
+            ("HDA Intel PCH, ALC257 Analog", "plughw:CARD=PCH,DEV=0"),
+            ("USB Audio, USB Audio", "hw:CARD=Headset,DEV=0"),
+            ("USB Audio, USB Audio", "plughw:CARD=Headset,DEV=0"),
+            ("My loopback", "myloop"),
+        ]
+        .into_iter()
+        .map(|(name, pcm)| (name.to_string(), Some(pcm.to_string())))
+        .collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_list_is_the_sound_servers_and_each_card_once() {
+        let devices = pipewire_laptop();
+        let shown: Vec<&str> = devices
+            .iter()
+            .zip(keep(&devices))
+            .filter(|(_, keep)| *keep)
+            .map(|((_, pcm), _)| pcm.as_deref().unwrap())
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "pipewire",
+                "pulse",
+                "default",
+                "sysdefault:CARD=PCH",
+                "hdmi:CARD=PCH,DEV=0",
+                "plughw:CARD=Headset,DEV=0",
+                "myloop",
+            ]
+        );
+    }
+
+    /// The speakers of the desktop in #148, with ALSA's hints in the order it gives them
+    /// (it hides `hw`, `plughw` and `dmix` from hints by default) and then the numbered
+    /// `hw` and `plughw` pairs cpal adds for every card.
+    #[cfg(target_os = "linux")]
+    fn desktop_with_hdmi_and_usb() -> Vec<(String, Option<String>)> {
+        let mut devices = vec![
+            ("Discard all samples (playback) or generate zero samples (capture)", "null".to_string()),
+            ("Rate Converter Plugin Using Libav/FFmpeg Library", "lavrate".into()),
+            ("Rate Converter Plugin Using Samplerate Library", "samplerate".into()),
+            ("Rate Converter Plugin Using Speex Resampler", "speexrate".into()),
+            ("JACK Audio Connection Kit", "jack".into()),
+            ("Open Sound System", "oss".into()),
+            ("PipeWire Sound Server", "pipewire".into()),
+            ("PulseAudio Sound Server", "pulse".into()),
+            ("Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)", "speex".into()),
+            ("Plugin for channel upmix (4,6,8)", "upmix".into()),
+            ("Plugin for channel downmix (stereo) with a simple spacialization", "vdownmix".into()),
+            ("Default ALSA Output (currently PulseAudio Sound Server)", "default".into()),
+        ];
+        let analog = "HDA Intel PCH, ALC887-VD Analog";
+        devices.push((analog, "sysdefault:CARD=PCH".into()));
+        devices.push((analog, "front:CARD=PCH,DEV=0".into()));
+        for layout in ["21", "40", "41", "50", "51", "71"] {
+            devices.push((analog, format!("surround{layout}:CARD=PCH,DEV=0")));
+        }
+        devices.push(("HDA Intel PCH, ALC887-VD Digital", "iec958:CARD=PCH,DEV=0".into()));
+        let hdmi = ["HDA Intel PCH, HDMI 0", "HDA Intel PCH, HDMI 1", "HDA Intel PCH, HDMI 2"];
+        for (n, name) in hdmi.iter().enumerate() {
+            devices.push((name, format!("hdmi:CARD=PCH,DEV={n}")));
+        }
+        devices.push(("HDA Intel PCH", "usbstream:CARD=PCH".into()));
+        let nvidia = ["HDA NVidia, 27G4", "HDA NVidia, HDMI 1", "HDA NVidia, HDMI 2", "HDA NVidia, HDMI 3"];
+        for (n, name) in nvidia.iter().enumerate() {
+            devices.push((name, format!("hdmi:CARD=NVidia,DEV={n}")));
+        }
+        devices.push(("HDA NVidia", "usbstream:CARD=NVidia".into()));
+        devices.push(("HP Webcam HD 4310", "usbstream:CARD=U0x4f20x2e2".into()));
+        let usb = "X-Rest 7.1, USB Audio";
+        devices.push((usb, "sysdefault:CARD=X71".into()));
+        devices.push((usb, "front:CARD=X71,DEV=0".into()));
+        for layout in ["21", "40", "41", "50", "51", "71"] {
+            devices.push((usb, format!("surround{layout}:CARD=X71,DEV=0")));
+        }
+        devices.push((usb, "iec958:CARD=X71,DEV=0".into()));
+        devices.push(("X-Rest 7.1", "usbstream:CARD=X71".into()));
+        let numbered = [
+            (0, 0, analog),
+            (0, 1, "HDA Intel PCH, ALC887-VD Digital"),
+            (0, 3, hdmi[0]),
+            (0, 7, hdmi[1]),
+            (0, 8, hdmi[2]),
+            (1, 3, nvidia[0]),
+            (1, 7, nvidia[1]),
+            (1, 8, nvidia[2]),
+            (1, 9, nvidia[3]),
+            (3, 0, usb),
+        ];
+        for (card, dev, name) in numbered {
+            devices.push((name, format!("hw:CARD={card},DEV={dev}")));
+            devices.push((name, format!("plughw:CARD={card},DEV={dev}")));
+        }
+        devices.into_iter().map(|(name, pcm)| (name.to_string(), Some(pcm))).collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_desktop_lists_each_output_once() {
+        let devices = desktop_with_hdmi_and_usb();
+        let shown: Vec<&str> = devices
+            .iter()
+            .zip(keep(&devices))
+            .filter(|(_, keep)| *keep)
+            .map(|((name, _), _)| name.as_str())
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "PipeWire Sound Server",
+                "PulseAudio Sound Server",
+                "Default ALSA Output (currently PulseAudio Sound Server)",
+                "HDA Intel PCH, ALC887-VD Analog",
+                "HDA Intel PCH, HDMI 0",
+                "HDA Intel PCH, HDMI 1",
+                "HDA Intel PCH, HDMI 2",
+                "HDA NVidia, 27G4",
+                "HDA NVidia, HDMI 1",
+                "HDA NVidia, HDMI 2",
+                "HDA NVidia, HDMI 3",
+                "X-Rest 7.1, USB Audio",
+                "HDA Intel PCH, ALC887-VD Digital",
+            ]
+        );
+    }
+
+    #[test]
+    fn without_alsa_only_a_repeated_name_is_dropped() {
+        let devices = vec![
+            ("MacBook Pro Microphone".to_string(), None),
+            ("AirPods".to_string(), None),
+            ("AirPods".to_string(), None),
+        ];
+        assert_eq!(keep(&devices), [true, true, false]);
+    }
 
     /// Stands in for the sound card: `present` is what is plugged in, and `None` asks
     /// for the default the way `switch_*` does.

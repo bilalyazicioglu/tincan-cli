@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://tincan.bilalyazicioglu.com"><img src="https://img.shields.io/badge/website-tincan.bilalyazicioglu.com-3ec5bc?style=flat-square" alt="Website"></a>
   <a href="https://github.com/bilalyazicioglu/tincan-cli/actions"><img src="https://img.shields.io/github/actions/workflow/status/bilalyazicioglu/tincan-cli/ci.yml?branch=main&style=flat-square&logo=github&label=build" alt="Build Status"></a>
   <a href="https://crates.io/crates/tincan-chat"><img src="https://img.shields.io/crates/v/tincan-chat?style=flat-square&logo=rust&label=crates.io" alt="crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
@@ -22,6 +23,8 @@
 </p>
 
 <p align="center">
+  <a href="https://tincan.bilalyazicioglu.com">Website</a> ·
+  <a href="#why-tincan-the-unblockable-discord-alternative">Why tincan</a> ·
   <a href="#install">Install</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#shortcuts">Shortcuts</a> ·
@@ -59,6 +62,22 @@ full-screen terminal is never a wall of nothing.
 Everything underneath that — the audio screen and its noise floor, turning one person
 down without deafening the room, and the sounds the interface makes — is written up in
 the [interface design notes](docs/wiki/9-Interface-Design.md), with the background story in the developer blog ([English](https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal) / [Türkçe](https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet)).
+
+## Why tincan? (The Unblockable Discord Alternative)
+
+When Discord is blocked, experiencing outages, or restricted on corporate/campus networks, **tincan** keeps your voice line open. Because tincan operates on a pure serverless peer-to-peer (P2P) architecture, there is **no central server or domain for ISPs and firewalls to blacklist**.
+
+| Feature | **tincan** | **Discord** | **TeamSpeak / Mumble** |
+| :--- | :--- | :--- | :--- |
+| **Architecture** | **Serverless P2P** | Centralized Servers | Dedicated Server Required |
+| **Censorship / Ban Resistant** | **Yes (Direct QUIC)** | No (Easy DNS/IP Ban) | Partial (Server IP can be blocked) |
+| **VPN Needed in Blocked Regions** | **No (0 VPN)** | Yes (Mandatory) | No |
+| **Account & Registration** | **None (Instant code)** | Required (Email/Phone) | Optional |
+| **Memory Footprint** | **< 20 MB RAM** | 500+ MB (Electron) | ~50 MB |
+| **Voice Encryption** | **End-to-End (QUIC + Argon2id)** | Decrypted on Server | Configurable |
+| **License** | **MIT (100% Open Source)** | Proprietary | Mixed / Open Source |
+
+> **Discord Erişim Engeli & Kısıtlamalar:** Discord'un erişime engelli olduğu yerlerde VPN kurmadan, sunucu kiralamadan veya hesap açmadan doğrudan arkadaşlarınızla konuşabilirsiniz. Tek yapmanız gereken odayı açıp davet kodunu iletmektir.
 
 ## Install
 
@@ -188,10 +207,18 @@ the passphrase, which keeps it out of the process list. Case, spaces, dashes and
 underscores are forgiven in both room names and passphrases: `Chestnut Ferry Lens Moss`
 works.
 
+A join makes one attempt. When the host may not be up yet — a script that starts both,
+or a host restarting under the same name — `--retry` keeps trying for that many seconds:
+
+```bash
+tincan join lobby --name bob --retry 60
+```
+
 **See your audio devices:**
 
 ```bash
-tincan devices
+tincan devices          # what the device picker offers
+tincan devices --all    # on Linux, ALSA's plugins and each card's raw PCMs too
 ```
 
 **Shell auto-completions:**
@@ -214,6 +241,7 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | `--input`          | Microphone to use (a distinctive part of the name is enough)   |
 | `--output`         | Speaker to use                                                 |
 | `--ptt`            | Push-to-talk: the microphone only opens with F4                |
+| `--retry`          | `join`: keep trying to reach the room for this many seconds    |
 
 ### Shortcuts
 
@@ -454,6 +482,15 @@ decisions and are not used in the product.
 - **A wrong room name or passphrase looks like a closed room.** It derives a different
   address, where nobody is listening, so tincan cannot tell you which of the two was
   wrong.
+- **A room that has just closed can take a moment to say so.** Leaving a room you host
+  takes its address record down, and someone who joins after that is told the room is
+  gone in about 3 s. Not always: n0's lookups need a moment to catch up, so a join in
+  the same instant still reaches for the old address and waits out iroh's 30 s
+  connection timeout, and in our measurements so did about one in ten a few seconds
+  later. A host that stops any other way — killed, crashed, cut off — leaves the record
+  up, with the same 30 s wait. A host restarted under the same name and passphrase is
+  reached as soon as it is up, since its new record replaces the old one; `--retry`
+  covers the gap before that.
 - **Scale is 2–6 people.** In a mesh everyone sends to everyone; past 8 you would need
   the coordinator to mix the audio (an SFU).
 - **Push-to-talk is not hold-to-talk.** Terminals generally do not report key-release
