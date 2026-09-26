@@ -808,6 +808,100 @@ mod tests {
         );
     }
 
+    /// The speakers of the desktop in #148, with ALSA's hints in the order it gives them
+    /// (it hides `hw`, `plughw` and `dmix` from hints by default) and then the numbered
+    /// `hw` and `plughw` pairs cpal adds for every card.
+    #[cfg(target_os = "linux")]
+    fn desktop_with_hdmi_and_usb() -> Vec<(String, Option<String>)> {
+        let mut devices = vec![
+            ("Discard all samples (playback) or generate zero samples (capture)", "null".to_string()),
+            ("Rate Converter Plugin Using Libav/FFmpeg Library", "lavrate".into()),
+            ("Rate Converter Plugin Using Samplerate Library", "samplerate".into()),
+            ("Rate Converter Plugin Using Speex Resampler", "speexrate".into()),
+            ("JACK Audio Connection Kit", "jack".into()),
+            ("Open Sound System", "oss".into()),
+            ("PipeWire Sound Server", "pipewire".into()),
+            ("PulseAudio Sound Server", "pulse".into()),
+            ("Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)", "speex".into()),
+            ("Plugin for channel upmix (4,6,8)", "upmix".into()),
+            ("Plugin for channel downmix (stereo) with a simple spacialization", "vdownmix".into()),
+            ("Default ALSA Output (currently PulseAudio Sound Server)", "default".into()),
+        ];
+        let analog = "HDA Intel PCH, ALC887-VD Analog";
+        devices.push((analog, "sysdefault:CARD=PCH".into()));
+        devices.push((analog, "front:CARD=PCH,DEV=0".into()));
+        for layout in ["21", "40", "41", "50", "51", "71"] {
+            devices.push((analog, format!("surround{layout}:CARD=PCH,DEV=0")));
+        }
+        devices.push(("HDA Intel PCH, ALC887-VD Digital", "iec958:CARD=PCH,DEV=0".into()));
+        let hdmi = ["HDA Intel PCH, HDMI 0", "HDA Intel PCH, HDMI 1", "HDA Intel PCH, HDMI 2"];
+        for (n, name) in hdmi.iter().enumerate() {
+            devices.push((name, format!("hdmi:CARD=PCH,DEV={n}")));
+        }
+        devices.push(("HDA Intel PCH", "usbstream:CARD=PCH".into()));
+        let nvidia = ["HDA NVidia, 27G4", "HDA NVidia, HDMI 1", "HDA NVidia, HDMI 2", "HDA NVidia, HDMI 3"];
+        for (n, name) in nvidia.iter().enumerate() {
+            devices.push((name, format!("hdmi:CARD=NVidia,DEV={n}")));
+        }
+        devices.push(("HDA NVidia", "usbstream:CARD=NVidia".into()));
+        devices.push(("HP Webcam HD 4310", "usbstream:CARD=U0x4f20x2e2".into()));
+        let usb = "X-Rest 7.1, USB Audio";
+        devices.push((usb, "sysdefault:CARD=X71".into()));
+        devices.push((usb, "front:CARD=X71,DEV=0".into()));
+        for layout in ["21", "40", "41", "50", "51", "71"] {
+            devices.push((usb, format!("surround{layout}:CARD=X71,DEV=0")));
+        }
+        devices.push((usb, "iec958:CARD=X71,DEV=0".into()));
+        devices.push(("X-Rest 7.1", "usbstream:CARD=X71".into()));
+        let numbered = [
+            (0, 0, analog),
+            (0, 1, "HDA Intel PCH, ALC887-VD Digital"),
+            (0, 3, hdmi[0]),
+            (0, 7, hdmi[1]),
+            (0, 8, hdmi[2]),
+            (1, 3, nvidia[0]),
+            (1, 7, nvidia[1]),
+            (1, 8, nvidia[2]),
+            (1, 9, nvidia[3]),
+            (3, 0, usb),
+        ];
+        for (card, dev, name) in numbered {
+            devices.push((name, format!("hw:CARD={card},DEV={dev}")));
+            devices.push((name, format!("plughw:CARD={card},DEV={dev}")));
+        }
+        devices.into_iter().map(|(name, pcm)| (name.to_string(), Some(pcm))).collect()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_desktop_lists_each_output_once() {
+        let devices = desktop_with_hdmi_and_usb();
+        let shown: Vec<&str> = devices
+            .iter()
+            .zip(keep(&devices))
+            .filter(|(_, keep)| *keep)
+            .map(|((name, _), _)| name.as_str())
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "PipeWire Sound Server",
+                "PulseAudio Sound Server",
+                "Default ALSA Output (currently PulseAudio Sound Server)",
+                "HDA Intel PCH, ALC887-VD Analog",
+                "HDA Intel PCH, HDMI 0",
+                "HDA Intel PCH, HDMI 1",
+                "HDA Intel PCH, HDMI 2",
+                "HDA NVidia, 27G4",
+                "HDA NVidia, HDMI 1",
+                "HDA NVidia, HDMI 2",
+                "HDA NVidia, HDMI 3",
+                "X-Rest 7.1, USB Audio",
+                "HDA Intel PCH, ALC887-VD Digital",
+            ]
+        );
+    }
+
     #[test]
     fn without_alsa_only_a_repeated_name_is_dropped() {
         let devices = vec![

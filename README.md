@@ -24,6 +24,7 @@
 
 <p align="center">
   <a href="https://tincan.bilalyazicioglu.com">Website</a> ·
+  <a href="#why-tincan-the-unblockable-discord-alternative">Why tincan</a> ·
   <a href="#install">Install</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#shortcuts">Shortcuts</a> ·
@@ -61,6 +62,22 @@ full-screen terminal is never a wall of nothing.
 Everything underneath that — the audio screen and its noise floor, turning one person
 down without deafening the room, and the sounds the interface makes — is written up in
 the [interface design notes](docs/wiki/9-Interface-Design.md), with the background story in the developer blog ([English](https://bilalyazicioglu.com/blog/tincan-serverless-voice-chat-in-terminal) / [Türkçe](https://bilalyazicioglu.com/blog/tincan-terminalde-sesli-sohbet)).
+
+## Why tincan? (The Unblockable Discord Alternative)
+
+When Discord is blocked, experiencing outages, or restricted on corporate/campus networks, **tincan** keeps your voice line open. Because tincan operates on a pure serverless peer-to-peer (P2P) architecture, there is **no central server or domain for ISPs and firewalls to blacklist**.
+
+| Feature | **tincan** | **Discord** | **TeamSpeak / Mumble** |
+| :--- | :--- | :--- | :--- |
+| **Architecture** | **Serverless P2P** | Centralized Servers | Dedicated Server Required |
+| **Censorship / Ban Resistant** | **Yes (Direct QUIC)** | No (Easy DNS/IP Ban) | Partial (Server IP can be blocked) |
+| **VPN Needed in Blocked Regions** | **No (0 VPN)** | Yes (Mandatory) | No |
+| **Account & Registration** | **None (Instant code)** | Required (Email/Phone) | Optional |
+| **Memory Footprint** | **< 20 MB RAM** | 500+ MB (Electron) | ~50 MB |
+| **Voice Encryption** | **End-to-End (QUIC + Argon2id)** | Decrypted on Server | Configurable |
+| **License** | **MIT (100% Open Source)** | Proprietary | Mixed / Open Source |
+
+> **Discord Erişim Engeli & Kısıtlamalar:** Discord'un erişime engelli olduğu yerlerde VPN kurmadan, sunucu kiralamadan veya hesap açmadan doğrudan arkadaşlarınızla konuşabilirsiniz. Tek yapmanız gereken odayı açıp davet kodunu iletmektir.
 
 ## Install
 
