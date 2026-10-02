@@ -1,6 +1,6 @@
 {
   "name": "tincan-cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Serverless peer-to-peer voice and text chat for your terminal",
   "bin": {
     "tincan": "bin/tincan.js"
@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/bilalyazicioglu/tincan-cli/issues"
   },
-  "homepage": "https://github.com/bilalyazicioglu/tincan-cli#readme",
+  "homepage": "https://tincan.rs",
   "keywords": [
     "voice",
     "chat",

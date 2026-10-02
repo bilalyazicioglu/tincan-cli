@@ -6,12 +6,12 @@ mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use anyhow::Result;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers, MouseEventKind,
+    DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEventKind,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -141,7 +141,11 @@ impl SelfChime {
         // Shutting your ears closes the microphone with them. That is one action, so
         // it makes one sound; the mute that came along is not news.
         if deafened != was_deafened {
-            return Some(if deafened { Blip::EarsOff } else { Blip::EarsOn });
+            return Some(if deafened {
+                Blip::EarsOff
+            } else {
+                Blip::EarsOn
+            });
         }
         if muted != was_muted {
             return Some(if muted { Blip::MicOff } else { Blip::MicOn });
@@ -174,11 +178,7 @@ impl JoinChime {
 }
 
 /// Wires the session to the screen and runs until the user quits.
-pub async fn run(
-    mut session: Session,
-    voice: Option<VoiceControl>,
-    ptt_mode: bool,
-) -> Result<()> {
+pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bool) -> Result<()> {
     let theme = Theme::from_env();
     let config = Config::load();
     let mut app = App::new(session.me, session.invite_code.clone());
@@ -218,8 +218,7 @@ pub async fn run(
     let mut own_state = SelfChime::default();
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
 
-    let mut startup_notes: Vec<String> =
-        voice.as_ref().map(|v| v.missing()).unwrap_or_default();
+    let mut startup_notes: Vec<String> = voice.as_ref().map(|v| v.missing()).unwrap_or_default();
     // A device that stays gone would otherwise say so once a second, forever.
     let mut last_audio_note: Option<String> = None;
 
@@ -302,7 +301,7 @@ pub async fn run(
                         let _ = session.commands.send(Command::SetAfk(true)).await;
                     }
                     if let Some(voice) = voice.as_ref() {
-                        app.link = voice.mesh.link_status().await;
+                        app.take_link(voice.mesh.link_status().await);
                         app.note_dropouts(voice.health.underruns());
 
                         // The first tick is the earliest point the roster has landed,
@@ -611,7 +610,9 @@ async fn handle_key(
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
-                                        app.settings_error = Some(format!("could not switch the microphone: {err:#}"));
+                                        app.settings_error = Some(format!(
+                                            "could not switch the microphone: {err:#}"
+                                        ));
                                     }
                                 }
                             }
@@ -639,7 +640,8 @@ async fn handle_key(
                                         let _ = cfg.save();
                                     }
                                     Err(err) => {
-                                        app.settings_error = Some(format!("could not switch the speaker: {err:#}"));
+                                        app.settings_error =
+                                            Some(format!("could not switch the speaker: {err:#}"));
                                     }
                                 }
                             }
@@ -755,7 +757,11 @@ async fn handle_key(
         KeyCode::Down => app.select_peer(true),
         KeyCode::Up => app.select_peer(false),
         KeyCode::Left | KeyCode::Right if app.selected_peer.is_some() => {
-            let direction = if key.code == KeyCode::Right { 1.0 } else { -1.0 };
+            let direction = if key.code == KeyCode::Right {
+                1.0
+            } else {
+                -1.0
+            };
             app.nudge_peer_volume(direction * PEER_VOLUME_STEP);
             if let Some(v) = voice {
                 v.set_peer_gains(&app.peer_gains);
@@ -927,9 +933,7 @@ fn apply_local_audio_state(app: &App, voice: Option<&VoiceControl>) {
 }
 
 /// Waits for the next change in the speaker list.
-async fn next_speakers(
-    speaking: Option<&mut watch::Receiver<HashSet<PeerId>>>,
-) -> HashSet<PeerId> {
+async fn next_speakers(speaking: Option<&mut watch::Receiver<HashSet<PeerId>>>) -> HashSet<PeerId> {
     match speaking {
         Some(speaking) => {
             if speaking.changed().await.is_ok() {
@@ -959,9 +963,7 @@ async fn next_peer_levels(
 }
 
 /// Waits for the next microphone volume level update.
-async fn next_mic_level(
-    mic_level: Option<&mut watch::Receiver<f32>>,
-) -> f32 {
+async fn next_mic_level(mic_level: Option<&mut watch::Receiver<f32>>) -> f32 {
     match mic_level {
         Some(rx) => {
             if rx.changed().await.is_ok() {
@@ -1027,8 +1029,12 @@ mod tests {
         tx.send(HashMap::from([(PeerId([2; 32]), 3u8)])).unwrap();
         next_peer_levels(Some(&mut rx)).await;
 
-        let again = tokio::time::timeout(Duration::from_millis(150), next_peer_levels(Some(&mut rx)));
-        assert!(again.await.is_err(), "an unchanged meter must not redraw the screen");
+        let again =
+            tokio::time::timeout(Duration::from_millis(150), next_peer_levels(Some(&mut rx)));
+        assert!(
+            again.await.is_err(),
+            "an unchanged meter must not redraw the screen"
+        );
     }
 
     #[tokio::test]
@@ -1053,9 +1059,15 @@ mod tests {
         assert!(back.contains("speaker"), "{back}");
         assert!(back.contains("MacBook Pro Speakers"), "{back}");
 
-        let gone = describe(&Recovered { side: Side::Microphone, device: None });
+        let gone = describe(&Recovered {
+            side: Side::Microphone,
+            device: None,
+        });
         assert!(gone.contains("microphone"), "{gone}");
-        assert!(gone.contains("not reopen"), "silence about a dead microphone helps nobody: {gone}");
+        assert!(
+            gone.contains("not reopen"),
+            "silence about a dead microphone helps nobody: {gone}"
+        );
     }
 
     // ── Your own microphone and ears ────────────────────────────────────────
@@ -1064,7 +1076,11 @@ mod tests {
     fn the_first_roster_is_a_sync_and_says_nothing() {
         let mut chime = SelfChime::default();
         assert_eq!(chime.on_roster(false, false), None);
-        assert_eq!(chime.on_roster(true, false), Some(Blip::MicOff), "but the next change speaks");
+        assert_eq!(
+            chime.on_roster(true, false),
+            Some(Blip::MicOff),
+            "but the next change speaks"
+        );
     }
 
     #[test]
@@ -1089,7 +1105,11 @@ mod tests {
 
         // F5 deafens and mutes in the same breath, and the roster reports both at
         // once.
-        assert_eq!(chime.on_roster(true, true), Some(Blip::EarsOff), "one action, one sound");
+        assert_eq!(
+            chime.on_roster(true, true),
+            Some(Blip::EarsOff),
+            "one action, one sound"
+        );
         assert_eq!(chime.on_roster(false, false), Some(Blip::EarsOn));
     }
 
@@ -1097,7 +1117,11 @@ mod tests {
     fn a_roster_that_changes_nothing_about_you_is_silent() {
         let mut chime = SelfChime::default();
         chime.on_roster(true, false);
-        assert_eq!(chime.on_roster(true, false), None, "someone else moving is not your business");
+        assert_eq!(
+            chime.on_roster(true, false),
+            None,
+            "someone else moving is not your business"
+        );
     }
 
     // ── The welcome chime ───────────────────────────────────────────────────
@@ -1137,10 +1161,16 @@ mod tests {
         chime.on_roster(&app, None);
 
         let app = room(vec![peer(1, None), peer(2, None)]);
-        assert!(chime.on_roster(&app, None), "second peer arriving must chime");
+        assert!(
+            chime.on_roster(&app, None),
+            "second peer arriving must chime"
+        );
 
         let app = room(vec![peer(1, None), peer(2, None), peer(3, None)]);
-        assert!(chime.on_roster(&app, None), "third peer arriving must chime too");
+        assert!(
+            chime.on_roster(&app, None),
+            "third peer arriving must chime too"
+        );
     }
 
     #[test]
@@ -1150,7 +1180,10 @@ mod tests {
         chime.on_roster(&app, None);
 
         let app = room(vec![peer(1, None), peer(2, Some(3))]);
-        assert!(!chime.on_roster(&app, None), "a peer switching channel is not an arrival");
+        assert!(
+            !chime.on_roster(&app, None),
+            "a peer switching channel is not an arrival"
+        );
     }
 
     #[test]
@@ -1395,7 +1428,10 @@ mod tests {
         let n = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
         handle_key(&mut app, n, &cmd_tx, None).await.unwrap();
 
-        assert_eq!(app.input, "n", "the binding belongs to the settings screen only");
+        assert_eq!(
+            app.input, "n",
+            "the binding belongs to the settings screen only"
+        );
         assert!(app.denoise);
     }
 

@@ -11,7 +11,7 @@ pub mod vad;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -458,12 +458,7 @@ impl PeerStream {
 }
 
 /// Where a frame of microphone audio goes while a test is running.
-fn take_microphone(
-    test: MicTest,
-    pcm: Vec<f32>,
-    speaker: &mut Vec<f32>,
-    recorded: &mut Vec<f32>,
-) {
+fn take_microphone(test: MicTest, pcm: Vec<f32>, speaker: &mut Vec<f32>, recorded: &mut Vec<f32>) {
     match test {
         MicTest::Monitoring => speaker.extend(pcm),
         MicTest::Recording => {
@@ -584,7 +579,11 @@ mod tests {
 
         let shut = speaker_bus(&room, &interface, false);
         assert_eq!(shut.len(), 1, "the room must be off the bus");
-        assert_eq!(shut[0], &interface[..], "you must still hear your ears reopen");
+        assert_eq!(
+            shut[0],
+            &interface[..],
+            "you must still hear your ears reopen"
+        );
 
         let open = speaker_bus(&room, &interface, true);
         assert_eq!(open.len(), 2, "hearing normally, both arrive");
@@ -611,15 +610,29 @@ mod tests {
         let mut speaker = Vec::new();
         let mut recorded = Vec::new();
 
-        take_microphone(MicTest::Recording, vec![0.5; 100], &mut speaker, &mut recorded);
+        take_microphone(
+            MicTest::Recording,
+            vec![0.5; 100],
+            &mut speaker,
+            &mut recorded,
+        );
         assert!(
             speaker.is_empty(),
             "a speaker that plays while the microphone is open is the whole bug"
         );
         assert_eq!(recorded.len(), 100);
 
-        take_microphone(MicTest::Monitoring, vec![0.5; 100], &mut speaker, &mut recorded);
-        assert_eq!(speaker.len(), 100, "monitoring is the one mode that does play live");
+        take_microphone(
+            MicTest::Monitoring,
+            vec![0.5; 100],
+            &mut speaker,
+            &mut recorded,
+        );
+        assert_eq!(
+            speaker.len(),
+            100,
+            "monitoring is the one mode that does play live"
+        );
     }
 
     #[test]
@@ -627,7 +640,12 @@ mod tests {
         let mut speaker = Vec::new();
         let mut recorded = Vec::new();
         for _ in 0..(TEST_SAMPLES / FRAME + 10) {
-            take_microphone(MicTest::Recording, vec![0.1; FRAME], &mut speaker, &mut recorded);
+            take_microphone(
+                MicTest::Recording,
+                vec![0.1; FRAME],
+                &mut speaker,
+                &mut recorded,
+            );
         }
         assert_eq!(recorded.len(), TEST_SAMPLES);
     }
@@ -637,7 +655,12 @@ mod tests {
         let mut speaker = Vec::new();
         let mut recorded = Vec::new();
         take_microphone(MicTest::Off, vec![0.5; 100], &mut speaker, &mut recorded);
-        take_microphone(MicTest::Playing, vec![0.5; 100], &mut speaker, &mut recorded);
+        take_microphone(
+            MicTest::Playing,
+            vec![0.5; 100],
+            &mut speaker,
+            &mut recorded,
+        );
         assert!(speaker.is_empty() && recorded.is_empty());
     }
 
@@ -646,7 +669,11 @@ mod tests {
         let mut queued = vec![0.5; 10];
         overlay(&mut queued, vec![0.25; 4]);
 
-        assert_eq!(queued.len(), 10, "a short sound must not lengthen what is playing");
+        assert_eq!(
+            queued.len(),
+            10,
+            "a short sound must not lengthen what is playing"
+        );
         assert_eq!(queued[0], 0.75, "it starts now, not after");
         assert_eq!(queued[4], 0.5, "and stops where it ends");
     }
@@ -688,7 +715,11 @@ mod tests {
 
     #[test]
     fn the_bottom_of_the_meter_means_never_gate() {
-        assert_eq!(rms_for(0.0), 0.0, "a gate at zero must let digital silence through");
+        assert_eq!(
+            rms_for(0.0),
+            0.0,
+            "a gate at zero must let digital silence through"
+        );
         assert_eq!(rms_for(-1.0), 0.0, "and must not go negative");
     }
 
@@ -707,7 +738,11 @@ mod tests {
     #[test]
     fn silence_reads_as_nothing() {
         assert_eq!(loudness(&vec![0.0; FRAME]), 0.0);
-        assert_eq!(bar(loudness(&vec![0.0; FRAME])), 0, "silence must draw an empty meter");
+        assert_eq!(
+            bar(loudness(&vec![0.0; FRAME])),
+            0,
+            "silence must draw an empty meter"
+        );
     }
 
     #[test]
@@ -728,7 +763,10 @@ mod tests {
     #[test]
     fn a_normal_speaking_voice_lands_in_the_middle_of_the_meter() {
         let step = bar(loudness(&tone(0.2)));
-        assert!((1..=3).contains(&step), "a speaking voice drew step {step} of 4");
+        assert!(
+            (1..=3).contains(&step),
+            "a speaking voice drew step {step} of 4"
+        );
     }
 
     #[test]
@@ -743,7 +781,10 @@ mod tests {
         for _ in 0..frames {
             level *= LEVEL_RELEASE;
         }
-        assert!(level < 0.125, "the meter still showed {level} after 200 ms of silence");
+        assert!(
+            level < 0.125,
+            "the meter still showed {level} after 200 ms of silence"
+        );
         assert_eq!(bar(level), 0);
     }
 

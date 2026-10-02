@@ -14,7 +14,7 @@
 //!   played. This is what stops audio leaking in from the wrong channel during the
 //!   brief gap between a channel switch and the roster update.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -42,11 +42,21 @@ struct Shared {
     seq: AtomicU32,
 }
 
+/// One connection's own reading: how it travels and how long a round trip takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerLink {
+    /// The selected path goes through a relay (hole punching did not succeed).
+    pub relayed: bool,
+    pub rtt: Duration,
+}
+
 /// The current state of the voice connections — feeds the quality indicator in the
 /// interface.
 ///
 /// The only thing a user wants to know is "is my voice getting through cleanly", and
 /// that has two parts: whether it goes direct or detours through a relay, and latency.
+/// The counts summarise the room; `per_peer` says whose link is whose, so a bad one
+/// can be pinned on the person it belongs to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinkStatus {
     /// Peers reached over a direct P2P connection.
@@ -55,6 +65,8 @@ pub struct LinkStatus {
     pub relayed: usize,
     /// The worst round-trip time across the connections.
     pub worst_rtt: Option<Duration>,
+    /// Every connection's own reading, keyed by who it reaches.
+    pub per_peer: BTreeMap<PeerId, PeerLink>,
 }
 
 impl LinkStatus {
@@ -122,7 +134,10 @@ impl VoiceMesh {
         let peer = to_peer_id(conn.remote_id());
         let shared = self.shared.clone();
         tokio::spawn(async move {
-            debug!("voice connection established with {} (incoming)", peer.short());
+            debug!(
+                "voice connection established with {} (incoming)",
+                peer.short()
+            );
             shared.connections.lock().await.insert(peer, conn.clone());
             read_loop(shared.clone(), conn, peer).await;
             shared.connections.lock().await.remove(&peer);
@@ -166,19 +181,21 @@ impl VoiceMesh {
         let connections = self.shared.connections.lock().await;
         let mut status = LinkStatus::default();
 
-        for conn in connections.values() {
+        for (peer, conn) in connections.iter() {
             let paths = conn.paths();
             // Several paths can be open at once; the selected one carries the traffic.
             let Some(selected) = paths.iter().find(|path| path.is_selected()) else {
                 continue;
             };
-            if selected.is_relay() {
+            let relayed = selected.is_relay();
+            if relayed {
                 status.relayed += 1;
             } else {
                 status.direct += 1;
             }
             let rtt = selected.rtt();
             status.worst_rtt = Some(status.worst_rtt.map_or(rtt, |worst| worst.max(rtt)));
+            status.per_peer.insert(*peer, PeerLink { relayed, rtt });
         }
         status
     }
@@ -192,12 +209,18 @@ impl VoiceMesh {
             };
             match endpoint.connect(target, proto::VOICE_ALPN).await {
                 Ok(conn) => {
-                    debug!("voice connection established with {} (outgoing)", peer.short());
+                    debug!(
+                        "voice connection established with {} (outgoing)",
+                        peer.short()
+                    );
                     shared.connections.lock().await.insert(peer, conn.clone());
                     read_loop(shared.clone(), conn, peer).await;
                     shared.connections.lock().await.remove(&peer);
                 }
-                Err(err) => debug!("could not open a voice connection to peer {}: {err}", peer.short()),
+                Err(err) => debug!(
+                    "could not open a voice connection to peer {}: {err}",
+                    peer.short()
+                ),
             }
         });
     }

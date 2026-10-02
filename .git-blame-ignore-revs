@@ -1,0 +1,8 @@
+# Commits that only reformat code. `git blame` skips them, so a line still points at
+# the change that gave it meaning rather than at the one that moved its whitespace.
+# GitHub reads this file on its own; locally:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: format the codebase with cargo fmt
+f5aeaf928b2c02f33be41acae20b251cf8ddf27a

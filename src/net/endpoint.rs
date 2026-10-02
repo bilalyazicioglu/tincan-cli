@@ -56,9 +56,11 @@ pub async fn close_and_retract(endpoint: &Endpoint) {
 
     let publishes = endpoint.addr().relay_urls().next().is_some();
     let client = match (endpoint.dns_resolver(), N0_DNS_PKARR_RELAY_PROD.parse()) {
-        (Ok(resolver), Ok(relay)) if publishes => {
-            Some(PkarrRelayClient::new(relay, endpoint.tls_config().clone(), resolver.clone()))
-        }
+        (Ok(resolver), Ok(relay)) if publishes => Some(PkarrRelayClient::new(
+            relay,
+            endpoint.tls_config().clone(),
+            resolver.clone(),
+        )),
         _ => None,
     };
     let secret = endpoint.secret_key().clone();
@@ -67,7 +69,9 @@ pub async fn close_and_retract(endpoint: &Endpoint) {
     let Some(client) = client else {
         return;
     };
-    let empty = match EndpointInfo::new(secret.public()).to_pkarr_signed_packet(&secret, DEFAULT_PKARR_TTL) {
+    let empty = match EndpointInfo::new(secret.public())
+        .to_pkarr_signed_packet(&secret, DEFAULT_PKARR_TTL)
+    {
         Ok(packet) => packet,
         Err(err) => {
             debug!("could not sign the empty address record: {err:#}");

@@ -7,16 +7,16 @@ use anyhow::{Context, Result, ensure};
 use clap::{CommandFactory, Parser, Subcommand};
 use iroh::Endpoint;
 use tincan::audio;
+use tincan::audio::device::Wanted;
 use tincan::auth::{Admission, Key, RoomSecret};
 use tincan::clipboard;
 use tincan::config::Config;
 use tincan::invite;
-use tincan::passphrase;
-use tincan::audio::device::Wanted;
 use tincan::net::Command;
 use tincan::net::control::{Client, Coordinator};
-use tincan::net::voice::VoiceMesh;
 use tincan::net::endpoint;
+use tincan::net::voice::VoiceMesh;
+use tincan::passphrase;
 use tincan::proto::PeerId;
 use tincan::room::Room;
 use tincan::ui::{self, VoiceControl};
@@ -129,8 +129,8 @@ async fn main() -> Result<()> {
 /// did. A redirected stderr is left alone: `2>tincan.log` has always meant "put the
 /// log there", and it still does.
 fn start_logging() -> Option<PathBuf> {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "warn".into());
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into());
 
     if !std::io::stderr().is_terminal() {
         tracing_subscriber::fmt()
@@ -182,7 +182,9 @@ fn report_log(path: Option<PathBuf>) {
     let Some(path) = path else {
         return;
     };
-    let empty = std::fs::metadata(&path).map(|file| file.len() == 0).unwrap_or(true);
+    let empty = std::fs::metadata(&path)
+        .map(|file| file.len() == 0)
+        .unwrap_or(true);
     if empty {
         let _ = std::fs::remove_file(&path);
         return;
@@ -191,7 +193,10 @@ fn report_log(path: Option<PathBuf>) {
         .map(|log| log.lines().count())
         .unwrap_or(0);
     let plural = if lines == 1 { "" } else { "s" };
-    eprintln!("\n  {lines} log line{plural} from this session: {}", path.display());
+    eprintln!(
+        "\n  {lines} log line{plural} from this session: {}",
+        path.display()
+    );
 }
 
 async fn run(command: Sub) -> Result<()> {
@@ -246,15 +251,21 @@ async fn host(
     let secret = match &room_name {
         Some(room) => {
             if !generated && passphrase::is_weak(&password) {
-                println!("{}", tincan::logo::heading(
-                    "  that passphrase is easy to guess, and here it is the room's address as well as its lock.\n  leave out -p and tincan makes one up.",
-                ));
+                println!(
+                    "{}",
+                    tincan::logo::heading(
+                        "  that passphrase is easy to guess, and here it is the room's address as well as its lock.\n  leave out -p and tincan makes one up.",
+                    )
+                );
             }
             Some(RoomSecret::derive(room, &password)?)
         }
         None => None,
     };
-    let room = Room::new(room_name.as_deref().unwrap_or(UNNAMED_ROOM).trim(), channels)?;
+    let room = Room::new(
+        room_name.as_deref().unwrap_or(UNNAMED_ROOM).trim(),
+        channels,
+    )?;
 
     println!("{}", tincan::logo::heading("  connecting to the network…"));
     let endpoint = endpoint::bind(secret.as_ref().map(RoomSecret::identity)).await?;
@@ -269,26 +280,51 @@ async fn host(
 
     match &room_name {
         Some(room) => {
-            println!("\n{}", tincan::logo::heading("  the room is open. tell whoever you want in it:"));
+            println!(
+                "\n{}",
+                tincan::logo::heading("  the room is open. tell whoever you want in it:")
+            );
             println!("\n    room:        {}", tincan::logo::code(room.trim()));
             println!("    passphrase:  {}\n", tincan::logo::code(&password));
-            println!("{}", tincan::logo::heading(&format!("  they run:  tincan join {}", shell_word(room.trim()))));
+            println!(
+                "{}",
+                tincan::logo::heading(&format!(
+                    "  they run:  tincan join {}",
+                    shell_word(room.trim())
+                ))
+            );
         }
         None => {
             let copied = clipboard::copy(&session.invite_code);
-            println!("\n{}", tincan::logo::heading("  the room is open. send this code to whoever you want in it:"));
+            println!(
+                "\n{}",
+                tincan::logo::heading(
+                    "  the room is open. send this code to whoever you want in it:"
+                )
+            );
             println!("\n    {}\n", tincan::logo::code(&session.invite_code));
             if copied {
-                println!("{}", tincan::logo::heading("  it is on your clipboard already."));
+                println!(
+                    "{}",
+                    tincan::logo::heading("  it is on your clipboard already.")
+                );
             }
-            println!("{}", tincan::logo::heading(&format!("  they run:  tincan join {}", session.invite_code)));
+            println!(
+                "{}",
+                tincan::logo::heading(&format!("  they run:  tincan join {}", session.invite_code))
+            );
         }
     }
 
     // Wait for the user rather than a timer. The interface takes over the whole
     // screen, and a 63-character code is not something anyone can copy against a
     // countdown. F1 brings it back once the interface is up.
-    print!("\n{}", tincan::logo::heading("  press enter to open the room. f1 brings the code back, f6 is audio."));
+    print!(
+        "\n{}",
+        tincan::logo::heading(
+            "  press enter to open the room. f1 brings the code back, f6 is audio."
+        )
+    );
     std::io::stdout().flush().ok();
 
     if let Leaving::Interrupted = wait_at_the_prompt().await {
@@ -298,7 +334,8 @@ async fn host(
         println!();
         let _ = session.commands.send(Command::Quit).await;
         // Long enough for the host to take its address record down on the way out.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(4), session.events.recv()).await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(4), session.events.recv()).await;
         return Ok(());
     }
 
@@ -335,14 +372,24 @@ async fn join(
     let target = endpoint::to_endpoint_id(&coordinator)?;
     let patience = std::time::Duration::from_secs(retry.unwrap_or(0));
     let waiting = |left: std::time::Duration| {
-        println!("{}", tincan::logo::heading(&format!(
-            "  the room is not up yet — trying again ({} s left)",
-            left.as_secs()
-        )));
+        println!(
+            "{}",
+            tincan::logo::heading(&format!(
+                "  the room is not up yet — trying again ({} s left)",
+                left.as_secs()
+            ))
+        );
     };
-    let session =
-        Client::connect_patiently(endpoint, target, &key, &nickname(name), mesh, patience, waiting)
-            .await?;
+    let session = Client::connect_patiently(
+        endpoint,
+        target,
+        &key,
+        &nickname(name),
+        mesh,
+        patience,
+        waiting,
+    )
+    .await?;
 
     ui::run(session, control, audio.ptt).await
 }
@@ -353,20 +400,29 @@ async fn join(
 /// by name the passphrase is the room's address, not only its lock. It is not hidden while
 /// typed: it is meant to be said out loud anyway.
 fn ask_passphrase(room: &str) -> Result<String> {
-    print!("{}", tincan::logo::heading(&format!("  passphrase for {}: ", room.trim())));
+    print!(
+        "{}",
+        tincan::logo::heading(&format!("  passphrase for {}: ", room.trim()))
+    );
     std::io::stdout().flush().ok();
     let mut line = String::new();
     std::io::stdin()
         .read_line(&mut line)
         .context("could not read the passphrase")?;
     let passphrase = line.trim().to_string();
-    ensure!(!passphrase.is_empty(), "joining a room by name needs its passphrase");
+    ensure!(
+        !passphrase.is_empty(),
+        "joining a room by name needs its passphrase"
+    );
     Ok(passphrase)
 }
 
 /// Quotes a room name for the "they run" line when the shell would split it.
 fn shell_word(word: &str) -> String {
-    if word.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c)) {
+    if word
+        .chars()
+        .all(|c| c.is_alphanumeric() || "-_.".contains(c))
+    {
         word.to_string()
     } else {
         format!("'{}'", word.replace('\'', r"'\''"))
@@ -468,7 +524,10 @@ mod tests {
         assert_eq!(password.as_deref(), Some("a-b-c-d"));
 
         let cli = Cli::try_parse_from(["tincan", "host"]).unwrap();
-        assert!(matches!(cli.command, Sub::Host { room: None, .. }), "the unnamed room stays");
+        assert!(
+            matches!(cli.command, Sub::Host { room: None, .. }),
+            "the unnamed room stays"
+        );
     }
 
     #[test]
@@ -495,11 +554,22 @@ mod tests {
             let mut buf = Vec::new();
             clap_complete::generate(shell, &mut Cli::command(), "tincan", &mut buf);
             let script = String::from_utf8(buf).expect("completion script should be valid utf-8");
-            assert!(!script.is_empty(), "completions for {shell:?} must not be empty");
-            assert!(script.contains("host"), "must mention host command for {shell:?}");
-            assert!(script.contains("join"), "must mention join command for {shell:?}");
-            assert!(script.contains("completions"), "must mention completions command for {shell:?}");
+            assert!(
+                !script.is_empty(),
+                "completions for {shell:?} must not be empty"
+            );
+            assert!(
+                script.contains("host"),
+                "must mention host command for {shell:?}"
+            );
+            assert!(
+                script.contains("join"),
+                "must mention join command for {shell:?}"
+            );
+            assert!(
+                script.contains("completions"),
+                "must mention completions command for {shell:?}"
+            );
         }
     }
 }
-

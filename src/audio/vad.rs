@@ -92,7 +92,10 @@ mod tests {
         assert!(vad.update(&tone(0.5)), "clear speech must be detected");
 
         let mut quiet = Vad::default();
-        assert!(!quiet.update(&[0.0001; 960]), "room noise must not count as speech");
+        assert!(
+            !quiet.update(&[0.0001; 960]),
+            "room noise must not count as speech"
+        );
     }
 
     #[test]
@@ -108,7 +111,10 @@ mod tests {
     #[test]
     fn a_floor_of_zero_lets_everything_through() {
         let mut vad = Vad::new(0.0, 0);
-        assert!(vad.update(&[0.0; 960]), "asked for no gate, there is no gate");
+        assert!(
+            vad.update(&[0.0; 960]),
+            "asked for no gate, there is no gate"
+        );
     }
 
     /// A short silence between words must not switch the indicator off.

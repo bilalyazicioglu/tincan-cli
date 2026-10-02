@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Result, bail, ensure};
 
-use crate::proto::{ChannelId, ChatLine, MAX_CHAT_CHARS, MAX_NAME_CHARS, PeerId, PeerInfo, RoomSnapshot};
+use crate::proto::{
+    ChannelId, ChatLine, MAX_CHAT_CHARS, MAX_NAME_CHARS, PeerId, PeerInfo, RoomSnapshot,
+};
 
 /// How many chat lines are kept in memory and handed to a newcomer.
 const CHAT_HISTORY: usize = 200;
@@ -26,7 +28,10 @@ impl Room {
         let channels: Vec<String> = channels.into_iter().map(|c| c.trim().to_string()).collect();
         ensure!(!channels.is_empty(), "a room needs at least one channel");
         ensure!(channels.len() <= u8::MAX as usize, "too many channels");
-        ensure!(channels.iter().all(|c| !c.is_empty()), "a channel name cannot be empty");
+        ensure!(
+            channels.iter().all(|c| !c.is_empty()),
+            "a channel name cannot be empty"
+        );
         Ok(Self {
             name: name.into(),
             channels,
@@ -96,25 +101,37 @@ impl Room {
                 "no such channel: {index}"
             );
         }
-        let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
+        let peer = self
+            .peers
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
         peer.channel = channel;
         Ok(())
     }
 
     pub fn set_muted(&mut self, id: &PeerId, muted: bool) -> Result<()> {
-        let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
+        let peer = self
+            .peers
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
         peer.muted = muted;
         Ok(())
     }
 
     pub fn set_deafened(&mut self, id: &PeerId, deafened: bool) -> Result<()> {
-        let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
+        let peer = self
+            .peers
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
         peer.deafened = deafened;
         Ok(())
     }
 
     pub fn set_afk(&mut self, id: &PeerId, afk: bool) -> Result<()> {
-        let peer = self.peers.get_mut(id).ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
+        let peer = self
+            .peers
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("you are not in the room"))?;
         peer.afk = afk;
         Ok(())
     }
@@ -124,7 +141,13 @@ impl Room {
     ///
     /// The timestamp is supplied from outside: ordering must come from the
     /// coordinator's clock, because client clocks cannot be trusted.
-    pub fn post_chat(&mut self, id: &PeerId, channel: ChannelId, text: &str, at: u64) -> Result<ChatLine> {
+    pub fn post_chat(
+        &mut self,
+        id: &PeerId,
+        channel: ChannelId,
+        text: &str,
+        at: u64,
+    ) -> Result<ChatLine> {
         ensure!(self.peers.contains_key(id), "you are not in the room");
         ensure!(
             (channel.0 as usize) < self.channels.len(),
@@ -207,7 +230,10 @@ mod tests {
 
         let roster = room.roster();
         assert_eq!(roster.len(), 1);
-        assert_eq!(roster[0].channel, None, "a newcomer must not auto-join voice");
+        assert_eq!(
+            roster[0].channel, None,
+            "a newcomer must not auto-join voice"
+        );
         assert!(!roster[0].muted);
     }
 
@@ -231,8 +257,16 @@ mod tests {
         // The link dropped and the same identity came back under a new name.
         let name = room.join(id(1), "alice2").unwrap();
         assert_eq!(name, "alice2");
-        assert_eq!(room.roster().len(), 1, "one identity must not be listed twice");
-        assert_eq!(room.get(&id(1)).unwrap().channel, None, "state must be reset");
+        assert_eq!(
+            room.roster().len(),
+            1,
+            "one identity must not be listed twice"
+        );
+        assert_eq!(
+            room.get(&id(1)).unwrap().channel,
+            None,
+            "state must be reset"
+        );
     }
 
     #[test]
@@ -242,7 +276,10 @@ mod tests {
         let name = room.join(id(1), &format!("  {long}  ")).unwrap();
         assert_eq!(name.chars().count(), MAX_NAME_CHARS);
 
-        assert!(room.join(id(2), "   ").is_err(), "an empty name must be rejected");
+        assert!(
+            room.join(id(2), "   ").is_err(),
+            "an empty name must be rejected"
+        );
         assert!(
             room.join(id(3), "\u{7}\u{7}").is_err(),
             "control characters do not make a name"
@@ -287,7 +324,10 @@ mod tests {
         room.join(id(1), "alice").unwrap();
         assert!(room.leave(&id(1)).is_some());
         assert!(room.roster().is_empty());
-        assert!(room.leave(&id(1)).is_none(), "a second leave is ignored quietly");
+        assert!(
+            room.leave(&id(1)).is_none(),
+            "a second leave is ignored quietly"
+        );
     }
 
     #[test]
@@ -317,16 +357,27 @@ mod tests {
         let mut room = room();
         room.join(id(1), "alice").unwrap();
 
-        let line = room.post_chat(&id(1), ChannelId(0), "  hey  ", 100).unwrap();
+        let line = room
+            .post_chat(&id(1), ChannelId(0), "  hey  ", 100)
+            .unwrap();
         assert_eq!(line.text, "hey", "leading/trailing space must be trimmed");
         assert_eq!(line.at, 100, "the timestamp must come from the coordinator");
 
-        assert!(room.post_chat(&id(1), ChannelId(0), "   ", 1).is_err(), "empty message");
-        assert!(room.post_chat(&id(1), ChannelId(5), "x", 1).is_err(), "no such channel");
+        assert!(
+            room.post_chat(&id(1), ChannelId(0), "   ", 1).is_err(),
+            "empty message"
+        );
+        assert!(
+            room.post_chat(&id(1), ChannelId(5), "x", 1).is_err(),
+            "no such channel"
+        );
         // Deliberately a multi-byte character: the limit counts chars, not bytes, and
         // an ASCII string here would stop testing that.
         let long = "é".repeat(MAX_CHAT_CHARS + 1);
-        assert!(room.post_chat(&id(1), ChannelId(0), &long, 1).is_err(), "long message");
+        assert!(
+            room.post_chat(&id(1), ChannelId(0), &long, 1).is_err(),
+            "long message"
+        );
     }
 
     #[test]
@@ -334,13 +385,25 @@ mod tests {
         let mut room = room();
         room.join(id(1), "alice").unwrap();
         for i in 0..CHAT_HISTORY + 50 {
-            room.post_chat(&id(1), ChannelId(0), &format!("message {i}"), i as u64).unwrap();
+            room.post_chat(&id(1), ChannelId(0), &format!("message {i}"), i as u64)
+                .unwrap();
         }
 
         let history = room.snapshot().recent_chat;
-        assert_eq!(history.len(), CHAT_HISTORY, "history must not grow without bound");
-        assert_eq!(history.first().unwrap().text, "message 50", "the oldest drop off");
-        assert_eq!(history.last().unwrap().text, format!("message {}", CHAT_HISTORY + 49));
+        assert_eq!(
+            history.len(),
+            CHAT_HISTORY,
+            "history must not grow without bound"
+        );
+        assert_eq!(
+            history.first().unwrap().text,
+            "message 50",
+            "the oldest drop off"
+        );
+        assert_eq!(
+            history.last().unwrap().text,
+            format!("message {}", CHAT_HISTORY + 49)
+        );
     }
 
     #[test]

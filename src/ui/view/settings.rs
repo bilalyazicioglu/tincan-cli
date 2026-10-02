@@ -9,8 +9,8 @@ use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{clip, spread};
-use crate::audio::device::AudioDeviceInfo;
 use crate::audio::MicTest;
+use crate::audio::device::AudioDeviceInfo;
 use crate::ui::state::{App, METER_CELLS, SettingsSection};
 use crate::ui::theme::Theme;
 
@@ -74,7 +74,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Paragraph::new(vec![
                 TextLine::from(vec![
                     Span::raw(" "),
-                    Span::styled(" PROBLEM ", theme.chip_link(crate::ui::theme::Strand::Frayed)),
+                    Span::styled(
+                        " PROBLEM ",
+                        theme.chip_link(crate::ui::theme::Strand::Frayed),
+                    ),
                     Span::raw(" "),
                     Span::styled(clip(message, area.width as usize, theme), theme.error()),
                 ]),
@@ -169,7 +172,11 @@ fn typing_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
             Span::styled(format!("{:<21}", "how loud"), theme.text()),
             Span::styled(
                 clip(&loudness, room, theme),
-                if app.typing_clicks { theme.text() } else { theme.dim() },
+                if app.typing_clicks {
+                    theme.text()
+                } else {
+                    theme.dim()
+                },
             ),
         ]),
     ]
@@ -186,12 +193,19 @@ fn section(
     if area.height == 0 {
         return;
     }
-    let style = if focused { theme.chip_on() } else { theme.chip() };
+    let style = if focused {
+        theme.chip_on()
+    } else {
+        theme.chip()
+    };
     let mut lines = vec![TextLine::from(vec![
         Span::raw(" "),
         Span::styled(format!(" {label} "), style),
     ])];
-    lines.extend(rows.into_iter().take(area.height.saturating_sub(1) as usize));
+    lines.extend(
+        rows.into_iter()
+            .take(area.height.saturating_sub(1) as usize),
+    );
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -234,12 +248,20 @@ fn devices(
             let left = vec![
                 Span::raw("  "),
                 Span::styled(
-                    if highlighted { theme.glyphs.cursor.to_string() } else { " ".into() },
+                    if highlighted {
+                        theme.glyphs.cursor.to_string()
+                    } else {
+                        " ".into()
+                    },
                     theme.accent(),
                 ),
                 Span::raw(" "),
                 Span::styled(
-                    if in_use { theme.glyphs.on_air.to_string() } else { " ".into() },
+                    if in_use {
+                        theme.glyphs.on_air.to_string()
+                    } else {
+                        " ".into()
+                    },
                     theme.ok(),
                 ),
                 Span::raw(" "),
@@ -249,13 +271,31 @@ fn devices(
             let (tag, tag_style) = if !device.is_supported {
                 ("unavailable".to_string(), theme.error())
             } else if in_use {
-                (format!("in use{}{} kHz", theme.glyphs.dot, device.sample_rate / 1000), theme.dim())
+                (
+                    format!(
+                        "in use{}{} kHz",
+                        theme.glyphs.dot,
+                        device.sample_rate / 1000
+                    ),
+                    theme.dim(),
+                )
             } else if device.is_default {
-                (format!("default{}{} kHz", theme.glyphs.dot, device.sample_rate / 1000), theme.dim())
+                (
+                    format!(
+                        "default{}{} kHz",
+                        theme.glyphs.dot,
+                        device.sample_rate / 1000
+                    ),
+                    theme.dim(),
+                )
             } else {
                 (format!("{} kHz", device.sample_rate / 1000), theme.dim())
             };
-            spread(width, left, vec![Span::styled(tag, tag_style), Span::raw(" ")])
+            spread(
+                width,
+                left,
+                vec![Span::styled(tag, tag_style), Span::raw(" ")],
+            )
         })
         .collect()
 }
@@ -277,7 +317,12 @@ fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
             },
             theme.brass(),
         ),
-        MicTest::Playing => ("space", "play yourself back", "playing it back".to_string(), theme.ok()),
+        MicTest::Playing => (
+            "space",
+            "play yourself back",
+            "playing it back".to_string(),
+            theme.ok(),
+        ),
         MicTest::Monitoring => ("m", "listen live", "on".to_string(), theme.ok()),
         MicTest::Off if app.fed_back => (
             "space",
@@ -285,7 +330,12 @@ fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
             "fed back — use headphones".to_string(),
             theme.error(),
         ),
-        MicTest::Off => ("space", "play yourself back", "ready".to_string(), theme.dim()),
+        MicTest::Off => (
+            "space",
+            "play yourself back",
+            "ready".to_string(),
+            theme.dim(),
+        ),
     };
     let room = (width as usize).saturating_sub(HEAD_ROOM);
 
@@ -294,7 +344,10 @@ fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
     } else if app.input_gate <= 0.0 {
         ("nothing is ignored".to_string(), theme.dim())
     } else {
-        (format!("{}%", (app.input_gate * 100.0).round() as u32), theme.text())
+        (
+            format!("{}%", (app.input_gate * 100.0).round() as u32),
+            theme.text(),
+        )
     };
 
     let floor = vec![
@@ -425,7 +478,10 @@ mod tests {
     use crate::proto::PeerId;
 
     fn text(line: &TextLine<'_>) -> String {
-        line.spans.iter().map(|span| span.content.as_ref()).collect()
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     fn device(name: &str, rate: u32, default: bool) -> AudioDeviceInfo {
@@ -452,7 +508,15 @@ mod tests {
     fn the_device_in_use_is_named_as_such() {
         let mut app = app();
         app.active_input_name = Some("AirPods".into());
-        let rows = devices(60, &Theme::from_env(), &app.input_devices, 0, &app.active_input_name, true, "");
+        let rows = devices(
+            60,
+            &Theme::from_env(),
+            &app.input_devices,
+            0,
+            &app.active_input_name,
+            true,
+            "",
+        );
         assert!(text(&rows[1]).contains("in use"), "{}", text(&rows[1]));
         assert!(!text(&rows[0]).contains("in use"), "{}", text(&rows[0]));
     }
@@ -460,22 +524,54 @@ mod tests {
     #[test]
     fn a_device_that_reports_nothing_is_called_unavailable() {
         let app = app();
-        let rows = devices(60, &Theme::from_env(), &app.input_devices, 0, &None, true, "");
+        let rows = devices(
+            60,
+            &Theme::from_env(),
+            &app.input_devices,
+            0,
+            &None,
+            true,
+            "",
+        );
         assert!(text(&rows[2]).contains("unavailable"), "{}", text(&rows[2]));
     }
 
     #[test]
     fn an_empty_list_says_what_to_do_about_it() {
-        let rows = devices(60, &Theme::from_env(), &[], 0, &None, true, "no microphone found. press r to look again.");
+        let rows = devices(
+            60,
+            &Theme::from_env(),
+            &[],
+            0,
+            &None,
+            true,
+            "no microphone found. press r to look again.",
+        );
         assert!(text(&rows[0]).contains("press r"), "{}", text(&rows[0]));
     }
 
     #[test]
     fn a_bluetooth_rate_is_offered_rather_than_refused() {
         let app = app();
-        let rows = devices(60, &Theme::from_env(), &app.input_devices, 0, &None, true, "");
-        assert!(text(&rows[1]).contains("16 kHz"), "resampling handles it: {}", text(&rows[1]));
-        assert!(!text(&rows[1]).contains("unavailable"), "{}", text(&rows[1]));
+        let rows = devices(
+            60,
+            &Theme::from_env(),
+            &app.input_devices,
+            0,
+            &None,
+            true,
+            "",
+        );
+        assert!(
+            text(&rows[1]).contains("16 kHz"),
+            "resampling handles it: {}",
+            text(&rows[1])
+        );
+        assert!(
+            !text(&rows[1]).contains("unavailable"),
+            "{}",
+            text(&rows[1])
+        );
     }
 
     fn drawn(app: &App) -> String {
@@ -507,9 +603,15 @@ mod tests {
             let mark = gate_cell(app.input_gate, METER_CELLS).unwrap();
 
             app.mic_level = app.input_gate - 0.02;
-            assert!(!app.gate_open(), "just under the mark at cell {mark} must not send");
+            assert!(
+                !app.gate_open(),
+                "just under the mark at cell {mark} must not send"
+            );
             app.mic_level = app.input_gate + 0.02;
-            assert!(app.gate_open(), "just over the mark at cell {mark} must send");
+            assert!(
+                app.gate_open(),
+                "just over the mark at cell {mark} must send"
+            );
         }
     }
 
@@ -517,11 +619,16 @@ mod tests {
     fn moving_the_gate_moves_the_mark() {
         let mut app = app();
         app.input_gate = 0.2;
-        let low = drawn(&app).find('|').expect("the mark must be on the meter");
+        let low = drawn(&app)
+            .find('|')
+            .expect("the mark must be on the meter");
 
         app.input_gate = 0.6;
         let high = drawn(&app).find('|').expect("the mark must still be there");
-        assert!(high > low, "the mark has to follow the setting: {low} then {high}");
+        assert!(
+            high > low,
+            "the mark has to follow the setting: {low} then {high}"
+        );
     }
 
     #[test]
@@ -567,7 +674,10 @@ mod tests {
 
         let row = text(&test_rows(90, &app, &theme)[rows::MIC_TEST]);
         assert!(row.contains("fed back"), "{row}");
-        assert!(row.contains("headphones"), "it has to say what to do about it: {row}");
+        assert!(
+            row.contains("headphones"),
+            "it has to say what to do about it: {row}"
+        );
         assert!(
             !row.contains('…'),
             "and it must fit rather than be cut off mid-advice: {row}"
@@ -664,8 +774,14 @@ mod tests {
 
         app.toggle_monitor();
         let row = text(&test_rows(60, &app, &theme)[rows::MIC_TEST]);
-        assert!(row.contains("listen live"), "the row names the control that is running: {row}");
-        assert!(row.trim_start().starts_with('m'), "and the key that stops it: {row}");
+        assert!(
+            row.contains("listen live"),
+            "the row names the control that is running: {row}"
+        );
+        assert!(
+            row.trim_start().starts_with('m'),
+            "and the key that stops it: {row}"
+        );
         for width in [30, 40, 53, 80] {
             for row in test_rows(width, &app, &theme) {
                 assert!(

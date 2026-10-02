@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use iroh::{Endpoint, EndpointAddr};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
+use iroh::{Endpoint, EndpointAddr};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::{Mutex, broadcast, mpsc};
@@ -48,19 +48,28 @@ const UNREACHABLE: &str =
 
 async fn write_msg<T: Serialize>(stream: &mut SendStream, message: &T) -> Result<()> {
     let framed = proto::encode(message)?;
-    stream.write_all(&framed).await.context("could not write to the stream")?;
+    stream
+        .write_all(&framed)
+        .await
+        .context("could not write to the stream")?;
     Ok(())
 }
 
 async fn read_msg<T: DeserializeOwned>(stream: &mut RecvStream) -> Result<T> {
     let mut header = [0u8; 4];
-    stream.read_exact(&mut header).await.context("the stream closed")?;
+    stream
+        .read_exact(&mut header)
+        .await
+        .context("the stream closed")?;
     let len = u32::from_le_bytes(header) as usize;
     if len > MAX_MESSAGE_BYTES {
         bail!("the other side announced a {len} byte message — over the limit");
     }
     let mut body = vec![0u8; len];
-    stream.read_exact(&mut body).await.context("the message was cut short")?;
+    stream
+        .read_exact(&mut body)
+        .await
+        .context("the message was cut short")?;
     proto::decode(&body)
 }
 
@@ -84,7 +93,9 @@ impl Shared {
 
             ToCoordinator::SwitchChannel { channel } => {
                 room.switch_channel(&from, channel)?;
-                let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
+                let _ = self.broadcast.send(ToPeer::Roster {
+                    peers: room.roster(),
+                });
             }
 
             ToCoordinator::Chat { channel, text } => {
@@ -94,17 +105,23 @@ impl Shared {
 
             ToCoordinator::SetMuted { muted } => {
                 room.set_muted(&from, muted)?;
-                let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
+                let _ = self.broadcast.send(ToPeer::Roster {
+                    peers: room.roster(),
+                });
             }
 
             ToCoordinator::SetDeafened { deafened } => {
                 room.set_deafened(&from, deafened)?;
-                let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
+                let _ = self.broadcast.send(ToPeer::Roster {
+                    peers: room.roster(),
+                });
             }
 
             ToCoordinator::SetAfk { afk } => {
                 room.set_afk(&from, afk)?;
-                let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
+                let _ = self.broadcast.send(ToPeer::Roster {
+                    peers: room.roster(),
+                });
             }
 
             ToCoordinator::Leave => {
@@ -112,7 +129,9 @@ impl Shared {
                     let _ = self.broadcast.send(ToPeer::Notice {
                         text: format!("{} left the room", peer.name),
                     });
-                    let _ = self.broadcast.send(ToPeer::Roster { peers: room.roster() });
+                    let _ = self.broadcast.send(ToPeer::Roster {
+                        peers: room.roster(),
+                    });
                 }
             }
         }
@@ -135,7 +154,8 @@ impl Coordinator {
         let invite_code = invite::encode(&me.0);
 
         let mut room = room;
-        room.join(me, host_name).context("the host nickname is invalid")?;
+        room.join(me, host_name)
+            .context("the host nickname is invalid")?;
 
         let (broadcast_tx, _) = broadcast::channel(BROADCAST_DEPTH);
         let shared = Arc::new(Shared {
@@ -188,12 +208,16 @@ async fn host_commands(
             // Before saying so: once the room has closed the interface exits, and the
             // process with it.
             super::endpoint::close_and_retract(&endpoint).await;
-            let _ = events.send(Event::Disconnected("the room was closed".into())).await;
+            let _ = events
+                .send(Event::Disconnected("the room was closed".into()))
+                .await;
             break;
         }
         if let Err(err) = shared.apply(me, into_wire(command)).await {
             // The host's own error is not broadcast; it lands on their screen only.
-            let _ = events.send(Event::Notice(format!("that did not work: {err}"))).await;
+            let _ = events
+                .send(Event::Notice(format!("that did not work: {err}")))
+                .await;
         }
     }
     endpoint.close().await;
@@ -275,7 +299,10 @@ async fn reject(mut send: SendStream, reason: &str) -> Result<()> {
 }
 
 async fn serve_peer(shared: Arc<Shared>, conn: Connection, peer: PeerId) -> Result<()> {
-    let (mut send, mut recv) = conn.open_bi().await.context("could not open the control stream")?;
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .context("could not open the control stream")?;
 
     let nonce = auth::random_nonce();
     write_msg(&mut send, &ToPeer::Challenge { nonce }).await?;
@@ -302,7 +329,14 @@ async fn serve_peer(shared: Arc<Shared>, conn: Connection, peer: PeerId) -> Resu
         }
     };
 
-    write_msg(&mut send, &ToPeer::Welcome { you: peer, room: snapshot }).await?;
+    write_msg(
+        &mut send,
+        &ToPeer::Welcome {
+            you: peer,
+            room: snapshot,
+        },
+    )
+    .await?;
 
     let mut updates = shared.broadcast.subscribe();
     let _ = shared.broadcast.send(ToPeer::Notice {
@@ -310,7 +344,9 @@ async fn serve_peer(shared: Arc<Shared>, conn: Connection, peer: PeerId) -> Resu
     });
     {
         let room = shared.room.lock().await;
-        let _ = shared.broadcast.send(ToPeer::Roster { peers: room.roster() });
+        let _ = shared.broadcast.send(ToPeer::Roster {
+            peers: room.roster(),
+        });
     }
 
     // The write side that carries the broadcast to this peer.
@@ -422,7 +458,10 @@ impl Client {
             }
         };
 
-        let (mut send, mut recv) = conn.accept_bi().await.context("could not establish the control stream")?;
+        let (mut send, mut recv) = conn
+            .accept_bi()
+            .await
+            .context("could not establish the control stream")?;
 
         let challenge: ToPeer = read_msg(&mut recv).await?;
         let ToPeer::Challenge { nonce } = challenge else {
@@ -469,11 +508,7 @@ impl Client {
     }
 }
 
-async fn client_reader(
-    mut recv: RecvStream,
-    events: mpsc::Sender<Event>,
-    endpoint: Endpoint,
-) {
+async fn client_reader(mut recv: RecvStream, events: mpsc::Sender<Event>, endpoint: Endpoint) {
     loop {
         match read_msg::<ToPeer>(&mut recv).await {
             Ok(message) => {
@@ -517,7 +552,9 @@ async fn client_writer(
         if quitting {
             let _ = send.finish();
             conn.close(0u32.into(), b"ayrildi");
-            let _ = events.send(Event::Disconnected("you left the room".into())).await;
+            let _ = events
+                .send(Event::Disconnected("you left the room".into()))
+                .await;
             break;
         }
     }

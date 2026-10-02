@@ -136,13 +136,27 @@ pub struct ChatLine {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToCoordinator {
     /// Answer to the challenge: nickname + `MAC(admission key, nonce)`.
-    Hello { name: String, proof: [u8; 32] },
+    Hello {
+        name: String,
+        proof: [u8; 32],
+    },
     /// Switch voice channel; `None` means leave voice entirely.
-    SwitchChannel { channel: Option<ChannelId> },
-    Chat { channel: ChannelId, text: String },
-    SetMuted { muted: bool },
-    SetDeafened { deafened: bool },
-    SetAfk { afk: bool },
+    SwitchChannel {
+        channel: Option<ChannelId>,
+    },
+    Chat {
+        channel: ChannelId,
+        text: String,
+    },
+    SetMuted {
+        muted: bool,
+    },
+    SetDeafened {
+        deafened: bool,
+    },
+    SetAfk {
+        afk: bool,
+    },
     /// A graceful goodbye. Without it, the coordinator finds out when the link drops.
     Leave,
 }
@@ -151,17 +165,28 @@ pub enum ToCoordinator {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToPeer {
     /// Sent as soon as the connection is up; the salt for the password proof.
-    Challenge { nonce: [u8; 16] },
-    Welcome { you: PeerId, room: RoomSnapshot },
-    Rejected { reason: String },
+    Challenge {
+        nonce: [u8; 16],
+    },
+    Welcome {
+        you: PeerId,
+        room: RoomSnapshot,
+    },
+    Rejected {
+        reason: String,
+    },
     /// Any change to the roster — the full list is sent.
     ///
     /// A full list rather than a delta: in a six-person room the list is a few hundred
     /// bytes, and in exchange client state can never drift out of sync.
-    Roster { peers: Vec<PeerInfo> },
+    Roster {
+        peers: Vec<PeerInfo>,
+    },
     Chat(ChatLine),
     /// System lines such as "X joined the room".
-    Notice { text: String },
+    Notice {
+        text: String,
+    },
 }
 
 /// Encodes a length-prefixed frame.
@@ -217,8 +242,12 @@ mod tests {
                     }],
                 },
             },
-            ToPeer::Roster { peers: vec![sample_peer(3)] },
-            ToPeer::Rejected { reason: "wrong password".into() },
+            ToPeer::Roster {
+                peers: vec![sample_peer(3)],
+            },
+            ToPeer::Rejected {
+                reason: "wrong password".into(),
+            },
         ];
 
         for message in messages {
@@ -233,10 +262,18 @@ mod tests {
     #[test]
     fn client_messages_round_trip() {
         let messages = vec![
-            ToCoordinator::Hello { name: "alice".into(), proof: [9; 32] },
-            ToCoordinator::SwitchChannel { channel: Some(ChannelId(2)) },
+            ToCoordinator::Hello {
+                name: "alice".into(),
+                proof: [9; 32],
+            },
+            ToCoordinator::SwitchChannel {
+                channel: Some(ChannelId(2)),
+            },
             ToCoordinator::SwitchChannel { channel: None },
-            ToCoordinator::Chat { channel: ChannelId(0), text: "nice one".into() },
+            ToCoordinator::Chat {
+                channel: ChannelId(0),
+                text: "nice one".into(),
+            },
             ToCoordinator::SetMuted { muted: true },
             ToCoordinator::SetDeafened { deafened: true },
             ToCoordinator::SetAfk { afk: true },
@@ -303,7 +340,10 @@ mod tests {
 
     #[test]
     fn short_id_is_stable_and_readable() {
-        let id = PeerId([0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let id = PeerId([
+            0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         assert_eq!(id.short(), "abcdef0123");
         assert_eq!(id.to_string().len(), 64);
     }

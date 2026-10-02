@@ -18,6 +18,6 @@ pub mod proto;
 pub mod room;
 pub mod stderr;
 
+pub mod audio;
 pub mod net;
 pub mod ui;
-pub mod audio;

@@ -96,9 +96,7 @@ impl Config {
 
     /// The maximum number of lines kept in memory, or the default (5000).
     pub fn history_limit(&self) -> usize {
-        self.history_limit
-            .unwrap_or(DEFAULT_HISTORY_LIMIT)
-            .max(100)
+        self.history_limit.unwrap_or(DEFAULT_HISTORY_LIMIT).max(100)
     }
 
     pub fn set_gate(&mut self, device: &str, level: f32) {
@@ -178,8 +176,8 @@ impl Config {
             fs::create_dir_all(parent)
                 .with_context(|| format!("could not create directory: {}", parent.display()))?;
         }
-        let content = toml::to_string_pretty(self)
-            .context("could not serialize configuration to TOML")?;
+        let content =
+            toml::to_string_pretty(self).context("could not serialize configuration to TOML")?;
         fs::write(path, content)
             .with_context(|| format!("could not write config file: {}", path.display()))?;
         Ok(())
@@ -214,7 +212,10 @@ mod tests {
     fn home_is_the_fallback_on_unix() {
         let path = Config::default_path_for(false, env_of(&[("HOME", "/home/alice")]))
             .expect("HOME alone is enough");
-        assert_eq!(path, PathBuf::from("/home/alice/.config/tincan/config.toml"));
+        assert_eq!(
+            path,
+            PathBuf::from("/home/alice/.config/tincan/config.toml")
+        );
     }
 
     #[test]
@@ -260,7 +261,10 @@ mod tests {
     #[test]
     fn an_unadjusted_microphone_gets_the_default_gate() {
         let mut config = Config::default();
-        assert_eq!(config.gate_for(Some("MacBook Pro Microphone")), DEFAULT_GATE);
+        assert_eq!(
+            config.gate_for(Some("MacBook Pro Microphone")),
+            DEFAULT_GATE
+        );
         assert_eq!(config.gate_for(None), DEFAULT_GATE);
 
         config.set_gate("AirPods", 0.4);
@@ -289,7 +293,10 @@ mod tests {
 
         let config = Config::load_from(&path).expect("an older config must still open");
         assert!(config.denoise, "a missing field is not an answer of 'off'");
-        assert!(config.typing_clicks, "and the rest of the file still applies");
+        assert!(
+            config.typing_clicks,
+            "and the rest of the file still applies"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -316,8 +323,15 @@ mod tests {
     #[test]
     fn typing_is_silent_until_it_is_asked_for() {
         let config = Config::default();
-        assert!(!config.typing_clicks, "a keyboard that starts clicking on its own is a surprise");
-        assert_eq!(config.typing_loudness(), DEFAULT_TYPING_VOLUME, "but it has a sane volume waiting");
+        assert!(
+            !config.typing_clicks,
+            "a keyboard that starts clicking on its own is a surprise"
+        );
+        assert_eq!(
+            config.typing_loudness(),
+            DEFAULT_TYPING_VOLUME,
+            "but it has a sane volume waiting"
+        );
     }
 
     #[test]
@@ -328,8 +342,14 @@ mod tests {
         fs::write(&path, "input_device = \"MacBook Pro Microphone\"\n").unwrap();
 
         let config = Config::load_from(&path).expect("an older config must still open");
-        assert_eq!(config.input_device.as_deref(), Some("MacBook Pro Microphone"));
-        assert_eq!(config.gate_for(Some("MacBook Pro Microphone")), DEFAULT_GATE);
+        assert_eq!(
+            config.input_device.as_deref(),
+            Some("MacBook Pro Microphone")
+        );
+        assert_eq!(
+            config.gate_for(Some("MacBook Pro Microphone")),
+            DEFAULT_GATE
+        );
         assert!(!config.typing_clicks);
         assert_eq!(config.typing_loudness(), DEFAULT_TYPING_VOLUME);
 
@@ -351,7 +371,9 @@ mod tests {
             history_limit: Some(8000),
         };
 
-        original.save_to(&path).expect("saving config should succeed");
+        original
+            .save_to(&path)
+            .expect("saving config should succeed");
         let loaded = Config::load_from(&path).expect("loading config should succeed");
         assert_eq!(original, loaded);
 

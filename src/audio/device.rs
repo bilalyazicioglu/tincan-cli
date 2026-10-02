@@ -106,10 +106,14 @@ impl AudioDevices {
         let device = match wanted {
             Some(name) => pick(host.input_devices()?, name)
                 .with_context(|| format!("no microphone named '{name}'"))?,
-            None => host.default_input_device().context("no default microphone found")?,
+            None => host
+                .default_input_device()
+                .context("no default microphone found")?,
         };
 
-        let in_cfg = device.default_input_config().context("could not read microphone config")?;
+        let in_cfg = device
+            .default_input_config()
+            .context("could not read microphone config")?;
         let in_rate = in_cfg.sample_rate();
         if in_rate == 0 {
             bail!("invalid sample rate reported by microphone");
@@ -158,7 +162,8 @@ impl AudioDevices {
                     raw_mono.clear();
                     resampled_48k.clear();
                     for chunk in data.chunks(in_channels) {
-                        let mono = chunk.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / in_channels as f32;
+                        let mono = chunk.iter().map(|&s| s as f32 / 32768.0).sum::<f32>()
+                            / in_channels as f32;
                         raw_mono.push(mono);
                     }
                     resampler.process(&raw_mono, &mut resampled_48k);
@@ -182,7 +187,11 @@ impl AudioDevices {
                     raw_mono.clear();
                     resampled_48k.clear();
                     for chunk in data.chunks(in_channels) {
-                        let mono = chunk.iter().map(|&s| (s as f32 - 32768.0) / 32768.0).sum::<f32>() / in_channels as f32;
+                        let mono = chunk
+                            .iter()
+                            .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                            .sum::<f32>()
+                            / in_channels as f32;
                         raw_mono.push(mono);
                     }
                     resampler.process(&raw_mono, &mut resampled_48k);
@@ -262,7 +271,10 @@ impl AudioDevices {
             // The device it was on may itself be what disappeared, so the default is
             // the fallback here too.
             match reopen(wanted.as_deref()).or_else(|_| reopen(None)) {
-                Ok(device) => news.push(Recovered { side, device: Some(device) }),
+                Ok(device) => news.push(Recovered {
+                    side,
+                    device: Some(device),
+                }),
                 Err(err) => {
                     tracing::warn!("could not reopen the {}: {err:#}", side.name());
                     lost.store(true, Ordering::Relaxed);
@@ -280,10 +292,14 @@ impl AudioDevices {
         let device = match wanted {
             Some(name) => pick(host.output_devices()?, name)
                 .with_context(|| format!("no speaker named '{name}'"))?,
-            None => host.default_output_device().context("no default speaker found")?,
+            None => host
+                .default_output_device()
+                .context("no default speaker found")?,
         };
 
-        let out_cfg = device.default_output_config().context("could not read speaker config")?;
+        let out_cfg = device
+            .default_output_config()
+            .context("could not read speaker config")?;
         let out_rate = out_cfg.sample_rate();
         if out_rate == 0 {
             bail!("invalid sample rate reported by speaker");
@@ -314,7 +330,9 @@ impl AudioDevices {
 
                     while queued_out.len() < needed_samples {
                         pcm_48k.clear();
-                        let pull_count = (needed_samples - queued_out.len()).max(32) * (SAMPLE_RATE as usize) / (out_rate as usize + 1);
+                        let pull_count = (needed_samples - queued_out.len()).max(32)
+                            * (SAMPLE_RATE as usize)
+                            / (out_rate as usize + 1);
                         let pull_count = pull_count.max(16);
                         for _ in 0..pull_count {
                             match guard.pop() {
@@ -355,7 +373,9 @@ impl AudioDevices {
 
                     while queued_out.len() < needed_samples {
                         pcm_48k.clear();
-                        let pull_count = (needed_samples - queued_out.len()).max(32) * (SAMPLE_RATE as usize) / (out_rate as usize + 1);
+                        let pull_count = (needed_samples - queued_out.len()).max(32)
+                            * (SAMPLE_RATE as usize)
+                            / (out_rate as usize + 1);
                         let pull_count = pull_count.max(16);
                         for _ in 0..pull_count {
                             match guard.pop() {
@@ -395,7 +415,9 @@ impl AudioDevices {
 
                     while queued_out.len() < needed_samples {
                         pcm_48k.clear();
-                        let pull_count = (needed_samples - queued_out.len()).max(32) * (SAMPLE_RATE as usize) / (out_rate as usize + 1);
+                        let pull_count = (needed_samples - queued_out.len()).max(32)
+                            * (SAMPLE_RATE as usize)
+                            / (out_rate as usize + 1);
                         let pull_count = pull_count.max(16);
                         for _ in 0..pull_count {
                             match guard.pop() {
@@ -488,8 +510,6 @@ pub struct DeviceChoice {
     pub output: Wanted,
 }
 
-/// Picks a device by name. Matching is case-insensitive and partial, so the user can
-/// type any distinctive part of a name from the `tincan devices` output.
 /// The audio callback cannot rebuild its own stream, so all it does is say that the
 /// stream is gone. `recover` picks it up from there.
 fn on_error(
@@ -524,6 +544,8 @@ fn open_wanted(
     }
 }
 
+/// Picks a device by name. Matching is case-insensitive and partial, so the user can
+/// type any distinctive part of a name from the `tincan devices` output.
 fn pick(mut devices: impl Iterator<Item = cpal::Device>, wanted: &str) -> Option<cpal::Device> {
     let wanted = wanted.to_lowercase();
     devices.find(|d| {
@@ -570,7 +592,8 @@ fn keep(devices: &[(String, Option<String>)]) -> Vec<bool> {
     devices
         .iter()
         .map(|(name, pcm)| {
-            let wanted = !cfg!(target_os = "linux") || pcm.as_deref().is_none_or(alsa_worth_showing);
+            let wanted =
+                !cfg!(target_os = "linux") || pcm.as_deref().is_none_or(alsa_worth_showing);
             // A card reached as `sysdefault` and again as `plughw` has one name, and
             // picking by name would only ever find the first.
             wanted && seen.insert(name.clone())
@@ -583,15 +606,28 @@ fn alsa_worth_showing(pcm: &str) -> bool {
     let kind = pcm.split(':').next().unwrap_or(pcm);
     let plugin = matches!(
         kind,
-        "null" | "lavrate" | "samplerate" | "speexrate" | "speex" | "upmix" | "vdownmix"
-            | "oss" | "jack" | "a52" | "usbstream" | "equal"
+        "null"
+            | "lavrate"
+            | "samplerate"
+            | "speexrate"
+            | "speex"
+            | "upmix"
+            | "vdownmix"
+            | "oss"
+            | "jack"
+            | "a52"
+            | "usbstream"
+            | "equal"
     );
     // Each card's other faces: the raw device without conversions, one PCM per speaker
     // layout and digital output, and the halves of the mixing default already wraps.
     let face = kind == "hw"
         || kind == "front"
         || kind.starts_with("surround")
-        || matches!(kind, "iec958" | "spdif" | "dmix" | "dsnoop" | "rear" | "center_lfe" | "side");
+        || matches!(
+            kind,
+            "iec958" | "spdif" | "dmix" | "dsnoop" | "rear" | "center_lfe" | "side"
+        );
     !plugin && !face
 }
 
@@ -715,7 +751,11 @@ pub fn describe_devices(all: bool) -> Result<String> {
         .and_then(|d| d.description().ok().map(|d| d.name().to_string()));
 
     let shown = |devices: Vec<cpal::Device>| {
-        if all { devices } else { worth_showing(devices.into_iter()) }
+        if all {
+            devices
+        } else {
+            worth_showing(devices.into_iter())
+        }
     };
     report.push_str("\n  MICROPHONES\n");
     for device in shown(host.input_devices()?.collect()) {
@@ -742,7 +782,11 @@ fn line(device: &cpal::Device, default: &Option<String>, input: bool) -> String 
     let rate = config
         .map(|c| format!("{} kHz · {} ch", c.sample_rate() / 1000, c.channels()))
         .unwrap_or_else(|| "reports no format".into());
-    let mark = if Some(&name) == default.as_ref() { "default" } else { "" };
+    let mark = if Some(&name) == default.as_ref() {
+        "default"
+    } else {
+        ""
+    };
     // One column for the name, one for what it runs at, one for whether it is the
     // one you get by default.
     format!("    {name:<38}  {rate:<16}  {mark}\n")
@@ -756,18 +800,36 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn pipewire_laptop() -> Vec<(String, Option<String>)> {
         [
-            ("Discard all samples (playback) or generate zero samples (capture)", "null"),
-            ("Rate Converter Plugin Using Libav/FFmpeg Library", "lavrate"),
-            ("Rate Converter Plugin Using Samplerate Library", "samplerate"),
+            (
+                "Discard all samples (playback) or generate zero samples (capture)",
+                "null",
+            ),
+            (
+                "Rate Converter Plugin Using Libav/FFmpeg Library",
+                "lavrate",
+            ),
+            (
+                "Rate Converter Plugin Using Samplerate Library",
+                "samplerate",
+            ),
             ("Rate Converter Plugin Using Speex Resampler", "speexrate"),
             ("JACK Audio Connection Kit", "jack"),
             ("Open Sound System", "oss"),
             ("PipeWire Sound Server", "pipewire"),
             ("PulseAudio Sound Server", "pulse"),
-            ("Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)", "speex"),
+            (
+                "Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)",
+                "speex",
+            ),
             ("Plugin for channel upmix (4,6,8)", "upmix"),
-            ("Plugin for channel downmix (stereo) with a simple spacialization", "vdownmix"),
-            ("Default ALSA Output (currently PipeWire Media Server)", "default"),
+            (
+                "Plugin for channel downmix (stereo) with a simple spacialization",
+                "vdownmix",
+            ),
+            (
+                "Default ALSA Output (currently PipeWire Media Server)",
+                "default",
+            ),
             ("HDA Intel PCH, ALC257 Analog", "sysdefault:CARD=PCH"),
             ("HDA Intel PCH, ALC257 Analog", "front:CARD=PCH,DEV=0"),
             ("HDA Intel PCH, ALC257 Analog", "surround51:CARD=PCH,DEV=0"),
@@ -814,18 +876,39 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn desktop_with_hdmi_and_usb() -> Vec<(String, Option<String>)> {
         let mut devices = vec![
-            ("Discard all samples (playback) or generate zero samples (capture)", "null".to_string()),
-            ("Rate Converter Plugin Using Libav/FFmpeg Library", "lavrate".into()),
-            ("Rate Converter Plugin Using Samplerate Library", "samplerate".into()),
-            ("Rate Converter Plugin Using Speex Resampler", "speexrate".into()),
+            (
+                "Discard all samples (playback) or generate zero samples (capture)",
+                "null".to_string(),
+            ),
+            (
+                "Rate Converter Plugin Using Libav/FFmpeg Library",
+                "lavrate".into(),
+            ),
+            (
+                "Rate Converter Plugin Using Samplerate Library",
+                "samplerate".into(),
+            ),
+            (
+                "Rate Converter Plugin Using Speex Resampler",
+                "speexrate".into(),
+            ),
             ("JACK Audio Connection Kit", "jack".into()),
             ("Open Sound System", "oss".into()),
             ("PipeWire Sound Server", "pipewire".into()),
             ("PulseAudio Sound Server", "pulse".into()),
-            ("Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)", "speex".into()),
+            (
+                "Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)",
+                "speex".into(),
+            ),
             ("Plugin for channel upmix (4,6,8)", "upmix".into()),
-            ("Plugin for channel downmix (stereo) with a simple spacialization", "vdownmix".into()),
-            ("Default ALSA Output (currently PulseAudio Sound Server)", "default".into()),
+            (
+                "Plugin for channel downmix (stereo) with a simple spacialization",
+                "vdownmix".into(),
+            ),
+            (
+                "Default ALSA Output (currently PulseAudio Sound Server)",
+                "default".into(),
+            ),
         ];
         let analog = "HDA Intel PCH, ALC887-VD Analog";
         devices.push((analog, "sysdefault:CARD=PCH".into()));
@@ -833,13 +916,25 @@ mod tests {
         for layout in ["21", "40", "41", "50", "51", "71"] {
             devices.push((analog, format!("surround{layout}:CARD=PCH,DEV=0")));
         }
-        devices.push(("HDA Intel PCH, ALC887-VD Digital", "iec958:CARD=PCH,DEV=0".into()));
-        let hdmi = ["HDA Intel PCH, HDMI 0", "HDA Intel PCH, HDMI 1", "HDA Intel PCH, HDMI 2"];
+        devices.push((
+            "HDA Intel PCH, ALC887-VD Digital",
+            "iec958:CARD=PCH,DEV=0".into(),
+        ));
+        let hdmi = [
+            "HDA Intel PCH, HDMI 0",
+            "HDA Intel PCH, HDMI 1",
+            "HDA Intel PCH, HDMI 2",
+        ];
         for (n, name) in hdmi.iter().enumerate() {
             devices.push((name, format!("hdmi:CARD=PCH,DEV={n}")));
         }
         devices.push(("HDA Intel PCH", "usbstream:CARD=PCH".into()));
-        let nvidia = ["HDA NVidia, 27G4", "HDA NVidia, HDMI 1", "HDA NVidia, HDMI 2", "HDA NVidia, HDMI 3"];
+        let nvidia = [
+            "HDA NVidia, 27G4",
+            "HDA NVidia, HDMI 1",
+            "HDA NVidia, HDMI 2",
+            "HDA NVidia, HDMI 3",
+        ];
         for (n, name) in nvidia.iter().enumerate() {
             devices.push((name, format!("hdmi:CARD=NVidia,DEV={n}")));
         }
@@ -869,7 +964,10 @@ mod tests {
             devices.push((name, format!("hw:CARD={card},DEV={dev}")));
             devices.push((name, format!("plughw:CARD={card},DEV={dev}")));
         }
-        devices.into_iter().map(|(name, pcm)| (name.to_string(), Some(pcm))).collect()
+        devices
+            .into_iter()
+            .map(|(name, pcm)| (name.to_string(), Some(pcm)))
+            .collect()
     }
 
     #[cfg(target_os = "linux")]
@@ -934,7 +1032,10 @@ mod tests {
             Wanted::pick(Some("QCY".into()), Some("MacBook".into())),
             Wanted::Named("QCY".into())
         );
-        assert_eq!(Wanted::pick(None, Some("MacBook".into())), Wanted::Remembered("MacBook".into()));
+        assert_eq!(
+            Wanted::pick(None, Some("MacBook".into())),
+            Wanted::Remembered("MacBook".into())
+        );
         assert_eq!(Wanted::pick(None, None), Wanted::Default);
     }
 
@@ -947,7 +1048,11 @@ mod tests {
             .expect("a missing preference must not be fatal");
 
         assert_eq!(opened, "MacBook Pro Microphone");
-        assert_eq!(missing.as_deref(), Some("QCY H4"), "and the room has to be told why");
+        assert_eq!(
+            missing.as_deref(),
+            Some("QCY H4"),
+            "and the room has to be told why"
+        );
     }
 
     #[test]
@@ -964,7 +1069,10 @@ mod tests {
         let devices = hardware(&["MacBook Pro Microphone", "QCY H4"]);
         let (opened, missing) = open_wanted(&Wanted::Remembered("QCY".into()), &devices).unwrap();
         assert_eq!(opened, "QCY H4");
-        assert_eq!(missing, None, "nothing went wrong, so there is nothing to report");
+        assert_eq!(
+            missing, None,
+            "nothing went wrong, so there is nothing to report"
+        );
     }
 
     #[test]

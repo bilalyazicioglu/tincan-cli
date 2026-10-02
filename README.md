@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://tincan.bilalyazicioglu.com"><img src="https://img.shields.io/badge/website-tincan.bilalyazicioglu.com-3ec5bc?style=flat-square" alt="Website"></a>
+  <a href="https://tincan.rs"><img src="https://img.shields.io/badge/website-tincan.rs-3ec5bc?style=flat-square" alt="Website"></a>
   <a href="https://github.com/bilalyazicioglu/tincan-cli/actions"><img src="https://img.shields.io/github/actions/workflow/status/bilalyazicioglu/tincan-cli/ci.yml?branch=main&style=flat-square&logo=github&label=build" alt="Build Status"></a>
   <a href="https://crates.io/crates/tincan-chat"><img src="https://img.shields.io/crates/v/tincan-chat?style=flat-square&logo=rust&label=crates.io" alt="crates.io"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <a href="https://tincan.bilalyazicioglu.com">Website</a> ·
+  <a href="https://tincan.rs">Website</a> ·
   <a href="#install">Install</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#shortcuts">Shortcuts</a> ·
@@ -74,6 +74,12 @@ that blocks those can stop new connections. [How it works](#how-it-works) says w
 do and what they can see, and [Known limits](#known-limits) says what happens without them.
 
 ## Install
+
+One program under a few names, because `tincan` was already taken on crates.io
+and npm: the command is `tincan` everywhere; it installs as `tincan` from Homebrew,
+`tincan-chat` from crates.io and `tincan-cli` from npm; the source is
+`bilalyazicioglu/tincan-cli`, and the site is [tincan.rs](https://tincan.rs). It is
+unrelated to the Tin Can API (xAPI) used in e-learning.
 
 **Homebrew (macOS & Linux):**
 
@@ -132,7 +138,7 @@ cargo install tincan-chat     # the command it installs is still `tincan`
 
 The crate is `tincan-chat` because `tincan` and `tincan-cli` were both taken on
 crates.io by unrelated projects before this one existed. Only the published name
-differs; the binary, this repository and the npm package are all `tincan`.
+differs; the command it installs is `tincan`, the same as every other way in.
 
 **From git**, to build whatever is on `main`:
 

@@ -102,19 +102,54 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         }
     }
 
+    // The chip summarises the room. When more than one person is on the line and one
+    // of them is the problem, it says who, so that a terminal too narrow for the
+    // roster still answers the question. If that does not fit, the name goes first,
+    // then the number.
     let strand = strand::of(app);
-    let mut right = Vec::new();
+    let named = if app.link.peers() >= 2 {
+        named_trouble(app)
+    } else {
+        None
+    };
+    let who = named.and_then(|(id, _, link)| {
+        app.peers
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| (p.name.clone(), link.rtt))
+    });
+    let rtt = who.as_ref().map(|(_, rtt)| *rtt).or(app.link.worst_rtt);
+
+    let mut base = Vec::new();
     if app.recently_dropped() {
-        right.push(Span::styled("audio dropping ", theme.error()));
+        base.push(Span::styled("audio dropping ", theme.error()));
     }
-    right.push(Span::styled(
+    base.push(Span::styled(
         format!(" {} ", strand::label(app)),
         theme.chip_link(strand),
     ));
-    if let Some(rtt) = app.link.worst_rtt {
-        right.push(Span::styled(format!(" {}ms", rtt.as_millis()), theme.dim()));
-    }
-    right.push(Span::raw(" "));
+    let name = who.map(|(name, _)| {
+        Span::styled(
+            format!("  {}", clip(&name, rail::NAME_ROOM, theme)),
+            theme.text(),
+        )
+    });
+    let number = rtt.map(|rtt| Span::styled(format!(" {}", millis(rtt)), theme.dim()));
+
+    let with = |parts: &[&Option<Span<'static>>]| {
+        let mut right = base.clone();
+        right.extend(parts.iter().filter_map(|part| (*part).clone()));
+        right.push(Span::raw(" "));
+        right
+    };
+    let fits = |right: &Vec<Span<'static>>| {
+        let used: usize = left.iter().chain(right.iter()).map(Span::width).sum();
+        used < area.width as usize
+    };
+    let right = [with(&[&name, &number]), with(&[&number])]
+        .into_iter()
+        .find(fits)
+        .unwrap_or_else(|| with(&[]));
 
     frame.render_widget(Paragraph::new(spread(area.width, left, right)), area);
 }
@@ -190,6 +225,34 @@ fn spread(width: u16, left: Vec<Span<'static>>, right: Vec<Span<'static>>) -> Te
         spans.extend(right);
     }
     TextLine::from(spans)
+}
+
+/// The link worth naming on screen, if any. While audio is breaking up nobody is
+/// named: a dropout is measured in our own playback and does not say whose audio was
+/// late, and a name beside `CHOPPY` would read as blame.
+fn named_trouble(
+    app: &App,
+) -> Option<(
+    crate::proto::PeerId,
+    crate::ui::state::Trouble,
+    crate::net::voice::PeerLink,
+)> {
+    if matches!(strand::of(app), crate::ui::theme::Strand::Frayed) {
+        return None;
+    }
+    app.worst_trouble()
+}
+
+/// A round trip as the interface writes it everywhere. Past a second the exact figure
+/// stops mattering and would not fit the roster, so it is capped rather than cut.
+/// Under a millisecond (one machine, or a quiet LAN) the truncated figure would read
+/// `0ms`, which looks like no reading at all, so it says `<1ms` instead.
+fn millis(rtt: std::time::Duration) -> String {
+    match rtt.as_millis() {
+        0 => "<1ms".to_string(),
+        ms @ 1..=999 => format!("{ms}ms"),
+        _ => ">999ms".to_string(),
+    }
 }
 
 /// Cuts to width, with an ellipsis when something was lost.
@@ -286,7 +349,10 @@ mod tests {
         let theme = Theme::from_env();
 
         let full = fit(&app, 80, &theme);
-        assert!(full.contains("←→"), "the dials are only discoverable from here: {full}");
+        assert!(
+            full.contains("←→"),
+            "the dials are only discoverable from here: {full}"
+        );
         for width in [70, 55, 40, 20, 4] {
             assert!(fit(&app, width, &theme).chars().count() <= width);
         }
@@ -334,18 +400,30 @@ mod tests {
         for width in [72, 76, 80, 100] {
             let screen = rendered(width, 24, &room());
             let footer = screen.lines().last().unwrap();
-            assert!(footer.contains("f1 code"), "lost the code at {width}: {footer}");
+            assert!(
+                footer.contains("f1 code"),
+                "lost the code at {width}: {footer}"
+            );
         }
     }
 
     #[test]
     fn a_narrow_terminal_drops_the_rail_and_keeps_the_talk() {
         let wide = rendered(80, 24, &room());
-        assert!(wide.contains("CHANNELS"), "the rail belongs on a normal terminal");
+        assert!(
+            wide.contains("CHANNELS"),
+            "the rail belongs on a normal terminal"
+        );
 
         let narrow = rendered(50, 24, &room());
-        assert!(!narrow.contains("CHANNELS"), "the rail must give way:\n{narrow}");
-        assert!(narrow.contains("say something"), "the message field must survive:\n{narrow}");
+        assert!(
+            !narrow.contains("CHANNELS"),
+            "the rail must give way:\n{narrow}"
+        );
+        assert!(
+            narrow.contains("say something"),
+            "the message field must survive:\n{narrow}"
+        );
     }
 
     #[test]
@@ -379,7 +457,10 @@ mod tests {
     fn clipping_marks_what_it_cut() {
         let theme = Theme::from_env();
         assert_eq!(clip("general", 20, &theme), "general");
-        assert_eq!(clip("a very long device name", 8, &theme).chars().count(), 8);
+        assert_eq!(
+            clip("a very long device name", 8, &theme).chars().count(),
+            8
+        );
         assert!(clip("a very long device name", 8, &theme).starts_with("a very"));
         assert_eq!(clip("abc", 0, &theme), "");
     }
@@ -389,10 +470,201 @@ mod tests {
         let app = room();
         let theme = Theme::from_env();
         assert!(fit(&app, 80, &theme).contains("f3 mute"));
-        assert!(fit(&app, 55, &theme).contains("f3 mute"), "the ladder must not skip a rung");
+        assert!(
+            fit(&app, 55, &theme).contains("f3 mute"),
+            "the ladder must not skip a rung"
+        );
         assert!(fit(&app, 40, &theme).chars().count() <= 40);
         assert!(fit(&app, 12, &theme).chars().count() <= 12);
         assert!(fit(&app, 3, &theme).chars().count() <= 3);
+    }
+    #[test]
+    fn millis_caps_at_999() {
+        use std::time::Duration;
+        assert_eq!(millis(Duration::from_millis(340)), "340ms");
+        assert_eq!(millis(Duration::from_millis(999)), "999ms");
+        assert_eq!(millis(Duration::from_millis(1000)), ">999ms");
+        assert_eq!(millis(Duration::from_secs(120)), ">999ms");
+    }
+    #[test]
+    fn millis_says_under_one_rather_than_zero() {
+        use std::time::Duration;
+        assert_eq!(millis(Duration::ZERO), "<1ms");
+        assert_eq!(millis(Duration::from_micros(999)), "<1ms");
+        assert_eq!(millis(Duration::from_millis(1)), "1ms");
+    }
+    use crate::net::voice::{LinkStatus, PeerLink};
+    use crate::proto::{ChannelId, PeerInfo};
+
+    /// Us plus `names`, all in general, with voice up and the given links (seed = index + 2).
+    fn call(names: &[&str], readings: &[(u8, bool, u64)]) -> App {
+        let mut app = room();
+        let person = |seed: u8, name: &str| PeerInfo {
+            id: PeerId([seed; 32]),
+            name: name.into(),
+            channel: Some(ChannelId(0)),
+            muted: false,
+            deafened: false,
+            afk: false,
+        };
+        app.peers = std::iter::once(person(1, "alice"))
+            .chain(
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| person(i as u8 + 2, name)),
+            )
+            .collect();
+        app.voice = Some(ChannelId(0));
+        app.voice_available = true;
+        let per_peer: std::collections::BTreeMap<_, _> = readings
+            .iter()
+            .map(|&(seed, relayed, ms)| {
+                (
+                    PeerId([seed; 32]),
+                    PeerLink {
+                        relayed,
+                        rtt: std::time::Duration::from_millis(ms),
+                    },
+                )
+            })
+            .collect();
+        app.take_link(LinkStatus {
+            direct: per_peer.values().filter(|l| !l.relayed).count(),
+            relayed: per_peer.values().filter(|l| l.relayed).count(),
+            worst_rtt: per_peer.values().map(|l| l.rtt).max(),
+            per_peer,
+        });
+        app
+    }
+
+    fn header(width: u16, app: &App) -> String {
+        rendered(width, 12, app).lines().next().unwrap().to_string()
+    }
+
+    #[test]
+    fn a_two_person_call_keeps_the_header_it_has_today() {
+        let app = call(&["bob"], &[(2, true, 340)]);
+        let top = header(80, &app);
+        assert!(top.contains("RELAY") && top.contains("340ms"), "{top}");
+        assert!(
+            !top.contains("bob"),
+            "with one other person the name says nothing new: {top}"
+        );
+    }
+
+    #[test]
+    fn a_crowded_call_names_the_relayed_person() {
+        let app = call(
+            &["bob", "cem", "deniz", "emre"],
+            &[
+                (2, false, 18),
+                (3, false, 22),
+                (4, false, 31),
+                (5, true, 340),
+            ],
+        );
+        let top = header(80, &app);
+        assert!(
+            top.contains("RELAY") && top.contains("emre") && top.contains("340ms"),
+            "{top}"
+        );
+    }
+
+    #[test]
+    fn a_crowded_healthy_call_names_nobody() {
+        let app = call(&["bob", "cem"], &[(2, false, 18), (3, false, 31)]);
+        let top = header(80, &app);
+        assert!(top.contains("DIRECT") && top.contains("31ms"), "{top}");
+        assert!(!top.contains("bob") && !top.contains("cem"), "{top}");
+    }
+
+    #[test]
+    fn a_narrow_header_lets_the_name_go_before_the_number() {
+        let app = call(
+            &["bob", "cem", "deniz", "emre"],
+            &[
+                (2, false, 18),
+                (3, false, 22),
+                (4, false, 31),
+                (5, true, 340),
+            ],
+        );
+        let top = header(40, &app);
+        assert!(top.contains("RELAY") && top.contains("340ms"), "{top}");
+        assert!(!top.contains("emre"), "{top}");
+    }
+
+    #[test]
+    fn a_choppy_call_blames_nobody_in_the_header() {
+        let mut app = call(
+            &["bob", "cem", "deniz", "emre"],
+            &[
+                (2, false, 18),
+                (3, false, 22),
+                (4, false, 31),
+                (5, true, 340),
+            ],
+        );
+        app.dropped_at = Some(std::time::Instant::now());
+        let top = header(80, &app);
+        assert!(
+            top.contains("audio dropping") && top.contains("CHOPPY"),
+            "{top}"
+        );
+        assert!(
+            !top.contains("emre"),
+            "dropouts are not anyone's fault we can name: {top}"
+        );
+    }
+
+    #[test]
+    fn at_48_columns_the_whole_reading_fits() {
+        let app = call(
+            &["bob", "cem", "deniz", "emre"],
+            &[
+                (2, false, 18),
+                (3, false, 22),
+                (4, false, 31),
+                (5, true, 340),
+            ],
+        );
+        let top = header(48, &app);
+        assert!(
+            top.contains("RELAY") && top.contains("emre") && top.contains("340ms"),
+            "{top}"
+        );
+    }
+
+    #[test]
+    fn when_only_the_chip_fits_the_number_goes_too() {
+        let app = call(
+            &["bob", "cem", "deniz", "emre"],
+            &[
+                (2, false, 18),
+                (3, false, 22),
+                (4, false, 31),
+                (5, true, 340),
+            ],
+        );
+        let top = header(34, &app);
+        assert!(top.contains("RELAY"), "{top}");
+        assert!(!top.contains("340ms") && !top.contains("emre"), "{top}");
+    }
+
+    #[test]
+    fn a_long_name_is_cut_where_the_rail_cuts_it() {
+        let app = call(
+            &["bob", "bartholomew-the-great"],
+            &[(2, false, 18), (3, true, 340)],
+        );
+        let top = header(80, &app);
+        assert!(
+            top.contains("bartholomew"),
+            "cut at 12 like the rail: {top}"
+        );
+        assert!(!top.contains("bartholomew-the-great"), "{top}");
+        assert!(top.contains("340ms"), "{top}");
     }
 }
 
@@ -429,7 +701,9 @@ mod pictures {
     }
 
     fn escape(text: &str) -> String {
-        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
     }
 
     /// Draws the interface and writes it out as SVG.
@@ -438,9 +712,15 @@ mod pictures {
     /// columns hold whatever monospace face the reader's browser happens to pick — the
     /// thing a pasted block of terminal text cannot promise.
     fn svg(app: &App, cols: u16, rows: u16) -> String {
-        let theme = Theme::from_env();
+        flat_svg(app, cols, rows, &Theme::from_env(), 8.0)
+    }
+
+    /// The same drawing with the theme and corner radius chosen by the caller. The
+    /// showcase wants square corners: a rounded picture leaves transparent corners that
+    /// a GIF can only fill with black.
+    fn flat_svg(app: &App, cols: u16, rows: u16, theme: &Theme, radius: f32) -> String {
         let mut terminal = Terminal::new(TestBackend::new(cols, rows)).unwrap();
-        terminal.draw(|frame| draw(frame, app, &theme)).unwrap();
+        terminal.draw(|frame| draw(frame, app, theme)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
         let ground = hex(theme.surface().bg.unwrap_or(Color::Reset), "#1a1512");
@@ -454,7 +734,7 @@ mod pictures {
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.0}\" height=\"{h:.0}\" \
              viewBox=\"0 0 {w:.0} {h:.0}\" font-family=\"ui-monospace,SFMono-Regular,\
              Menlo,Consolas,'Liberation Mono',monospace\" font-size=\"{FONT}\">\n\
-             <rect width=\"{w:.0}\" height=\"{h:.0}\" rx=\"8\" fill=\"{ground}\"/>\n"
+             <rect width=\"{w:.0}\" height=\"{h:.0}\" rx=\"{radius}\" fill=\"{ground}\"/>\n"
         );
 
         for y in 0..rows {
@@ -549,7 +829,10 @@ mod pictures {
     /// The room mid-conversation: three people, one of them turned down.
     fn hero() -> App {
         let me = PeerId([1; 32]);
-        let mut app = App::new(me, "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into());
+        let mut app = App::new(
+            me,
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+        );
         app.apply(Event::Welcome {
             me,
             room: RoomSnapshot {
@@ -572,6 +855,7 @@ mod pictures {
             direct: 2,
             relayed: 0,
             worst_rtt: Some(std::time::Duration::from_millis(18)),
+            ..Default::default()
         };
         app.active_input_name = Some("MacBook Pro Microphone".into());
         app.active_output_name = Some("AirPods Pro".into());
@@ -642,7 +926,8 @@ mod pictures {
         for (name, app, rows) in [("room", hero(), 22u16), ("audio", settings(), 22)] {
             let path = format!("assets/{name}.svg");
             let picture = svg(&app, 84, rows);
-            std::fs::write(&path, &picture).unwrap_or_else(|e| panic!("could not write {path}: {e}"));
+            std::fs::write(&path, &picture)
+                .unwrap_or_else(|e| panic!("could not write {path}: {e}"));
             println!("{path} — {} bytes", picture.len());
         }
     }
@@ -694,7 +979,11 @@ mod pictures {
         let room_title = if app.room_name.is_empty() {
             "tincan".to_string()
         } else {
-            format!("tincan — {} (#{})", app.room_name, app.channel_name(app.viewing))
+            format!(
+                "tincan — {} (#{})",
+                app.room_name,
+                app.channel_name(app.viewing)
+            )
         };
 
         let mut out = format!(
@@ -720,10 +1009,14 @@ mod pictures {
                <circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"5.5\" fill=\"#27c93f\"/>\n\
                <text x=\"{:.1}\" y=\"{:.1}\" fill=\"#8a8177\" font-family=\"-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif\" font-size=\"12\" font-weight=\"500\" text-anchor=\"middle\">{}</text>\n\
                <rect x=\"{win_x:.1}\" y=\"{:.1}\" width=\"{win_w:.1}\" height=\"{:.1}\" fill=\"{ground}\"/>\n",
-            win_x + 20.0, win_y + 18.0,
-            win_x + 38.0, win_y + 18.0,
-            win_x + 56.0, win_y + 18.0,
-            win_x + win_w / 2.0, win_y + 22.0,
+            win_x + 20.0,
+            win_y + 18.0,
+            win_x + 38.0,
+            win_y + 18.0,
+            win_x + 56.0,
+            win_y + 18.0,
+            win_x + win_w / 2.0,
+            win_y + 22.0,
             escape(&room_title),
             win_y + WIN_BAR_H,
             win_h - WIN_BAR_H
@@ -753,6 +1046,27 @@ mod pictures {
         out
     }
 
+    /// One reading of the mesh, as `link_status` would hand it over:
+    /// (who, through a relay, round trip in ms).
+    fn mesh_reading(readings: &[(u8, bool, u64)]) -> crate::net::voice::LinkStatus {
+        let per_peer: std::collections::BTreeMap<_, _> = readings
+            .iter()
+            .map(|&(seed, relayed, ms)| {
+                let rtt = std::time::Duration::from_millis(ms);
+                (
+                    PeerId([seed; 32]),
+                    crate::net::voice::PeerLink { relayed, rtt },
+                )
+            })
+            .collect();
+        crate::net::voice::LinkStatus {
+            direct: per_peer.values().filter(|l| !l.relayed).count(),
+            relayed: per_peer.values().filter(|l| l.relayed).count(),
+            worst_rtt: per_peer.values().map(|l| l.rtt).max(),
+            per_peer,
+        }
+    }
+
     #[test]
     #[ignore = "generates assets/demo.mp4 and assets/demo.gif using rsvg-convert and ffmpeg"]
     fn demo_video() {
@@ -780,7 +1094,10 @@ mod pictures {
         let bob = PeerId([2; 32]);
 
         // Start with clean room and cans diagram clearly visible
-        let mut app = App::new(me, "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into());
+        let mut app = App::new(
+            me,
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+        );
         app.apply(Event::Welcome {
             me,
             room: RoomSnapshot {
@@ -790,6 +1107,7 @@ mod pictures {
                     peer(1, "alice", Some(ChannelId(0))),
                     peer(2, "bob", Some(ChannelId(0))),
                     peer(3, "cem", Some(ChannelId(1))),
+                    peer(4, "deniz", Some(ChannelId(0))),
                 ],
                 recent_chat: vec![],
             },
@@ -797,22 +1115,39 @@ mod pictures {
         app.voice = Some(ChannelId(0));
         app.voice_available = true;
         app.motion = true;
-        app.link = crate::net::voice::LinkStatus {
-            direct: 2,
-            relayed: 0,
-            worst_rtt: Some(std::time::Duration::from_millis(18)),
-        };
+        let healthy = [(2, false, 18), (4, false, 26)];
+        // After the tour, deniz moves to hotel wifi and drops to a relay: the header
+        // names him, his row says so, and the far can becomes him. He is direct again
+        // before the camera pulls out, so the loop ends on a healthy line.
+        let relayed = [(2, false, 18), (4, true, 140)];
+        app.take_link(mesh_reading(&healthy));
         app.active_input_name = Some("MacBook Pro Microphone".into());
         app.active_output_name = Some("AirPods Pro".into());
         app.input_gate = 0.23;
         app.typing_volume = 0.4;
         app.peer_gains.insert(PeerId([3; 32]), 0.0);
 
-        const TOTAL_FRAMES: usize = 240;
-        const OVERVIEW: Camera = Camera { x: 640.0, y: 360.0, zoom: 1.0 };
-        const VOICE_FOCUS: Camera = Camera { x: 570.0, y: 350.0, zoom: 1.35 };
-        const CHAT_FOCUS: Camera = Camera { x: 670.0, y: 400.0, zoom: 1.35 };
-        const SETTINGS_FOCUS: Camera = Camera { x: 640.0, y: 320.0, zoom: 1.30 };
+        const TOTAL_FRAMES: usize = 360;
+        const OVERVIEW: Camera = Camera {
+            x: 640.0,
+            y: 360.0,
+            zoom: 1.0,
+        };
+        const VOICE_FOCUS: Camera = Camera {
+            x: 570.0,
+            y: 350.0,
+            zoom: 1.35,
+        };
+        const CHAT_FOCUS: Camera = Camera {
+            x: 670.0,
+            y: 400.0,
+            zoom: 1.35,
+        };
+        const SETTINGS_FOCUS: Camera = Camera {
+            x: 640.0,
+            y: 320.0,
+            zoom: 1.30,
+        };
 
         let prompt_text = "loud and clear! tincan is fast";
 
@@ -834,6 +1169,14 @@ mod pictures {
                 SETTINGS_FOCUS
             } else if f < 235 {
                 SETTINGS_FOCUS.lerp(&OVERVIEW, (f - 215) as f32 / 20.0)
+            } else if f < 245 {
+                OVERVIEW
+            } else if f < 265 {
+                OVERVIEW.lerp(&VOICE_FOCUS, (f - 245) as f32 / 20.0)
+            } else if f < 330 {
+                VOICE_FOCUS
+            } else if f < 350 {
+                VOICE_FOCUS.lerp(&OVERVIEW, (f - 330) as f32 / 20.0)
             } else {
                 OVERVIEW
             };
@@ -841,15 +1184,34 @@ mod pictures {
             let now = std::time::Instant::now();
             let sim_ms = f as u64 * 50;
             app.started = now - std::time::Duration::from_millis(sim_ms);
+            app.take_link(mesh_reading(if (275..310).contains(&f) {
+                &relayed
+            } else {
+                &healthy
+            }));
 
             // Voice & Pulse simulation (Bob speaks)
             if (35..85).contains(&f) {
                 app.speaking.insert(bob);
-                let level = match (f / 3) % 4 { 0 => 2, 1 => 4, 2 => 3, _ => 5 };
+                let level = match (f / 3) % 4 {
+                    0 => 2,
+                    1 => 4,
+                    2 => 3,
+                    _ => 5,
+                };
                 app.peer_levels.insert(bob, level);
             } else {
                 app.speaking.clear();
                 app.peer_levels.clear();
+            }
+
+            if f == 270 {
+                app.apply(Event::Chat(ChatLine {
+                    channel: ChannelId(0),
+                    from: PeerId([4; 32]),
+                    text: "on hotel wifi now, still hear me?".into(),
+                    at: 1_757_000_160,
+                }));
             }
 
             if f == 65 {
@@ -907,7 +1269,9 @@ mod pictures {
         }
 
         println!("Rasterizing SVG frames to PNG in parallel...");
-        let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         let chunk_size = TOTAL_FRAMES.div_ceil(num_threads);
 
         std::thread::scope(|s| {
@@ -935,12 +1299,18 @@ mod pictures {
         let mp4_status = std::process::Command::new("ffmpeg")
             .args([
                 "-y",
-                "-framerate", "20",
-                "-i", temp_dir.join("frame_%04d.png").to_str().unwrap(),
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-crf", "18",
-                "-preset", "medium",
+                "-framerate",
+                "20",
+                "-i",
+                temp_dir.join("frame_%04d.png").to_str().unwrap(),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-crf",
+                "18",
+                "-preset",
+                "medium",
                 "assets/demo.mp4",
             ])
             .status()
@@ -963,5 +1333,268 @@ mod pictures {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
         println!("Successfully generated assets/demo.mp4 and assets/demo.gif!");
+    }
+
+    /// The Ratatui showcase recording: the terminal alone, as VHS would capture it.
+    ///
+    /// No window, no camera, nothing zooming — the showcase asks for calm motion and
+    /// the subject filling the frame. What moves is the interface: people join, the
+    /// string pulls taut, a voice travels down it, one person's link falls back to a
+    /// relay — the string sags and the roster, header and far can all name him — the
+    /// audio breaks up and it frays, naming nobody, and the audio screen opens over it.
+    /// Written under `target/` because the showcase asks for media to live outside
+    /// the repository.
+    ///
+    ///     cargo test --lib -- --ignored --nocapture showcase_gif
+    #[test]
+    #[ignore = "generates target/showcase/ using rsvg-convert and ffmpeg"]
+    fn showcase_gif() {
+        const COLS: u16 = 100;
+        const ROWS: u16 = 22;
+        const WIDTH: &str = "1000";
+        const FPS: u64 = 20;
+        const FRAME_MS: u64 = 1000 / FPS;
+
+        // Each scene is long enough to read before the next one starts.
+        const JOIN: usize = 50;
+        const TALK: usize = 80;
+        const BOB_SAYS: usize = 125;
+        const TYPE: usize = 160;
+        const SEND: usize = 225;
+        const RELAY: usize = 245;
+        const RELAY_SAYS: usize = 265;
+        const FRAY: usize = 320;
+        const MEND: usize = 370;
+        const SETTINGS: usize = 395;
+        const BACK: usize = 470;
+        const TOTAL: usize = 500;
+
+        let out_dir = std::path::Path::new("target/showcase");
+        let frames = out_dir.join("frames");
+        let _ = std::fs::remove_dir_all(&frames);
+        std::fs::create_dir_all(&frames).unwrap();
+
+        let theme = Theme::dark_true();
+        let me = PeerId([1; 32]);
+        let bob = PeerId([2; 32]);
+        let deniz = PeerId([4; 32]);
+        let healthy = [(2, false, 18), (3, false, 24), (4, false, 31)];
+        // Deniz drops to a relay; everyone else stays direct, so the header, the far
+        // can and his row in the roster all have to agree on who it is.
+        let relayed = [(2, false, 18), (3, false, 24), (4, true, 140)];
+
+        let mut app = App::new(
+            me,
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+        );
+        app.apply(Event::Welcome {
+            me,
+            room: RoomSnapshot {
+                room_name: "lobby".into(),
+                channels: vec!["general".into(), "gaming".into(), "music".into()],
+                peers: vec![peer(1, "alice", Some(ChannelId(0)))],
+                recent_chat: vec![],
+            },
+        });
+        app.voice = Some(ChannelId(0));
+        app.voice_available = true;
+        app.motion = true;
+        app.active_input_name = Some("MacBook Pro Microphone".into());
+        app.active_output_name = Some("AirPods Pro".into());
+        app.input_gate = 0.23;
+        app.typing_volume = 0.4;
+        app.input_devices = vec![
+            device("MacBook Pro Microphone", 48_000, true),
+            device("AirPods Pro", 48_000, false),
+        ];
+        app.output_devices = vec![
+            device("MacBook Pro Speakers", 48_000, true),
+            device("AirPods Pro", 48_000, false),
+        ];
+
+        let reply = "loud and clear, no server in between";
+        let say = |app: &mut App, from: PeerId, text: &str, at: u64| {
+            app.apply(Event::Chat(ChatLine {
+                channel: ChannelId(0),
+                from,
+                text: text.into(),
+                at: 1_757_000_000 + at,
+            }));
+        };
+
+        println!("Rendering {TOTAL} frames...");
+        for f in 0..TOTAL {
+            let now = std::time::Instant::now();
+            app.started = now - std::time::Duration::from_millis(f as u64 * FRAME_MS);
+            let since = |start: usize| {
+                now - std::time::Duration::from_millis((f - start) as u64 * FRAME_MS)
+            };
+
+            match f {
+                JOIN => {
+                    app.apply(Event::Roster(vec![
+                        peer(1, "alice", Some(ChannelId(0))),
+                        peer(2, "bob", Some(ChannelId(0))),
+                        peer(3, "cem", Some(ChannelId(0))),
+                        peer(4, "deniz", Some(ChannelId(0))),
+                        peer(5, "jack", Some(ChannelId(1))),
+                    ]));
+                    app.take_link(mesh_reading(&healthy));
+                }
+                BOB_SAYS => say(&mut app, bob, "hey, can you hear me alright?", 0),
+                SEND => {
+                    say(&mut app, me, reply, 40);
+                    app.input.clear();
+                }
+                RELAY => app.take_link(mesh_reading(&relayed)),
+                RELAY_SAYS => say(
+                    &mut app,
+                    deniz,
+                    "on hotel wifi now, coming through a relay",
+                    95,
+                ),
+                MEND => {
+                    app.dropped_at = None;
+                    app.take_link(mesh_reading(&healthy));
+                }
+                SETTINGS => {
+                    app.view_mode = ViewMode::Settings;
+                    app.settings_section = SettingsSection::InputDevice;
+                }
+                BACK => app.view_mode = ViewMode::Chat,
+                _ => {}
+            }
+
+            // Bob talks over the taut string, then deniz over the relay and the fray —
+            // the pulse slows down with the round trip.
+            let talker = if (TALK..TYPE).contains(&f) {
+                Some(bob)
+            } else if (RELAY_SAYS..MEND).contains(&f) {
+                Some(deniz)
+            } else {
+                None
+            };
+            if let Some(talker) = talker {
+                app.speaking.clear();
+                app.peer_levels.clear();
+                app.speaking.insert(talker);
+                let level = [2, 4, 3, 5, 3, 1, 4, 2][(f / 3) % 8];
+                app.peer_levels.insert(talker, level);
+            } else {
+                app.speaking.clear();
+                app.peer_levels.clear();
+            }
+
+            if (TYPE..SEND).contains(&f) {
+                let typed = ((f - TYPE) * reply.len() / (SEND - TYPE - 12)).min(reply.len());
+                app.input = reply[..typed].to_string();
+            }
+
+            // Held fresh for the whole scene; the real app notes each new dropout.
+            if (FRAY..MEND).contains(&f) {
+                app.dropped_at = Some(now);
+            }
+
+            if (SETTINGS..BACK).contains(&f) {
+                app.mode_transition_at = Some(since(SETTINGS));
+                // A voice with some life in it, riding over the noise floor.
+                let t = (f - SETTINGS) as f32 * 0.35;
+                app.mic_level = (0.38 + 0.2 * t.sin() + 0.08 * (t * 2.7).sin()).clamp(0.0, 1.0);
+            } else if f >= BACK {
+                app.mode_transition_at = Some(since(BACK));
+            }
+
+            let picture = flat_svg(&app, COLS, ROWS, &theme, 0.0);
+            std::fs::write(frames.join(format!("frame_{f:04}.svg")), picture).unwrap();
+        }
+
+        println!("Rasterizing...");
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let chunk = TOTAL.div_ceil(threads);
+        std::thread::scope(|s| {
+            for t in 0..threads {
+                let dir = frames.clone();
+                s.spawn(move || {
+                    for i in (t * chunk)..((t + 1) * chunk).min(TOTAL) {
+                        let status = std::process::Command::new("rsvg-convert")
+                            .args(["-w", WIDTH, "-a", "-f", "png", "-o"])
+                            .arg(dir.join(format!("frame_{i:04}.png")))
+                            .arg(dir.join(format!("frame_{i:04}.svg")))
+                            .status()
+                            .expect("rsvg-convert is required");
+                        assert!(status.success(), "rsvg-convert failed on frame {i}");
+                    }
+                });
+            }
+        });
+
+        let input = frames.join("frame_%04d.png");
+        let input = input.to_str().unwrap();
+        let fps = FPS.to_string();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("ffmpeg")
+                .args(["-y", "-v", "error"])
+                .args(args)
+                .status()
+                .expect("ffmpeg is required");
+            assert!(status.success(), "ffmpeg failed: {args:?}");
+        };
+        run(&[
+            "-framerate",
+            &fps,
+            "-i",
+            input,
+            "-filter_complex",
+            "split[a][b];[a]palettegen=max_colors=64:stats_mode=full[p];[b][p]paletteuse=dither=none",
+            "target/showcase/tincan.gif",
+        ]);
+        // ffmpeg writes every frame whole, so a mostly still interface comes out at
+        // ~15 MB — over GitHub's attachment limit. Pillow folds identical frames into
+        // one longer one and writes only what changed, with ffmpeg's palette kept —
+        // all but its transparency green, which the half-covered bottom row of pixels
+        // would otherwise be matched to.
+        let squeeze = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "from PIL import Image, ImageSequence\n\
+                 src = Image.open('target/showcase/tincan.gif')\n\
+                 colours = src.getpalette()\n\
+                 for i in range(0, len(colours), 3):\n    \
+                     if colours[i:i + 3] == [0, 255, 0]: colours[i:i + 3] = [20, 16, 12]\n\
+                 pal = Image.new('P', (1, 1)); pal.putpalette(colours)\n\
+                 out = []\n\
+                 for f in ImageSequence.Iterator(src):\n    \
+                     p = f.convert('RGB').quantize(palette=pal, dither=Image.Dither.NONE)\n    \
+                     p.info.clear(); out.append(p)\n\
+                 out[0].save('target/showcase/tincan.gif', save_all=True, append_images=out[1:], duration=50, loop=0)\n",
+            ])
+            .status();
+        if !squeeze.is_ok_and(|s| s.success()) {
+            eprintln!("python3 with Pillow is not available; tincan.gif is left unoptimised");
+        }
+        run(&[
+            "-framerate",
+            &fps,
+            "-i",
+            input,
+            // x264 wants even sides; the height is whatever the cell grid came to.
+            "-vf",
+            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-crf",
+            "18",
+            "target/showcase/tincan.mp4",
+        ]);
+        std::fs::copy(
+            frames.join(format!("frame_{:04}.png", BOB_SAYS + 20)),
+            "target/showcase/tincan.png",
+        )
+        .unwrap();
+        println!("Wrote target/showcase/tincan.{{gif,mp4,png}}");
     }
 }

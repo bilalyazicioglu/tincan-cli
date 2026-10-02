@@ -193,7 +193,7 @@ jobs:
           cat <<EOF > tap/Formula/tincan.rb
           class Tincan < Formula
             desc "Serverless peer-to-peer voice and text chat for your terminal"
-            homepage "https://github.com/bilalyazicioglu/tincan-cli"
+            homepage "https://tincan.rs"
             version "${VERSION}"
             license "MIT"
 

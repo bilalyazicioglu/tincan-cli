@@ -94,9 +94,7 @@ mod tests {
         // Opus warms up over its first few frames, so feed a few before measuring.
         for _ in 0..5 {
             let packet = encoder.encode(&input).unwrap().to_vec();
-            decoder
-                .decode(&Frame::Packet(packet), &mut output)
-                .unwrap();
+            decoder.decode(&Frame::Packet(packet), &mut output).unwrap();
         }
 
         let input_rms = super::super::vad::rms(&input);
@@ -148,6 +146,9 @@ mod tests {
         let mut output = vec![0.7; FRAME];
         let written = decoder.decode(&Frame::Silence, &mut output).unwrap();
         assert_eq!(written, FRAME);
-        assert!(output.iter().all(|s| *s == 0.0), "no previous content may remain");
+        assert!(
+            output.iter().all(|s| *s == 0.0),
+            "no previous content may remain"
+        );
     }
 }

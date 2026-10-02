@@ -217,7 +217,10 @@ mod tests {
                 * 0.15
         });
 
-        assert!(hiss > 3.0, "room noise must come down; it came down {hiss:.1}x");
+        assert!(
+            hiss > 3.0,
+            "room noise must come down; it came down {hiss:.1}x"
+        );
         assert!(
             speech < 1.3,
             "speech must come through roughly untouched; it lost {speech:.1}x"

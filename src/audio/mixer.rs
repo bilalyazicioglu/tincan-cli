@@ -68,7 +68,10 @@ mod tests {
         let mut mixer = Mixer::default();
         let mut out = vec![7.0; 8];
         mixer.mix(&[], &mut out);
-        assert!(out.iter().all(|s| *s == 0.0), "previous content must be cleared");
+        assert!(
+            out.iter().all(|s| *s == 0.0),
+            "previous content must be cleared"
+        );
     }
 
     #[test]
@@ -104,7 +107,10 @@ mod tests {
         assert!(peak <= 1.0, "the output must not overflow, peak: {peak}");
         assert!(peak > 0.5, "audio must stay audible, peak: {peak}");
         // They all share a sign, so the waveform must be preserved (no flat clipping).
-        assert!(out.iter().all(|s| (*s - out[0]).abs() < 1e-6), "the signal must not distort");
+        assert!(
+            out.iter().all(|s| (*s - out[0]).abs() < 1e-6),
+            "the signal must not distort"
+        );
     }
 
     /// The gain must return once the loud passage is over, or everything stays quiet.
@@ -122,7 +128,10 @@ mod tests {
             mixer.mix(&[&quiet], &mut out);
         }
         assert!((mixer.gain - 1.0).abs() < 1e-6, "the gain must come back");
-        assert!((out[0] - 0.1).abs() < 1e-6, "a quiet signal must not be turned down");
+        assert!(
+            (out[0] - 0.1).abs() < 1e-6,
+            "a quiet signal must not be turned down"
+        );
     }
 
     /// Sources may differ in length (a lost frame, a short concealment) — no panics.
@@ -135,7 +144,13 @@ mod tests {
 
         mixer.mix(&[&short, &full], &mut out);
 
-        assert!((out[0] - 0.6).abs() < 1e-6, "the short source must be audible at the start");
-        assert!((out[7] - 0.1).abs() < 1e-6, "past its end nothing may be disturbed");
+        assert!(
+            (out[0] - 0.6).abs() < 1e-6,
+            "the short source must be audible at the start"
+        );
+        assert!(
+            (out[7] - 0.1).abs() < 1e-6,
+            "past its end nothing may be disturbed"
+        );
     }
 }

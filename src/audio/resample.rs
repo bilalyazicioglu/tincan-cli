@@ -112,9 +112,7 @@ mod tests {
         assert!(!r.is_identity());
 
         // 160 samples at 16 kHz = 10 ms -> should produce exactly 480 samples at 48 kHz
-        let input: Vec<f32> = (0..160)
-            .map(|i| (i as f32 * 0.1).sin())
-            .collect();
+        let input: Vec<f32> = (0..160).map(|i| (i as f32 * 0.1).sin()).collect();
 
         let mut output = Vec::new();
         r.process(&input, &mut output);
@@ -126,9 +124,7 @@ mod tests {
     #[test]
     fn downsampling_48k_to_16k_produces_one_third_samples() {
         let mut r = Resampler::new(48000, 16000);
-        let input: Vec<f32> = (0..480)
-            .map(|i| (i as f32 * 0.05).sin())
-            .collect();
+        let input: Vec<f32> = (0..480).map(|i| (i as f32 * 0.05).sin()).collect();
 
         let mut output = Vec::new();
         r.process(&input, &mut output);
@@ -156,8 +152,12 @@ mod tests {
 
         // Check that signal energy (RMS) is preserved within 5%
         let rms_orig = (original.iter().map(|s| s * s).sum::<f32>() / original.len() as f32).sqrt();
-        let rms_resamp = (roundtrip.iter().map(|s| s * s).sum::<f32>() / roundtrip.len() as f32).sqrt();
+        let rms_resamp =
+            (roundtrip.iter().map(|s| s * s).sum::<f32>() / roundtrip.len() as f32).sqrt();
 
-        assert!((rms_orig - rms_resamp).abs() < 0.05, "RMS original {rms_orig}, RMS resampled {rms_resamp}");
+        assert!(
+            (rms_orig - rms_resamp).abs() < 0.05,
+            "RMS original {rms_orig}, RMS resampled {rms_resamp}"
+        );
     }
 }

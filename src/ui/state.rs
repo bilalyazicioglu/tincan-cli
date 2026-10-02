@@ -9,13 +9,28 @@ use std::collections::{HashMap, HashSet};
 use crate::audio::MicTest;
 use crate::audio::device::AudioDeviceInfo;
 use crate::net::Event;
-use crate::net::voice::LinkStatus;
+use crate::net::voice::{LinkStatus, PeerLink};
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
-
-
 
 /// How long a dropout keeps being reported after the audio recovers.
 const DROPOUT_MEMORY: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// A direct link this slow is one you start to hear: replies arrive late enough to
+/// talk over each other. It takes two readings in a row (a second apart) at or over
+/// it, so a single spike does not mark anyone.
+const SLOW_FROM: std::time::Duration = std::time::Duration::from_millis(150);
+/// It has to come back under this before it counts as healthy again, so a round trip
+/// hovering at the edge does not make the roster flicker.
+const SLOW_UNTIL: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// What is wrong with someone's link, if anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trouble {
+    /// Their audio detours through a relay.
+    Relay,
+    /// Direct, but slow enough to hear.
+    Slow,
+}
 
 /// How long we listen to the room before deciding where its floor is. Long enough to
 /// catch a fan coming round, short enough that nobody wanders off.
@@ -146,11 +161,17 @@ pub struct App {
     pub voice_available: bool,
     /// The quality of the voice connections; refreshed periodically.
     pub link: LinkStatus,
+    /// Who is currently past the slow threshold. Kept between readings because the
+    /// way back is lower than the way in.
+    slow: HashSet<PeerId>,
+    /// Who was at or over the slow threshold on the last reading: one more and they
+    /// are slow.
+    over: HashSet<PeerId>,
     /// Audio dropout counter — above zero means the user heard a crackle. It only
     /// ever climbs, so on its own it cannot say whether the trouble is now or was an
     /// hour ago; `dropped_at` is what answers that.
     pub audio_dropouts: u64,
-    dropped_at: Option<std::time::Instant>,
+    pub(crate) dropped_at: Option<std::time::Instant>,
     pub status: Option<String>,
     /// Filled with a reason when the session ends; the interface closes once it is set.
     pub ended: Option<String>,
@@ -217,6 +238,8 @@ impl App {
             started: std::time::Instant::now(),
             voice_available: false,
             link: LinkStatus::default(),
+            slow: HashSet::new(),
+            over: HashSet::new(),
             audio_dropouts: 0,
             dropped_at: None,
             status: None,
@@ -255,11 +278,13 @@ impl App {
                 // Our own state comes from the server's list, so it stays right
                 // across a reconnect too.
                 self.sync_self_from_roster();
+                self.prune_link();
             }
             Event::Roster(peers) => {
                 self.peers = peers;
                 self.remember_names();
                 self.sync_self_from_roster();
+                self.prune_link();
                 // Someone who has left is no longer something the arrow keys may
                 // point at — otherwise a press adjusts a person who is not there.
                 if let Some(selected) = self.selected_peer
@@ -433,6 +458,89 @@ impl App {
         }
     }
 
+    /// Takes a fresh reading of the voice links and works out who is slow.
+    pub fn take_link(&mut self, status: LinkStatus) {
+        self.link = status;
+        self.prune_link();
+        for (peer, link) in &self.link.per_peer {
+            if link.relayed || link.rtt < SLOW_UNTIL {
+                self.slow.remove(peer);
+                self.over.remove(peer);
+            } else if link.rtt >= SLOW_FROM {
+                // `insert` is false when they were already over last time: the
+                // second reading in a row.
+                if !self.over.insert(*peer) {
+                    self.slow.insert(*peer);
+                }
+            } else {
+                // Inside the band: a slow link stays slow, a streak starts over.
+                self.over.remove(peer);
+            }
+        }
+    }
+
+    /// Keeps the link only for the people in the call we are in, and counts the
+    /// summary from what is left.
+    ///
+    /// A connection can outlive its person by a moment — it closes on the next
+    /// membership update, and is only read again on the next tick — so this runs on
+    /// every reading and on every roster change. That way no view names someone who
+    /// has left or moved, and the chip never says `RELAY` because of them.
+    fn prune_link(&mut self) {
+        let in_call: HashSet<PeerId> = match self.voice {
+            Some(channel) => self
+                .peers
+                .iter()
+                .filter(|p| p.id != self.me && p.channel == Some(channel))
+                .map(|p| p.id)
+                .collect(),
+            None => HashSet::new(),
+        };
+        self.link.per_peer.retain(|peer, _| in_call.contains(peer));
+        self.slow
+            .retain(|peer| self.link.per_peer.contains_key(peer));
+        self.over
+            .retain(|peer| self.link.per_peer.contains_key(peer));
+
+        self.link.relayed = self
+            .link
+            .per_peer
+            .values()
+            .filter(|link| link.relayed)
+            .count();
+        self.link.direct = self.link.per_peer.len() - self.link.relayed;
+        self.link.worst_rtt = self.link.per_peer.values().map(|link| link.rtt).max();
+    }
+
+    /// What is wrong with the link to one person, and the reading that says so.
+    pub fn trouble(&self, peer: PeerId) -> Option<(Trouble, PeerLink)> {
+        let link = *self.link.per_peer.get(&peer)?;
+        if link.relayed {
+            Some((Trouble::Relay, link))
+        } else if self.slow.contains(&peer) {
+            Some((Trouble::Slow, link))
+        } else {
+            None
+        }
+    }
+
+    /// The one link most worth naming: a relay before a slow direct link, the longer
+    /// round trip before the shorter, and the lower identity on a tie so the choice
+    /// holds still between readings.
+    pub fn worst_trouble(&self) -> Option<(PeerId, Trouble, PeerLink)> {
+        self.link
+            .per_peer
+            .keys()
+            .filter_map(|&peer| self.trouble(peer).map(|(kind, link)| (peer, kind, link)))
+            .max_by(|a, b| {
+                let relay = |kind: Trouble| kind == Trouble::Relay;
+                relay(a.1)
+                    .cmp(&relay(b.1))
+                    .then(a.2.rtt.cmp(&b.2.rtt))
+                    .then(b.0.cmp(&a.0))
+            })
+    }
+
     /// Takes the engine's running dropout count and notes when it last moved.
     pub fn note_dropouts(&mut self, total: u64) {
         if total > self.audio_dropouts {
@@ -550,8 +658,7 @@ impl App {
         if self.mic_test == MicTest::Off {
             self.fed_back = false;
             self.mic_test = MicTest::Recording;
-            self.mic_test_until =
-                Some(std::time::Instant::now() + crate::audio::TEST_LENGTH);
+            self.mic_test_until = Some(std::time::Instant::now() + crate::audio::TEST_LENGTH);
         } else {
             self.stop_mic_test();
         }
@@ -650,7 +757,10 @@ impl App {
     /// The sound a key should make, or nothing when the user has asked for quiet.
     pub fn click_for(&self, key: char) -> Option<crate::audio::blip::Blip> {
         (self.typing_clicks && self.typing_volume > 0.0).then_some(
-            crate::audio::blip::Blip::Click { key, volume: self.typing_volume },
+            crate::audio::blip::Blip::Click {
+                key,
+                volume: self.typing_volume,
+            },
         )
     }
 
@@ -705,7 +815,9 @@ impl App {
                     if let Some(idx) = self.input_devices.iter().position(|d| d.name == *active) {
                         self.selected_input_idx = idx;
                     }
-                } else if let Some(default_idx) = self.input_devices.iter().position(|d| d.is_default) {
+                } else if let Some(default_idx) =
+                    self.input_devices.iter().position(|d| d.is_default)
+                {
                     self.selected_input_idx = default_idx;
                 }
                 if self.selected_input_idx >= self.input_devices.len() {
@@ -721,7 +833,9 @@ impl App {
                     if let Some(idx) = self.output_devices.iter().position(|d| d.name == *active) {
                         self.selected_output_idx = idx;
                     }
-                } else if let Some(default_idx) = self.output_devices.iter().position(|d| d.is_default) {
+                } else if let Some(default_idx) =
+                    self.output_devices.iter().position(|d| d.is_default)
+                {
                     self.selected_output_idx = default_idx;
                 }
                 if self.selected_output_idx >= self.output_devices.len() {
@@ -912,12 +1026,24 @@ mod tests {
             peer(2, Some(ChannelId(1))),
         ]));
 
-        assert_eq!(app.voice, Some(ChannelId(2)), "the voice channel comes from the roster");
-        assert_eq!(app.viewing, ChannelId(0), "the viewed channel must not change");
+        assert_eq!(
+            app.voice,
+            Some(ChannelId(2)),
+            "the voice channel comes from the roster"
+        );
+        assert_eq!(
+            app.viewing,
+            ChannelId(0),
+            "the viewed channel must not change"
+        );
 
         app.view_next(true);
         assert_eq!(app.viewing, ChannelId(1));
-        assert_eq!(app.voice, Some(ChannelId(2)), "browsing must not move the voice channel");
+        assert_eq!(
+            app.voice,
+            Some(ChannelId(2)),
+            "browsing must not move the voice channel"
+        );
     }
 
     #[test]
@@ -933,7 +1059,10 @@ mod tests {
 
         app.view_next(true);
         assert_eq!(app.viewing, ChannelId(1));
-        assert!(app.unread.is_empty(), "looking at a channel is what reading it means");
+        assert!(
+            app.unread.is_empty(),
+            "looking at a channel is what reading it means"
+        );
     }
 
     #[test]
@@ -953,7 +1082,10 @@ mod tests {
             text: "mine".into(),
             at: 2,
         }));
-        assert!(app.unread.is_empty(), "you do not need telling about your own message");
+        assert!(
+            app.unread.is_empty(),
+            "you do not need telling about your own message"
+        );
     }
 
     #[test]
@@ -965,7 +1097,11 @@ mod tests {
         assert!(app.click_for('a').is_some());
 
         app.nudge_typing_volume(-1.0);
-        assert_eq!(app.click_for('a'), None, "turned all the way down is off too");
+        assert_eq!(
+            app.click_for('a'),
+            None,
+            "turned all the way down is off too"
+        );
     }
 
     #[test]
@@ -992,12 +1128,24 @@ mod tests {
         assert_eq!(seen.len(), 4);
         seen.sort_by_key(|section| format!("{section:?}"));
         seen.dedup();
-        assert_eq!(seen.len(), 4, "tab must reach all four, not loop through three");
+        assert_eq!(
+            seen.len(),
+            4,
+            "tab must reach all four, not loop through three"
+        );
 
         app.settings_next_section(true);
-        assert_eq!(app.settings_section, SettingsSection::InputDevice, "and wrap");
+        assert_eq!(
+            app.settings_section,
+            SettingsSection::InputDevice,
+            "and wrap"
+        );
         app.settings_next_section(false);
-        assert_eq!(app.settings_section, SettingsSection::Typing, "in both directions");
+        assert_eq!(
+            app.settings_section,
+            SettingsSection::Typing,
+            "in both directions"
+        );
     }
 
     #[test]
@@ -1054,7 +1202,10 @@ mod tests {
         assert_eq!(app.peers_in(ChannelId(1)).len(), 1);
         assert_eq!(app.peers_in(ChannelId(0)).len(), 0);
 
-        app.apply(Event::Roster(vec![peer(1, Some(ChannelId(0))), peer(2, None)]));
+        app.apply(Event::Roster(vec![
+            peer(1, Some(ChannelId(0))),
+            peer(2, None),
+        ]));
         assert_eq!(app.peers_in(ChannelId(0)).len(), 1);
         assert_eq!(app.peers_in(ChannelId(1)).len(), 0);
     }
@@ -1096,18 +1247,29 @@ mod tests {
         );
 
         app.dropped_at = Some(std::time::Instant::now() - DROPOUT_MEMORY * 2);
-        assert!(!app.recently_dropped(), "old trouble must stop being reported");
+        assert!(
+            !app.recently_dropped(),
+            "old trouble must stop being reported"
+        );
     }
 
     #[test]
     fn the_recorded_test_keeps_the_speaker_shut_while_the_microphone_is_open() {
         let mut app = welcomed();
         app.toggle_recorded_test();
-        assert_eq!(app.mic_test, MicTest::Recording, "recording comes first, on its own");
+        assert_eq!(
+            app.mic_test,
+            MicTest::Recording,
+            "recording comes first, on its own"
+        );
 
         app.mic_test_until = Some(std::time::Instant::now());
         assert!(app.advance_mic_test());
-        assert_eq!(app.mic_test, MicTest::Playing, "and only then does the speaker open");
+        assert_eq!(
+            app.mic_test,
+            MicTest::Playing,
+            "and only then does the speaker open"
+        );
 
         app.mic_test_until = Some(std::time::Instant::now());
         assert!(app.advance_mic_test());
@@ -1130,10 +1292,16 @@ mod tests {
         app.toggle_monitor();
         assert_eq!(app.mic_test, MicTest::Monitoring);
 
-        assert!(!app.watch_for_feedback(1.0), "one loud frame is not yet a verdict");
+        assert!(
+            !app.watch_for_feedback(1.0),
+            "one loud frame is not yet a verdict"
+        );
         app.loud_since = Some(std::time::Instant::now() - RUNAWAY_FOR * 2);
 
-        assert!(app.watch_for_feedback(1.0), "but a level that never comes down is");
+        assert!(
+            app.watch_for_feedback(1.0),
+            "but a level that never comes down is"
+        );
         assert_eq!(app.mic_test, MicTest::Off);
         assert!(app.fed_back, "and the interface has to be able to say why");
     }
@@ -1168,12 +1336,18 @@ mod tests {
         for _ in 0..100 {
             app.nudge_gate(-0.05);
         }
-        assert_eq!(app.input_gate, 0.0, "the bottom of the meter means never gate");
+        assert_eq!(
+            app.input_gate, 0.0,
+            "the bottom of the meter means never gate"
+        );
 
         for _ in 0..100 {
             app.nudge_gate(0.05);
         }
-        assert_eq!(app.input_gate, GATE_CEILING, "and it must never eat the voice entirely");
+        assert_eq!(
+            app.input_gate, GATE_CEILING,
+            "and it must never eat the voice entirely"
+        );
     }
 
     #[test]
@@ -1191,7 +1365,10 @@ mod tests {
     fn measuring_the_room_settles_above_the_loudest_thing_it_heard() {
         let mut app = welcomed();
         app.start_calibration();
-        assert!(app.needs_animation(), "a measurement has to keep the loop awake");
+        assert!(
+            app.needs_animation(),
+            "a measurement has to keep the loop awake"
+        );
         assert_eq!(app.finish_calibration(), None, "it is still listening");
 
         for level in [0.05, 0.22, 0.11] {
@@ -1201,7 +1378,10 @@ mod tests {
         app.calibrating.as_mut().unwrap().until = std::time::Instant::now();
 
         let gate = app.finish_calibration().expect("its time is up");
-        assert!((gate - (0.22 + CALIBRATION_MARGIN)).abs() < 1e-6, "settled at {gate}");
+        assert!(
+            (gate - (0.22 + CALIBRATION_MARGIN)).abs() < 1e-6,
+            "settled at {gate}"
+        );
         assert_eq!(app.input_gate, gate);
         assert!(app.calibrating.is_none(), "and it is over");
         assert_eq!(app.finish_calibration(), None, "it does not fire twice");
@@ -1252,13 +1432,19 @@ mod tests {
     #[test]
     fn a_still_room_asks_for_no_redraws() {
         let mut app = welcomed();
-        assert!(!app.needs_animation(), "nothing is moving, so nothing should wake the loop");
+        assert!(
+            !app.needs_animation(),
+            "nothing is moving, so nothing should wake the loop"
+        );
 
         app.speaking.insert(PeerId([2; 32]));
         assert!(app.needs_animation(), "a travelling pulse needs frames");
 
         app.motion = false;
-        assert!(!app.needs_animation(), "reduced motion must stop the frames, not just the pulse");
+        assert!(
+            !app.needs_animation(),
+            "reduced motion must stop the frames, not just the pulse"
+        );
     }
 
     #[test]
@@ -1282,7 +1468,10 @@ mod tests {
     fn push_to_talk_keeps_the_microphone_shut_until_pressed() {
         let mut app = welcomed();
         app.ptt_mode = true;
-        assert!(!app.mic_open(), "nothing may be transmitted before the key is pressed");
+        assert!(
+            !app.mic_open(),
+            "nothing may be transmitted before the key is pressed"
+        );
 
         app.ptt_active = true;
         assert!(app.mic_open());
@@ -1546,7 +1735,223 @@ mod tests {
         assert_eq!(app.scroll_offset, 4);
 
         app.view_next(true);
-        assert_eq!(app.scroll_offset, 0, "switching channel must reset scroll offset");
+        assert_eq!(
+            app.scroll_offset, 0,
+            "switching channel must reset scroll offset"
+        );
+    }
+
+    use crate::net::voice::PeerLink;
+    use std::time::Duration;
+
+    /// A room of four: us (1) and three others in general.
+    fn crowd() -> App {
+        let mut app = welcomed();
+        app.apply(Event::Roster(vec![
+            peer(1, Some(ChannelId(0))),
+            peer(2, Some(ChannelId(0))),
+            peer(3, Some(ChannelId(0))),
+            peer(4, Some(ChannelId(0))),
+        ]));
+        app
+    }
+
+    fn links(app: &mut App, readings: &[(u8, bool, u64)]) {
+        let per_peer = readings
+            .iter()
+            .map(|&(seed, relayed, ms)| {
+                (
+                    PeerId([seed; 32]),
+                    PeerLink {
+                        relayed,
+                        rtt: Duration::from_millis(ms),
+                    },
+                )
+            })
+            .collect();
+        app.take_link(LinkStatus {
+            per_peer,
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn one_slow_reading_marks_nobody() {
+        let mut app = crowd();
+        let bob = PeerId([2; 32]);
+        links(&mut app, &[(2, false, 149)]);
+        assert_eq!(app.trouble(bob).map(|t| t.0), None);
+        links(&mut app, &[(2, false, 150)]);
+        assert_eq!(
+            app.trouble(bob).map(|t| t.0),
+            None,
+            "one spike is not a slow link"
+        );
+        links(&mut app, &[(2, false, 60)]);
+        links(&mut app, &[(2, false, 200)]);
+        assert_eq!(
+            app.trouble(bob).map(|t| t.0),
+            None,
+            "a dip in between starts the count again"
+        );
+        links(&mut app, &[(2, false, 200)]);
+        assert_eq!(
+            app.trouble(bob).map(|t| t.0),
+            Some(Trouble::Slow),
+            "the second in a row marks them"
+        );
+    }
+
+    #[test]
+    fn a_slow_link_holds_inside_the_band_and_clears_under_120ms() {
+        let mut app = crowd();
+        let bob = PeerId([2; 32]);
+        links(&mut app, &[(2, false, 150)]);
+        links(&mut app, &[(2, false, 150)]);
+        links(&mut app, &[(2, false, 130)]);
+        assert_eq!(
+            app.trouble(bob).map(|t| t.0),
+            Some(Trouble::Slow),
+            "inside the band it holds"
+        );
+        links(&mut app, &[(2, false, 119)]);
+        assert_eq!(app.trouble(bob).map(|t| t.0), None);
+    }
+
+    #[test]
+    fn a_relay_is_trouble_however_fast() {
+        let mut app = crowd();
+        links(&mut app, &[(2, true, 20)]);
+        assert_eq!(
+            app.trouble(PeerId([2; 32])).map(|t| t.0),
+            Some(Trouble::Relay)
+        );
+    }
+
+    #[test]
+    fn a_relay_outranks_a_slower_direct_link() {
+        let mut app = crowd();
+        links(&mut app, &[(3, false, 400), (4, true, 200)]);
+        links(&mut app, &[(3, false, 400), (4, true, 200)]);
+        let (who, kind, link) = app.worst_trouble().unwrap();
+        assert_eq!((who, kind), (PeerId([4; 32]), Trouble::Relay));
+        assert_eq!(link.rtt, Duration::from_millis(200));
+    }
+
+    #[test]
+    fn equal_troubles_pick_the_same_person_every_tick() {
+        let mut app = crowd();
+        links(&mut app, &[(4, true, 200), (3, true, 200)]);
+        assert_eq!(app.worst_trouble().unwrap().0, PeerId([3; 32]));
+    }
+
+    #[test]
+    fn a_peer_that_drops_off_the_link_is_forgotten() {
+        let mut app = crowd();
+        let bob = PeerId([2; 32]);
+        links(&mut app, &[(2, false, 200)]);
+        links(&mut app, &[(2, false, 200)]);
+        links(&mut app, &[]);
+        assert_eq!(app.trouble(bob), None);
+        links(&mut app, &[(2, false, 130)]);
+        assert_eq!(
+            app.trouble(bob),
+            None,
+            "back after leaving, they start clean"
+        );
+    }
+
+    #[test]
+    fn a_link_to_someone_who_left_is_dropped() {
+        let mut app = crowd();
+        links(&mut app, &[(2, false, 18), (9, true, 300)]);
+        assert!(
+            !app.link.per_peer.contains_key(&PeerId([9; 32])),
+            "nobody may read a stranger's link"
+        );
+        assert_eq!(app.trouble(PeerId([9; 32])), None);
+        assert_eq!(app.worst_trouble(), None);
+    }
+
+    #[test]
+    fn a_healthy_room_has_no_trouble() {
+        let mut app = crowd();
+        links(&mut app, &[(2, false, 18), (3, false, 40)]);
+        assert_eq!(app.worst_trouble(), None);
+    }
+
+    #[test]
+    fn someone_leaving_takes_their_link_with_them_at_once() {
+        let mut app = crowd();
+        links(&mut app, &[(2, true, 300), (3, false, 20)]);
+        app.apply(Event::Roster(vec![
+            peer(1, Some(ChannelId(0))),
+            peer(3, Some(ChannelId(0))),
+        ]));
+        assert!(
+            !app.link.per_peer.contains_key(&PeerId([2; 32])),
+            "not on the next reading, now"
+        );
+        assert_eq!(app.link.relayed, 0, "the summary forgets them too");
+        assert_eq!(app.link.direct, 1);
+        assert_eq!(app.link.worst_rtt, Some(Duration::from_millis(20)));
+    }
+
+    #[test]
+    fn someone_switching_channel_drops_out_of_the_call_at_once() {
+        let mut app = crowd();
+        links(&mut app, &[(2, true, 300), (3, false, 20)]);
+        app.apply(Event::Roster(vec![
+            peer(1, Some(ChannelId(0))),
+            peer(2, Some(ChannelId(1))),
+            peer(3, Some(ChannelId(0))),
+        ]));
+        assert_eq!(app.trouble(PeerId([2; 32])), None);
+        assert_eq!(app.link.relayed, 0);
+    }
+
+    #[test]
+    fn leaving_the_call_empties_the_link() {
+        let mut app = crowd();
+        links(&mut app, &[(2, false, 20), (3, false, 30)]);
+        app.apply(Event::Roster(vec![
+            peer(1, None),
+            peer(2, Some(ChannelId(0))),
+            peer(3, Some(ChannelId(0))),
+        ]));
+        assert!(app.link.per_peer.is_empty());
+        assert_eq!(
+            (app.link.direct, app.link.relayed, app.link.worst_rtt),
+            (0, 0, None)
+        );
+    }
+
+    #[test]
+    fn the_summary_is_counted_from_the_people_in_the_call() {
+        let mut app = crowd();
+        // The mesh still holds a relayed connection to someone who has gone.
+        let mut status = LinkStatus {
+            direct: 1,
+            relayed: 1,
+            worst_rtt: Some(Duration::from_millis(300)),
+            ..Default::default()
+        };
+        status.per_peer.insert(
+            PeerId([2; 32]),
+            PeerLink {
+                relayed: false,
+                rtt: Duration::from_millis(18),
+            },
+        );
+        status.per_peer.insert(
+            PeerId([9; 32]),
+            PeerLink {
+                relayed: true,
+                rtt: Duration::from_millis(300),
+            },
+        );
+        app.take_link(status);
+        assert_eq!((app.link.direct, app.link.relayed), (1, 0));
+        assert_eq!(app.link.worst_rtt, Some(Duration::from_millis(18)));
     }
 }
-

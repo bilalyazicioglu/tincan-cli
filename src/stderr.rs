@@ -131,7 +131,10 @@ mod tests {
         let before = stderr_identity();
 
         let guard = divert_to(&file).expect("diverts");
-        assert!(divert_to(&file).is_none(), "a second divert would lose the real stderr");
+        assert!(
+            divert_to(&file).is_none(),
+            "a second divert would lose the real stderr"
+        );
         write_like_c("ALSA lib pcm_route.c:886: no matching channel map\n");
         let during = stderr_identity();
         drop(guard);

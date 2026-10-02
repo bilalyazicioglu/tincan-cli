@@ -61,7 +61,10 @@ async fn host() -> Result<()> {
     let ep = bind().await?;
 
     println!("\n  Davet kodu:  {}\n", ep.id());
-    println!("  On the other machine:  cargo run --example ping -- join {}\n", ep.id());
+    println!(
+        "  On the other machine:  cargo run --example ping -- join {}\n",
+        ep.id()
+    );
     println!("  Waiting for a connection...");
 
     while let Some(incoming) = ep.accept().await {
@@ -94,14 +97,19 @@ async fn join(code: &str) -> Result<()> {
 
     println!("\n  Connecting to: {peer}");
     let started = Instant::now();
-    let conn = ep.connect(peer, ALPN).await.context("could not establish the connection")?;
+    let conn = ep
+        .connect(peer, ALPN)
+        .await
+        .context("could not establish the connection")?;
     println!("  ✓ connected in {:?}", started.elapsed());
 
     match conn.max_datagram_size() {
         Some(size) if size >= FRAME_BYTES => {
             println!("  ✓ max_datagram_size = {size} bytes (ample for an Opus frame)")
         }
-        Some(size) => println!("  ⚠ max_datagram_size = {size} bytes — an Opus frame ({FRAME_BYTES}) does not fit!"),
+        Some(size) => println!(
+            "  ⚠ max_datagram_size = {size} bytes — an Opus frame ({FRAME_BYTES}) does not fit!"
+        ),
         None => bail!("the other side does not support datagrams — the architecture needs them"),
     }
 

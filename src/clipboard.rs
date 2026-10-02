@@ -18,7 +18,12 @@ const CANDIDATES: &[(&str, &[&str])] = &[("pbcopy", &[])];
 #[cfg(target_os = "windows")]
 const CANDIDATES: &[(&str, &[&str])] = &[(
     "powershell",
-    &["-NoProfile", "-NonInteractive", "-Command", "$input | Set-Clipboard"],
+    &[
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$input | Set-Clipboard",
+    ],
 )];
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

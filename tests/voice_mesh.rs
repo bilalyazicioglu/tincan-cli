@@ -91,7 +91,10 @@ async fn voice_flows_directly_between_peers_in_the_same_channel() -> Result<()> 
     b.mesh.set_membership(channel, vec![a.id]).await;
 
     let frame = send_until_received(&a, &mut b, b"merhaba-ses").await?;
-    assert_eq!(frame.from, a.id, "the sender must be identified from the connection");
+    assert_eq!(
+        frame.from, a.id,
+        "the sender must be identified from the connection"
+    );
     assert_eq!(frame.payload, b"merhaba-ses");
 
     // The reverse direction must work too: the mesh is two-way.
@@ -198,7 +201,10 @@ async fn speaking_outside_a_channel_is_a_no_op() -> Result<()> {
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    assert!(b.received.try_recv().is_err(), "audio with no channel must go nowhere");
+    assert!(
+        b.received.try_recv().is_err(),
+        "audio with no channel must go nowhere"
+    );
     Ok(())
 }
 
@@ -209,7 +215,11 @@ async fn link_status_reports_direct_connections() -> Result<()> {
     let mut b = node().await?;
     introduce(&a, &b);
 
-    assert_eq!(a.mesh.link_status().await.peers(), 0, "no connections to begin with");
+    assert_eq!(
+        a.mesh.link_status().await.peers(),
+        0,
+        "no connections to begin with"
+    );
 
     let channel = Some(ChannelId(0));
     a.mesh.set_membership(channel, vec![b.id]).await;
@@ -218,8 +228,14 @@ async fn link_status_reports_direct_connections() -> Result<()> {
 
     let status = a.mesh.link_status().await;
     assert_eq!(status.peers(), 1);
-    assert_eq!(status.direct, 1, "on a local network the link must be direct");
-    assert_eq!(status.relayed, 0, "no relay may be reported while relays are off");
+    assert_eq!(
+        status.direct, 1,
+        "on a local network the link must be direct"
+    );
+    assert_eq!(
+        status.relayed, 0,
+        "no relay may be reported while relays are off"
+    );
     assert!(status.worst_rtt.is_some(), "the RTT must be measured");
     Ok(())
 }

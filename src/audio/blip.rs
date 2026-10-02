@@ -272,7 +272,10 @@ mod tests {
             let samples = of(blip);
             assert!(!samples.is_empty(), "{blip:?} made no sound");
             for sample in samples {
-                assert!((-0.6..=0.6).contains(&sample), "{blip:?} peaked at {sample}");
+                assert!(
+                    (-0.6..=0.6).contains(&sample),
+                    "{blip:?} peaked at {sample}"
+                );
             }
         }
     }
@@ -281,7 +284,11 @@ mod tests {
     fn no_sound_starts_or_ends_with_a_click() {
         for blip in EVERY {
             let samples = of(blip);
-            assert!(samples[0].abs() < 0.01, "{blip:?} opens on a step: {}", samples[0]);
+            assert!(
+                samples[0].abs() < 0.01,
+                "{blip:?} opens on a step: {}",
+                samples[0]
+            );
             let last = samples[samples.len() - 1];
             assert!(last.abs() < 0.01, "{blip:?} closes on a step: {last}");
         }
@@ -292,14 +299,21 @@ mod tests {
         // Counting zero crossings over a 45 ms window resolves to about ten hertz, so
         // this asks whether it is D5 rather than pretending to measure it exactly.
         let heard = pitch(&of(Blip::Message));
-        assert!((heard - D5).abs() < D5 * 0.03, "one note, and it is D5: heard {heard}");
+        assert!(
+            (heard - D5).abs() < D5 * 0.03,
+            "one note, and it is D5: heard {heard}"
+        );
 
         for blip in EVERY {
             if blip == Blip::Message {
                 continue;
             }
             let (first, second) = halves(blip);
-            assert_ne!(first.round(), second.round(), "{blip:?} is a gesture, not a note");
+            assert_ne!(
+                first.round(),
+                second.round(),
+                "{blip:?} is a gesture, not a note"
+            );
         }
     }
 
@@ -307,7 +321,10 @@ mod tests {
     fn a_message_sits_under_the_things_that_only_happen_once() {
         let message = of(Blip::Message);
         let chime = of(Blip::Chime);
-        assert!(message.len() < chime.len(), "it fires far more often than an arrival");
+        assert!(
+            message.len() < chime.len(),
+            "it fires far more often than an arrival"
+        );
 
         let peak = |samples: &[f32]| samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
         assert!(peak(&message) < peak(&chime), "so it has to be quieter too");
@@ -315,36 +332,70 @@ mod tests {
 
     #[test]
     fn the_same_key_always_sounds_the_same_and_two_keys_do_not() {
-        let a = Blip::Click { key: 'a', volume: 1.0 };
-        let b = Blip::Click { key: 'b', volume: 1.0 };
+        let a = Blip::Click {
+            key: 'a',
+            volume: 1.0,
+        };
+        let b = Blip::Click {
+            key: 'b',
+            volume: 1.0,
+        };
         assert_eq!(of(a), of(a), "a keyboard is consistent");
-        assert_ne!(of(a), of(b), "and a keyboard where every key sounds alike is what we are avoiding");
+        assert_ne!(
+            of(a),
+            of(b),
+            "and a keyboard where every key sounds alike is what we are avoiding"
+        );
     }
 
     #[test]
     fn the_spacebar_is_the_biggest_key_on_the_board() {
-        let space = of(Blip::Click { key: ' ', volume: 1.0 });
-        let letter = of(Blip::Click { key: 'k', volume: 1.0 });
+        let space = of(Blip::Click {
+            key: ' ',
+            volume: 1.0,
+        });
+        let letter = of(Blip::Click {
+            key: 'k',
+            volume: 1.0,
+        });
         assert!(space.len() > letter.len(), "it is longer under the thumb");
     }
 
     #[test]
     fn a_click_turned_all_the_way_down_is_silence() {
-        assert!(of(Blip::Click { key: 'a', volume: 0.0 }).is_empty());
+        assert!(
+            of(Blip::Click {
+                key: 'a',
+                volume: 0.0
+            })
+            .is_empty()
+        );
 
         let peak = |samples: Vec<f32>| samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
         assert!(
-            peak(of(Blip::Click { key: 'a', volume: 0.2 }))
-                < peak(of(Blip::Click { key: 'a', volume: 1.0 })),
+            peak(of(Blip::Click {
+                key: 'a',
+                volume: 0.2
+            })) < peak(of(Blip::Click {
+                key: 'a',
+                volume: 1.0
+            })),
             "and the dial in between has to do something"
         );
     }
 
     #[test]
     fn a_click_opens_and_closes_without_a_step_of_its_own() {
-        let click = of(Blip::Click { key: 'q', volume: 1.0 });
+        let click = of(Blip::Click {
+            key: 'q',
+            volume: 1.0,
+        });
         assert!(click[0].abs() < 0.01, "opens on {}", click[0]);
-        assert!(click[click.len() - 1].abs() < 0.01, "closes on {}", click[click.len() - 1]);
+        assert!(
+            click[click.len() - 1].abs() < 0.01,
+            "closes on {}",
+            click[click.len() - 1]
+        );
         assert!(click.iter().all(|s| s.abs() <= 0.3), "and never gets loud");
     }
 
@@ -372,8 +423,14 @@ mod tests {
         let (mic_low, mic_high) = halves(Blip::MicOn);
         let (ears_low, ears_high) = halves(Blip::EarsOn);
 
-        assert!((mic_low / ears_low - 2.0).abs() < 0.05, "{mic_low} vs {ears_low}");
-        assert!((mic_high / ears_high - 2.0).abs() < 0.05, "{mic_high} vs {ears_high}");
+        assert!(
+            (mic_low / ears_low - 2.0).abs() < 0.05,
+            "{mic_low} vs {ears_low}"
+        );
+        assert!(
+            (mic_high / ears_high - 2.0).abs() < 0.05,
+            "{mic_high} vs {ears_high}"
+        );
     }
 
     /// Read from the notes rather than from the rendered audio: at 196 Hz a 45 ms
@@ -387,16 +444,28 @@ mod tests {
         let mic = mic.second.unwrap() / mic.first;
         let ears = ears.second.unwrap() / ears.first;
 
-        assert!((mic - ears).abs() < 0.001, "one gesture, two heights: {mic} vs {ears}");
-        assert!((mic - 1.5).abs() < 0.005, "a perfect fifth, not something arbitrary: {mic}");
+        assert!(
+            (mic - ears).abs() < 0.001,
+            "one gesture, two heights: {mic} vs {ears}"
+        );
+        assert!(
+            (mic - 1.5).abs() < 0.005,
+            "a perfect fifth, not something arbitrary: {mic}"
+        );
     }
 
     #[test]
     fn a_room_event_does_not_sound_like_something_you_did() {
         let (chime_low, chime_high) = halves(Blip::Chime);
-        assert!((chime_high / chime_low - 1.5).abs() > 0.1, "the chime keeps its own interval");
+        assert!(
+            (chime_high / chime_low - 1.5).abs() > 0.1,
+            "the chime keeps its own interval"
+        );
         let (mic_low, _) = halves(Blip::MicOn);
-        assert!(chime_low > mic_low, "the chime sits above the pair you control");
+        assert!(
+            chime_low > mic_low,
+            "the chime sits above the pair you control"
+        );
     }
 
     #[test]
@@ -411,6 +480,10 @@ mod tests {
         let all = heard.len();
         heard.sort_unstable();
         heard.dedup();
-        assert_eq!(heard.len(), all, "two sounds land on the same pair of notes");
+        assert_eq!(
+            heard.len(),
+            all,
+            "two sounds land on the same pair of notes"
+        );
     }
 }

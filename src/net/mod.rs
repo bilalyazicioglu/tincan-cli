@@ -16,7 +16,10 @@ pub enum Command {
     SwitchChannel(Option<ChannelId>),
     /// The channel travels explicitly: the user can switch channels while typing, and
     /// the message must land in the channel it was written in.
-    Chat { channel: ChannelId, text: String },
+    Chat {
+        channel: ChannelId,
+        text: String,
+    },
     SetMuted(bool),
     SetDeafened(bool),
     SetAfk(bool),
@@ -26,7 +29,10 @@ pub enum Command {
 /// Events going out to the interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    Welcome { me: PeerId, room: RoomSnapshot },
+    Welcome {
+        me: PeerId,
+        room: RoomSnapshot,
+    },
     Roster(Vec<PeerInfo>),
     Chat(ChatLine),
     Notice(String),

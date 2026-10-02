@@ -66,14 +66,28 @@ fn list_devices() -> Result<()> {
     println!("\n  Input devices:");
     for device in host.input_devices()? {
         let name = device_name(&device);
-        let mark = if Some(&name) == default_in.as_ref() { " (default)" } else { "" };
-        println!("    • {name}{mark}  {}", describe(device.default_input_config().ok().as_ref()));
+        let mark = if Some(&name) == default_in.as_ref() {
+            " (default)"
+        } else {
+            ""
+        };
+        println!(
+            "    • {name}{mark}  {}",
+            describe(device.default_input_config().ok().as_ref())
+        );
     }
     println!("\n  Output devices:");
     for device in host.output_devices()? {
         let name = device_name(&device);
-        let mark = if Some(&name) == default_out.as_ref() { " (default)" } else { "" };
-        println!("    • {name}{mark}  {}", describe(device.default_output_config().ok().as_ref()));
+        let mark = if Some(&name) == default_out.as_ref() {
+            " (default)"
+        } else {
+            ""
+        };
+        println!(
+            "    • {name}{mark}  {}",
+            describe(device.default_output_config().ok().as_ref())
+        );
     }
     println!();
     Ok(())
@@ -81,7 +95,12 @@ fn list_devices() -> Result<()> {
 
 fn describe(cfg: Option<&cpal::SupportedStreamConfig>) -> String {
     match cfg {
-        Some(c) => format!("[{} Hz, {} kanal, {:?}]", c.sample_rate(), c.channels(), c.sample_format()),
+        Some(c) => format!(
+            "[{} Hz, {} kanal, {:?}]",
+            c.sample_rate(),
+            c.channels(),
+            c.sample_format()
+        ),
         None => "[config unreadable]".into(),
     }
 }
@@ -93,8 +112,16 @@ fn run(play: bool) -> Result<()> {
 
     let in_cfg = input.default_input_config()?;
     let out_cfg = output.default_output_config()?;
-    println!("\n  input  : {}  {}", device_name(&input), describe(Some(&in_cfg)));
-    println!("  output : {}  {}", device_name(&output), describe(Some(&out_cfg)));
+    println!(
+        "\n  input  : {}  {}",
+        device_name(&input),
+        describe(Some(&in_cfg))
+    );
+    println!(
+        "  output : {}  {}",
+        device_name(&output),
+        describe(Some(&out_cfg))
+    );
 
     if in_cfg.sample_rate() != SAMPLE_RATE || out_cfg.sample_rate() != SAMPLE_RATE {
         // No resampling in the MVP; if a device is not 48 kHz we want to know early.
@@ -154,7 +181,9 @@ fn run(play: bool) -> Result<()> {
     out_stream.play()?;
 
     if play {
-        println!("\n  ⚠ --play is on: WEAR HEADPHONES, or the microphone will hear the speaker and howl.");
+        println!(
+            "\n  ⚠ --play is on: WEAR HEADPHONES, or the microphone will hear the speaker and howl."
+        );
     } else {
         println!("\n  (quiet mode — nothing reaches the speaker; use --play to hear it)");
     }
@@ -222,14 +251,44 @@ fn report(counters: &Counters, sizes: &[usize], times: &[Duration], peak: f32) {
 
     println!("  frames processed : {frames} (~{} seconds)", frames / 50);
     println!("  Opus packet      : avg {avg_bytes:.0} bytes → ~{kbps:.0} kbps per person");
-    println!("  → worst case in a six-person mesh: ~{:.0} kbps upload", kbps * 5.0);
+    println!(
+        "  → worst case in a six-person mesh: ~{:.0} kbps upload",
+        kbps * 5.0
+    );
     println!("  encode+decode    : avg {avg_encode:?}, worst {worst_encode:?} (budget: 20 ms)");
-    println!("  microphone peak  : {peak:.3} {}", if peak < 0.001 { "⚠ silent — the microphone may not be working" } else { "✓" });
+    println!(
+        "  microphone peak  : {peak:.3} {}",
+        if peak < 0.001 {
+            "⚠ silent — the microphone may not be working"
+        } else {
+            "✓"
+        }
+    );
 
     let underruns = load(&counters.underruns);
     let overruns = load(&counters.overruns);
-    println!("  underruns        : {underruns} {}", if underruns == 0 { "✓" } else { "⚠ audible crackling" });
-    println!("  overruns         : {overruns} {}", if overruns == 0 { "✓" } else { "⚠ captured audio is being dropped" });
-    println!("\n  → the real-time bridge is {}\n",
-        if underruns == 0 && overruns == 0 { "sound: the architecture can be carried forward as is" } else { "troubled: the ring buffer discipline needs another look" });
+    println!(
+        "  underruns        : {underruns} {}",
+        if underruns == 0 {
+            "✓"
+        } else {
+            "⚠ audible crackling"
+        }
+    );
+    println!(
+        "  overruns         : {overruns} {}",
+        if overruns == 0 {
+            "✓"
+        } else {
+            "⚠ captured audio is being dropped"
+        }
+    );
+    println!(
+        "\n  → the real-time bridge is {}\n",
+        if underruns == 0 && overruns == 0 {
+            "sound: the architecture can be carried forward as is"
+        } else {
+            "troubled: the ring buffer discipline needs another look"
+        }
+    );
 }

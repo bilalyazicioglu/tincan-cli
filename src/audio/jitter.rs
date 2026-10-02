@@ -134,12 +134,20 @@ mod tests {
     fn waits_until_target_depth_before_playing() {
         let mut buffer = JitterBuffer::new(3);
         buffer.push(0, packet(0));
-        assert_eq!(buffer.pop(), Frame::Silence, "must not start on a single packet");
+        assert_eq!(
+            buffer.pop(),
+            Frame::Silence,
+            "must not start on a single packet"
+        );
         buffer.push(1, packet(1));
         assert_eq!(buffer.pop(), Frame::Silence);
         buffer.push(2, packet(2));
 
-        assert_eq!(buffer.pop(), Frame::Packet(packet(0)), "must flow once the target is met");
+        assert_eq!(
+            buffer.pop(),
+            Frame::Packet(packet(0)),
+            "must flow once the target is met"
+        );
         assert_eq!(buffer.pop(), Frame::Packet(packet(1)));
         assert_eq!(buffer.pop(), Frame::Packet(packet(2)));
     }
@@ -182,7 +190,11 @@ mod tests {
         buffer.pop();
 
         for _ in 0..20 {
-            assert_eq!(buffer.pop(), Frame::Silence, "silence must not count as loss");
+            assert_eq!(
+                buffer.pop(),
+                Frame::Silence,
+                "silence must not count as loss"
+            );
         }
     }
 
@@ -214,15 +226,25 @@ mod tests {
         buffer.push(6, packet(6));
         assert_eq!(buffer.pop(), Frame::Packet(packet(5)));
 
-        assert!(!buffer.push(5, packet(5)), "a past frame must not be taken back");
-        assert_eq!(buffer.pop(), Frame::Packet(packet(6)), "the stream must be undisturbed");
+        assert!(
+            !buffer.push(5, packet(5)),
+            "a past frame must not be taken back"
+        );
+        assert_eq!(
+            buffer.pop(),
+            Frame::Packet(packet(6)),
+            "the stream must be undisturbed"
+        );
     }
 
     #[test]
     fn rejects_duplicates() {
         let mut buffer = JitterBuffer::new(2);
         assert!(buffer.push(0, packet(0)));
-        assert!(!buffer.push(0, packet(0)), "the same frame must not be taken twice");
+        assert!(
+            !buffer.push(0, packet(0)),
+            "the same frame must not be taken twice"
+        );
         assert_eq!(buffer.depth(), 1);
     }
 

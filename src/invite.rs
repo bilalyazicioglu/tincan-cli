@@ -116,7 +116,11 @@ mod tests {
             canonical.replace('-', "_"),
         ];
         for variant in variants {
-            assert_eq!(decode(&variant).unwrap(), original, "failed on: {variant:?}");
+            assert_eq!(
+                decode(&variant).unwrap(),
+                original,
+                "failed on: {variant:?}"
+            );
         }
     }
 
@@ -130,7 +134,10 @@ mod tests {
 
         assert!(!looks_like_code("lobby"));
         assert!(!looks_like_code(&"a".repeat(crate::auth::MAX_ROOM_CHARS)));
-        assert!(!looks_like_code(&"ş".repeat(CODE_CHARS)), "only ASCII can be a code");
+        assert!(
+            !looks_like_code(&"ş".repeat(CODE_CHARS)),
+            "only ASCII can be a code"
+        );
     }
 
     #[test]

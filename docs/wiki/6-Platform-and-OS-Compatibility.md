@@ -13,7 +13,7 @@ Tincan is designed to run across Unix and Windows environments.
 | **Linux** | x86_64 | ALSA / Pulse / PipeWire | Fully Supported | Yes (`tincan-x86_64-unknown-linux-gnu.tar.gz`) |
 | **Linux** | ARM64 (Raspberry Pi 4) | ALSA | Fully Supported | Yes (`tincan-aarch64-unknown-linux-gnu.tar.gz`) |
 | **Windows 10/11** | x86_64 | WASAPI | Builds and tests in CI; untried on a desktop | Yes (`tincan-x86_64-pc-windows-msvc.zip`) |
-| **Android** | Termux ARM64 | OpenSL ES / AAudio | Roadmap (v0.2.0) | Source compile |
+| **Android** | Termux ARM64 | OpenSL ES / AAudio | Text chat only; voice is #43 | Source compile |
 
 ---
 

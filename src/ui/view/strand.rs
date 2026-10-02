@@ -62,7 +62,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             } else {
                 (' ', style)
             };
-            TextLine::from(vec![Span::raw(" "), Span::styled(symbol.to_string(), style)])
+            TextLine::from(vec![
+                Span::raw(" "),
+                Span::styled(symbol.to_string(), style),
+            ])
         })
         .collect();
 
@@ -113,6 +116,7 @@ mod tests {
             direct,
             relayed,
             worst_rtt: Some(Duration::from_millis(18)),
+            ..Default::default()
         };
         app
     }
@@ -150,16 +154,26 @@ mod tests {
     fn dropouts_outrank_everything_else() {
         let mut app = connected(2, 1);
         app.note_dropouts(4);
-        assert_eq!(of(&app), Strand::Frayed, "a fraying string is the more urgent news");
+        assert_eq!(
+            of(&app),
+            Strand::Frayed,
+            "a fraying string is the more urgent news"
+        );
         assert_eq!(label(&app), "CHOPPY");
     }
 
     #[test]
     fn a_fraying_string_actually_has_gaps() {
         let rows: Vec<bool> = (0..8).map(|row| unbroken(Strand::Frayed, row)).collect();
-        assert!(rows.contains(&false), "fraying must be visible, not just coloured");
+        assert!(
+            rows.contains(&false),
+            "fraying must be visible, not just coloured"
+        );
         assert!(rows.contains(&true), "the string must not vanish either");
-        assert!((0..8).all(|row| unbroken(Strand::Taut, row)), "a taut string is whole");
+        assert!(
+            (0..8).all(|row| unbroken(Strand::Taut, row)),
+            "a taut string is whole"
+        );
     }
 
     #[test]
@@ -181,7 +195,11 @@ mod tests {
         let mut app = connected(1, 0);
         app.speaking.insert(PeerId([2; 32]));
         app.motion = false;
-        assert_eq!(pulse_row(&app, 20), Some(10), "it stops moving, it does not disappear");
+        assert_eq!(
+            pulse_row(&app, 20),
+            Some(10),
+            "it stops moving, it does not disappear"
+        );
     }
 
     #[test]
@@ -193,6 +211,9 @@ mod tests {
 
         let quick_step = PULSE_FLOOR_MS;
         let slow_step = PULSE_FLOOR_MS + 280 / RTT_DAMPING;
-        assert!(slow_step > quick_step, "latency has to be visible in the travel");
+        assert!(
+            slow_step > quick_step,
+            "latency has to be visible in the travel"
+        );
     }
 }
