@@ -130,6 +130,18 @@ terminal UI, WASAPI device enumeration and the microphone permission prompt have
 been exercised on a real Windows machine. If you try it, [say how it
 went](https://github.com/bilalyazicioglu/tincan-cli/issues).
 
+**Nix flakes:**
+
+```bash
+# Run without installing:
+nix shell github:bilalyazicioglu/tincan-cli --command tincan host
+
+# Or install into your user profile:
+nix profile install github:bilalyazicioglu/tincan-cli
+```
+
+See [flake.nix](flake.nix) for the overlay exposing `pkgs.tincan-cli`.
+
 **Cargo**, if you have a Rust toolchain:
 
 ```bash
