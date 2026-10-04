@@ -3,6 +3,7 @@
   lib,
   pkg-config,
   alsa-lib,
+  libopus,
   ...
 }:
 
@@ -19,5 +20,6 @@ rustPlatform.buildRustPackage {
 
   buildInputs = [
     alsa-lib
+    libopus
   ];
 }
