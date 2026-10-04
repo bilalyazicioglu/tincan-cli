@@ -1,6 +1,9 @@
-{ rustPlatform
-, lib
-, ...
+{
+  rustPlatform,
+  lib,
+  pkg-config,
+  alsa-lib,
+  ...
 }:
 
 rustPlatform.buildRustPackage {
@@ -8,6 +11,13 @@ rustPlatform.buildRustPackage {
   version = "0.3.3";
 
   cargoLock.lockFile = ./Cargo.lock;
-
   src = lib.cleanSource ./.;
+
+  nativeBuildInputs = [
+    pkg-config
+  ];
+
+  buildInputs = [
+    alsa-lib
+  ];
 }
