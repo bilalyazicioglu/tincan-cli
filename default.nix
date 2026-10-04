@@ -9,6 +9,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "tincan-cli";
+  meta.mainProgram = "tincan";
   version = "0.3.3";
 
   cargoLock.lockFile = ./Cargo.lock;
