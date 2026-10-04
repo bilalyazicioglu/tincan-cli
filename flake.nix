@@ -6,7 +6,11 @@
   };
   outputs = { nixpkgs, ... }:
     let
-      supportedSys = [ "x86_64-linux" ];
+      supportedSys = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ];
       forallSys = nixpkgs.lib.genAttrs supportedSys;
       pkgs = nixpkgs.legacyPackages;
 

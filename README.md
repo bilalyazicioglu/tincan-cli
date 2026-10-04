@@ -130,10 +130,7 @@ terminal UI, WASAPI device enumeration and the microphone permission prompt have
 been exercised on a real Windows machine. If you try it, [say how it
 went](https://github.com/bilalyazicioglu/tincan-cli/issues).
 
-**Nix flakes (x86_64 Linux):**
-
-With `nix-command` and `flakes` enabled, Nix builds tincan from source and manages
-its build and runtime dependencies:
+**Nix flakes:**
 
 ```bash
 # Run without installing:
@@ -143,30 +140,7 @@ nix shell github:bilalyazicioglu/tincan-cli --command tincan host
 nix profile install github:bilalyazicioglu/tincan-cli
 ```
 
-To use it in your own flake, add this to its `inputs`:
-
-```nix
-tincan-cli = {
-  url = "github:bilalyazicioglu/tincan-cli";
-  inputs.nixpkgs.follows = "nixpkgs";
-};
-```
-
-The package is available as `tincan-cli.packages.x86_64-linux.default` in your
-`outputs` function when it accepts `tincan-cli` as an argument. To install through
-the overlay on NixOS, add this inline module to your `nixpkgs.lib.nixosSystem`
-`modules` list in that function:
-
-```nix
-({ pkgs, ... }: {
-  nixpkgs.overlays = [ tincan-cli.overlays.default ];
-  environment.systemPackages = [ pkgs.tincan-cli ];
-})
-```
-
-The overlay exposes `tincan-cli`; the installed command is `tincan`.
-Following your own `nixpkgs` input uses its Rust toolchain,
-which must meet the project's Rust 1.91+ requirement.
+See [flake.nix](flake.nix) for the overlay exposing `pkgs.tincan-cli`.
 
 **Cargo**, if you have a Rust toolchain:
 
