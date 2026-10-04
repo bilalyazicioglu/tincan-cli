@@ -19,6 +19,14 @@ Browse the [GitHub Issues](https://github.com/bilalyazicioglu/tincan-cli/issues)
 - `bug`: Confirmed defects needing fixes.
 - `enhancement`: New features and design proposals.
 
+**Claim the issue before you start.** Comment on it to say you'd like to take it, and
+wait until it is assigned to you. That way two people never work on the same thing, and
+we can point you at the right part of the code before you write any. Pull requests for
+issues that are unassigned, or assigned to someone else, may be closed.
+
+Something you'd like to change that has no issue yet? Open one first, unless it's a typo
+or a broken link.
+
 ### 2. Setting Up Development Environment & Branching Model
 1. Fork and clone the repository:
    ```bash
