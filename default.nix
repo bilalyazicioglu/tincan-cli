@@ -8,7 +8,7 @@
 }:
 
 rustPlatform.buildRustPackage {
-  pname = "tican-cli";
+  pname = "tincan-cli";
   version = "0.3.3";
 
   cargoLock.lockFile = ./Cargo.lock;

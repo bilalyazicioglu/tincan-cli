@@ -19,7 +19,7 @@
       });
 
       overlays.default = final: prev: {
-        tican-cli = final.callPackage ./. { };
+        tincan-cli = final.callPackage ./. { };
       };
 
     };
