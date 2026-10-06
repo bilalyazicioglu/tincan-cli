@@ -522,6 +522,8 @@ Bug reports and feature requests are welcome! Please use the
 [issue templates](.github/ISSUE_TEMPLATE) when opening an issue, and review the
 [pull request checklist](.github/PULL_REQUEST_TEMPLATE.md) before submitting a PR.
 
+If tincan is useful to you, you can [sponsor its development](https://github.com/sponsors/bilalyazicioglu).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
