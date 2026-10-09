@@ -320,13 +320,13 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
                             if news.side == Side::Microphone {
                                 voice.set_gate(app.input_gate);
                             }
-                            if news.device.is_some() && app.view_mode == ViewMode::Settings {
-                                app.refresh_devices();
-                            }
                             if let Some(note) = audio_notices.on_change(&news) {
                                 app.notice(note);
                             }
                         }
+                    }
+                    if cfg!(target_os = "macos") && app.view_mode == ViewMode::Settings {
+                        app.poll_devices();
                     }
                 }
 

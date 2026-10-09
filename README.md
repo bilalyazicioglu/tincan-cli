@@ -290,6 +290,9 @@ while running, including when a headset is connected or disconnected. A device
 named with `--input` / `--output`, remembered in `config.toml`, or picked in audio
 settings stays selected instead. Choose **System default (follow changes)** in
 `F6` settings to follow again; this also clears that side's remembered device.
+On macOS, the device lists also update while settings are open, so a reconnected
+headset appears without pressing refresh. The highlighted choice stays on the same
+device while you browse; if it disappears, the picker focuses the active replacement.
 If a selected device disappears, tincan tries the system default to keep audio
 working, but does not enable following or automatically return when it reconnects.
 On Linux, routing through the default device is handled by PipeWire/PulseAudio
