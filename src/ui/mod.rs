@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::audio::MicTest;
 use crate::audio::blip::Blip;
-use crate::audio::device::{AudioDevices, AudioHealth, Recovered};
+use crate::audio::device::{AudioDevices, AudioHealth, Recovered, Side};
 use crate::config::Config;
 use crate::net::voice::VoiceMesh;
 use crate::net::{Command, Event, Session};
@@ -195,6 +195,8 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
         // user to visit the settings screen.
         app.active_input_name = voice.active_input();
         app.active_output_name = voice.active_output();
+        app.follow_input = voice.devices.follows_input();
+        app.follow_output = voice.devices.follows_output();
         app.input_gate = config.gate_for(app.active_input_name.as_deref());
         voice.set_gate(app.input_gate);
         // The engine starts with suppression on. Someone who turned it off last
@@ -220,7 +222,7 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
 
     let mut startup_notes: Vec<String> = voice.as_ref().map(|v| v.missing()).unwrap_or_default();
     // A device that stays gone would otherwise say so once a second, forever.
-    let mut last_audio_note: Option<String> = None;
+    let mut audio_notices = AudioNotices::default();
 
     let mut speaking_rx = voice.as_ref().map(|v| v.speaking.clone());
     let mut mic_level_rx = voice.as_ref().map(|v| v.mic_level.clone());
@@ -311,10 +313,18 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
                             app.notice(note);
                         }
                         for news in voice.recover() {
-                            let note = describe(&news);
-                            if last_audio_note.as_deref() != Some(note.as_str()) {
-                                app.notice(note.clone());
-                                last_audio_note = Some(note);
+                            let (config, changed) = apply_audio_change(&mut app, Config::load(), &news);
+                            if changed {
+                                let _ = config.save();
+                            }
+                            if news.side == Side::Microphone {
+                                voice.set_gate(app.input_gate);
+                            }
+                            if news.device.is_some() && app.view_mode == ViewMode::Settings {
+                                app.refresh_devices();
+                            }
+                            if let Some(note) = audio_notices.on_change(&news) {
+                                app.notice(note);
                             }
                         }
                     }
@@ -584,65 +594,46 @@ async fn handle_key(
             }
             KeyCode::Enter => {
                 match app.settings_section {
-                    SettingsSection::InputDevice => {
-                        if let Some(dev) = app.selected_input_device() {
-                            let name = dev.name.clone();
-                            if !dev.is_supported {
-                                // Any rate is resampled; a device only fails here
-                                // when it will not report a rate at all.
-                                app.settings_error = Some(format!(
-                                    "{name} is not reporting a format, so it cannot be opened"
-                                ));
-                            } else if let Some(v) = voice {
-                                match v.switch_input(Some(&name)) {
-                                    Ok(activated) => {
-                                        app.active_input_name = Some(activated.clone());
-                                        app.settings_error = None;
-                                        let mut cfg = Config::load();
-                                        // The gate belongs to the microphone, not to
-                                        // the session: this one has its own floor.
-                                        app.input_gate = cfg.gate_for(Some(&activated));
-                                        v.set_gate(app.input_gate);
-                                        cfg.input_device = Some(activated);
-                                        cfg.typing_clicks = app.typing_clicks;
-                                        cfg.denoise = app.denoise;
-                                        cfg.typing_volume = Some(app.typing_volume);
-                                        let _ = cfg.save();
-                                    }
-                                    Err(err) => {
-                                        app.settings_error = Some(format!(
-                                            "could not switch the microphone: {err:#}"
-                                        ));
-                                    }
-                                }
+                    SettingsSection::InputDevice | SettingsSection::OutputDevice => {
+                        let side = if app.settings_section == SettingsSection::InputDevice {
+                            Side::Microphone
+                        } else {
+                            Side::Speaker
+                        };
+                        let (index, selected) = match side {
+                            Side::Microphone => {
+                                (app.selected_input_idx, app.selected_input_device())
                             }
-                        }
-                    }
-                    SettingsSection::OutputDevice => {
-                        if let Some(dev) = app.selected_output_device() {
-                            let name = dev.name.clone();
-                            if !dev.is_supported {
-                                // Any rate is resampled; a device only fails here
-                                // when it will not report a rate at all.
-                                app.settings_error = Some(format!(
-                                    "{name} is not reporting a format, so it cannot be opened"
-                                ));
-                            } else if let Some(v) = voice {
-                                match v.switch_output(Some(&name)) {
-                                    Ok(activated) => {
-                                        app.active_output_name = Some(activated.clone());
-                                        app.settings_error = None;
-                                        let mut cfg = Config::load();
-                                        cfg.output_device = Some(activated);
-                                        cfg.typing_clicks = app.typing_clicks;
-                                        cfg.denoise = app.denoise;
-                                        cfg.typing_volume = Some(app.typing_volume);
-                                        let _ = cfg.save();
+                            Side::Speaker => {
+                                (app.selected_output_idx, app.selected_output_device())
+                            }
+                        };
+                        let choice = selected.map(|dev| (dev.name.clone(), dev.is_supported));
+                        if let Some((name, false)) = &choice {
+                            app.settings_error = Some(format!(
+                                "{name} is not reporting a format, so it cannot be opened"
+                            ));
+                        } else if (index == 0 || choice.is_some())
+                            && let Some(v) = voice
+                        {
+                            let wanted = choice.as_ref().map(|(name, _)| name.as_str());
+                            match choose_audio_device(app, side, wanted, Config::load(), |name| {
+                                match side {
+                                    Side::Microphone => v.switch_input(name),
+                                    Side::Speaker => v.switch_output(name),
+                                }
+                            }) {
+                                Ok(cfg) => {
+                                    if side == Side::Microphone {
+                                        v.set_gate(app.input_gate);
                                     }
-                                    Err(err) => {
-                                        app.settings_error =
-                                            Some(format!("could not switch the speaker: {err:#}"));
-                                    }
+                                    let _ = cfg.save();
+                                }
+                                Err(err) => {
+                                    app.settings_error = Some(format!(
+                                        "could not switch the {}: {err:#}",
+                                        side.name()
+                                    ));
                                 }
                             }
                         }
@@ -848,6 +839,85 @@ fn nudge(app: &mut App, voice: Option<&VoiceControl>, direction: f32) {
     }
 }
 
+/// Synchronizes actual devices and their gates without turning an automatic
+/// change into a remembered device choice. Pending gate edits belong to the old
+/// microphone; reopening that same microphone must keep its current gate.
+fn apply_audio_change(app: &mut App, config: Config, news: &Recovered) -> (Config, bool) {
+    let input_changed = news.side == Side::Microphone && app.active_input_name != news.device;
+    let (config, changed) = if input_changed {
+        remember_settings_into(app, config)
+    } else {
+        (config, false)
+    };
+    match news.side {
+        Side::Microphone => {
+            app.calibrating = None;
+            if input_changed {
+                app.input_gate = config.gate_for(news.device.as_deref());
+            }
+            app.active_input_name = news.device.clone();
+        }
+        Side::Speaker => app.active_output_name = news.device.clone(),
+    }
+    (config, changed)
+}
+
+/// Persists an explicit choice only after its stream has successfully opened.
+/// Choosing the system default clears the remembered name for the next launch.
+fn choose_audio_device(
+    app: &mut App,
+    side: Side,
+    wanted: Option<&str>,
+    config: Config,
+    switch: impl FnOnce(Option<&str>) -> Result<String>,
+) -> Result<Config> {
+    let activated = switch(wanted)?;
+    let config = remember_settings_into(app, config).0;
+    let (mut config, _) = apply_audio_change(
+        app,
+        config,
+        &Recovered {
+            side,
+            device: Some(activated.clone()),
+        },
+    );
+    match side {
+        Side::Microphone => {
+            app.follow_input = wanted.is_none();
+            config.input_device = wanted.map(|_| activated.clone());
+        }
+        Side::Speaker => {
+            app.follow_output = wanted.is_none();
+            config.output_device = wanted.map(|_| activated.clone());
+        }
+    }
+    app.settings_error = None;
+    config.typing_clicks = app.typing_clicks;
+    config.denoise = app.denoise;
+    config.typing_volume = Some(app.typing_volume);
+    Ok(config)
+}
+
+/// Repeated failures are quiet independently for each side. Every successful
+/// transition is news, including a device reached again after a manual choice.
+#[derive(Default)]
+struct AudioNotices {
+    lost: HashSet<Side>,
+}
+
+impl AudioNotices {
+    fn on_change(&mut self, news: &Recovered) -> Option<String> {
+        if news.device.is_some() {
+            self.lost.remove(&news.side);
+            Some(describe(news))
+        } else if self.lost.insert(news.side) {
+            Some(describe(news))
+        } else {
+            None
+        }
+    }
+}
+
 /// What to tell the room about a stream that was taken away and put back.
 fn describe(news: &Recovered) -> String {
     match &news.device {
@@ -1044,6 +1114,256 @@ mod tests {
 
         let level = next_mic_level(Some(&mut rx)).await;
         assert!((level - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn device_choices_and_automatic_changes_preserve_settings_across_restarts() {
+        use crate::audio::device::Wanted;
+        let mut app = App::new(PeerId([1; 32]), "test".into());
+        let mut cfg = Config::default();
+        cfg.set_gate("Built-in", 0.21);
+        cfg.set_gate("Headset", 0.47);
+        cfg.output_device = Some("Studio speakers".into());
+        app.follow_output = false;
+        app.active_output_name = cfg.output_device.clone();
+        app.typing_clicks = true;
+        app.typing_volume = 0.6;
+        app.denoise = false;
+
+        cfg = choose_audio_device(&mut app, Side::Microphone, Some("Head"), cfg, |_| {
+            Ok("Headset".into())
+        })
+        .unwrap();
+        assert_eq!(cfg.input_device.as_deref(), Some("Headset"));
+        assert!(!app.follow_input);
+        assert_eq!(app.input_gate, 0.47);
+
+        // Returning to default opens a concrete device, but persists no name.
+        cfg = choose_audio_device(&mut app, Side::Microphone, None, cfg, |_| {
+            Ok("Built-in".into())
+        })
+        .unwrap();
+        assert!(app.follow_input);
+        assert!(cfg.input_device.is_none());
+        assert_eq!(app.active_input_name.as_deref(), Some("Built-in"));
+        assert_eq!(app.input_gate, 0.21);
+        app.start_calibration();
+        apply_audio_change(
+            &mut app,
+            cfg.clone(),
+            &Recovered {
+                side: Side::Microphone,
+                device: Some("Headset".into()),
+            },
+        );
+        assert!(
+            app.calibrating.is_none(),
+            "measurements cannot span microphones"
+        );
+        assert_eq!(app.input_gate, 0.47);
+        assert_eq!(app.active_input_name.as_deref(), Some("Headset"));
+        assert!(app.follow_input, "automatic changes retain the user's mode");
+        assert_eq!(app.active_output_name.as_deref(), Some("Studio speakers"));
+        assert!(!app.follow_output);
+
+        // A gate adjustment after the move belongs to the actual microphone,
+        // while the next launch must still follow the system default.
+        app.nudge_gate(0.05);
+        let (saved, changed) = remember_settings_into(&app, cfg);
+        assert!(changed);
+        assert!((saved.gate_for(Some("Headset")) - 0.52).abs() < 0.00001);
+        assert_eq!(saved.gate_for(Some("Built-in")), 0.21);
+        let file = std::env::temp_dir().join(format!(
+            "tincan-device-choice-{}.toml",
+            rand::random::<u64>()
+        ));
+        saved.save_to(&file).unwrap();
+        let loaded = Config::load_from(&file).unwrap();
+        std::fs::remove_file(file).unwrap();
+        assert_eq!(loaded, saved);
+        assert_eq!(
+            Wanted::pick(None, loaded.input_device.clone()),
+            Wanted::Default
+        );
+        assert_eq!(
+            Wanted::pick(None, loaded.output_device.clone()),
+            Wanted::Remembered("Studio speakers".into())
+        );
+        assert!(loaded.typing_clicks);
+        assert!(!loaded.denoise);
+        assert_eq!(loaded.typing_loudness(), 0.6);
+        assert_eq!(loaded.gate_for(Some("Built-in")), 0.21);
+
+        // Clearing the output preference does not alter the microphone's gate.
+        let loaded = choose_audio_device(&mut app, Side::Speaker, None, loaded, |_| {
+            Ok("Built-in speakers".into())
+        })
+        .unwrap();
+        assert!(app.follow_output);
+        assert!(loaded.output_device.is_none());
+        assert!(loaded.input_device.is_none());
+        assert!((app.input_gate - 0.52).abs() < 0.00001);
+    }
+
+    #[test]
+    fn gate_edits_survive_stream_recovery_and_are_saved_to_the_correct_microphone() {
+        let mut app = App::new(PeerId([1; 32]), "test".into());
+        app.active_input_name = Some("Built-in".into());
+        app.input_gate = 0.38; // Edited in settings, not yet written to disk.
+        let mut config = Config::default();
+        config.set_gate("Built-in", 0.21);
+        config.set_gate("Headset", 0.47);
+        let (config, changed) = apply_audio_change(
+            &mut app,
+            config,
+            &Recovered {
+                side: Side::Microphone,
+                device: Some("Built-in".into()),
+            },
+        );
+        assert!(!changed);
+        assert_eq!(
+            app.input_gate, 0.38,
+            "reopening the same microphone preserves live adjustments"
+        );
+        let (config, changed) = apply_audio_change(
+            &mut app,
+            config,
+            &Recovered {
+                side: Side::Microphone,
+                device: Some("Headset".into()),
+            },
+        );
+        assert!(changed);
+        assert_eq!(config.gate_for(Some("Built-in")), 0.38);
+        assert_eq!(config.gate_for(Some("Headset")), 0.47);
+        assert_eq!(app.input_gate, 0.47);
+        assert!(
+            config.input_device.is_none(),
+            "an automatic switch must not pin a device"
+        );
+        app.nudge_gate(0.05);
+        let config = choose_audio_device(&mut app, Side::Speaker, None, config, |_| {
+            Ok("Speakers".into())
+        })
+        .unwrap();
+        assert!((config.gate_for(Some("Headset")) - 0.52).abs() < 0.00001);
+        assert!((app.input_gate - 0.52).abs() < 0.00001);
+    }
+
+    #[test]
+    fn failed_selection_preserves_preferences_calibration_and_working_device() {
+        for side in [Side::Microphone, Side::Speaker] {
+            for wanted in [None, Some("Headset")] {
+                let mut app = App::new(PeerId([1; 32]), "test".into());
+                app.active_input_name = Some("Studio mic".into());
+                app.active_output_name = Some("Studio speakers".into());
+                app.follow_input = false;
+                app.follow_output = false;
+                app.input_gate = 0.4;
+                app.start_calibration();
+                let cfg = Config {
+                    input_device: app.active_input_name.clone(),
+                    output_device: app.active_output_name.clone(),
+                    ..Config::default()
+                };
+                assert!(
+                    choose_audio_device(&mut app, side, wanted, cfg.clone(), |_| anyhow::bail!(
+                        "could not open device"
+                    ))
+                    .is_err()
+                );
+                assert_eq!(app.active_input_name, cfg.input_device);
+                assert_eq!(app.active_output_name, cfg.output_device);
+                assert!(!app.follow_input && !app.follow_output);
+                assert_eq!(app.input_gate, 0.4);
+                assert!(app.calibrating.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn lost_audio_and_recovery_update_the_ui_without_leaking_gate_settings() {
+        let mut app = App::new(PeerId([1; 32]), "test".into());
+        let mut cfg = Config::default();
+        cfg.set_gate("Headset", 0.45);
+        app.active_input_name = Some("Headset".into());
+        app.input_gate = 0.45;
+        app.start_calibration();
+        apply_audio_change(
+            &mut app,
+            cfg.clone(),
+            &Recovered {
+                side: Side::Microphone,
+                device: None,
+            },
+        );
+        assert!(app.active_input_name.is_none());
+        assert!(app.calibrating.is_none());
+        let (saved, _) = remember_settings_into(&app, cfg.clone());
+        assert_eq!(saved.input_gates, cfg.input_gates);
+        apply_audio_change(
+            &mut app,
+            cfg.clone(),
+            &Recovered {
+                side: Side::Microphone,
+                device: Some("Headset".into()),
+            },
+        );
+        assert_eq!(app.active_input_name.as_deref(), Some("Headset"));
+        assert_eq!(app.input_gate, 0.45);
+        apply_audio_change(
+            &mut app,
+            cfg.clone(),
+            &Recovered {
+                side: Side::Microphone,
+                device: Some("New mic".into()),
+            },
+        );
+        assert_eq!(app.input_gate, crate::config::DEFAULT_GATE);
+        let (saved, _) = remember_settings_into(&app, cfg.clone());
+        assert_eq!(saved.input_gates, cfg.input_gates);
+        assert!(saved.input_device.is_none());
+    }
+
+    #[test]
+    fn audio_notices_report_real_transitions_without_repeating_outages() {
+        let mut notices = AudioNotices::default();
+        for side in [Side::Microphone, Side::Speaker] {
+            assert!(
+                notices
+                    .on_change(&Recovered { side, device: None })
+                    .is_some()
+            );
+        }
+        for _ in 0..3 {
+            for side in [Side::Microphone, Side::Speaker] {
+                assert!(
+                    notices
+                        .on_change(&Recovered { side, device: None })
+                        .is_none()
+                );
+            }
+        }
+        for side in [Side::Microphone, Side::Speaker] {
+            let back = Recovered {
+                side,
+                device: Some("Headset".into()),
+            };
+            assert!(notices.on_change(&back).unwrap().contains("now on Headset"));
+            // A later transition to the same device must still be visible.
+            assert!(notices.on_change(&back).is_some());
+            assert!(
+                notices
+                    .on_change(&Recovered { side, device: None })
+                    .is_some()
+            );
+            assert!(
+                notices
+                    .on_change(&Recovered { side, device: None })
+                    .is_none()
+            );
+        }
     }
 
     // ── Hardware that changed under us ──────────────────────────────────────

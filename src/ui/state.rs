@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::audio::MicTest;
-use crate::audio::device::AudioDeviceInfo;
+use crate::audio::device::{AudioDeviceInfo, Side};
 use crate::net::Event;
 use crate::net::voice::{LinkStatus, PeerLink};
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
@@ -185,6 +185,8 @@ pub struct App {
     pub selected_output_idx: usize,
     pub active_input_name: Option<String>,
     pub active_output_name: Option<String>,
+    pub follow_input: bool,
+    pub follow_output: bool,
     pub mic_level: f32,
     /// Whether typing makes a sound.
     pub typing_clicks: bool,
@@ -253,6 +255,8 @@ impl App {
             selected_output_idx: 0,
             active_input_name: None,
             active_output_name: None,
+            follow_input: true,
+            follow_output: true,
             mic_level: 0.0,
             typing_clicks: false,
             denoise: true,
@@ -809,40 +813,38 @@ impl App {
     /// Refreshes the cached list of audio devices from the host system.
     pub fn refresh_devices(&mut self) {
         if let Ok(inputs) = crate::audio::device::list_input_devices() {
-            self.input_devices = inputs;
-            if !self.input_devices.is_empty() {
-                if let Some(active) = &self.active_input_name {
-                    if let Some(idx) = self.input_devices.iter().position(|d| d.name == *active) {
-                        self.selected_input_idx = idx;
-                    }
-                } else if let Some(default_idx) =
-                    self.input_devices.iter().position(|d| d.is_default)
-                {
-                    self.selected_input_idx = default_idx;
-                }
-                if self.selected_input_idx >= self.input_devices.len() {
-                    self.selected_input_idx = 0;
-                }
-            }
+            self.update_devices(Side::Microphone, inputs);
         }
-
         if let Ok(outputs) = crate::audio::device::list_output_devices() {
-            self.output_devices = outputs;
-            if !self.output_devices.is_empty() {
-                if let Some(active) = &self.active_output_name {
-                    if let Some(idx) = self.output_devices.iter().position(|d| d.name == *active) {
-                        self.selected_output_idx = idx;
-                    }
-                } else if let Some(default_idx) =
-                    self.output_devices.iter().position(|d| d.is_default)
-                {
-                    self.selected_output_idx = default_idx;
-                }
-                if self.selected_output_idx >= self.output_devices.len() {
-                    self.selected_output_idx = 0;
-                }
-            }
+            self.update_devices(Side::Speaker, outputs);
         }
+    }
+
+    /// Index zero is the system-default choice; physical devices start at one.
+    pub fn update_devices(&mut self, side: Side, devices: Vec<AudioDeviceInfo>) {
+        let (list, selected, active, following) = match side {
+            Side::Microphone => (
+                &mut self.input_devices,
+                &mut self.selected_input_idx,
+                &self.active_input_name,
+                self.follow_input,
+            ),
+            Side::Speaker => (
+                &mut self.output_devices,
+                &mut self.selected_output_idx,
+                &self.active_output_name,
+                self.follow_output,
+            ),
+        };
+        *list = devices;
+        *selected = if following {
+            0
+        } else {
+            list.iter()
+                .position(|d| Some(&d.name) == active.as_ref())
+                .map(|idx| idx + 1)
+                .unwrap_or(0)
+        };
     }
 
     /// Cycles through sections in the Settings view.
@@ -862,24 +864,20 @@ impl App {
     pub fn settings_navigate_item(&mut self, forward: bool) {
         match self.settings_section {
             SettingsSection::InputDevice => {
-                if !self.input_devices.is_empty() {
-                    let len = self.input_devices.len();
-                    self.selected_input_idx = if forward {
-                        (self.selected_input_idx + 1) % len
-                    } else {
-                        (self.selected_input_idx + len - 1) % len
-                    };
-                }
+                let len = self.input_devices.len() + 1;
+                self.selected_input_idx = if forward {
+                    (self.selected_input_idx + 1) % len
+                } else {
+                    (self.selected_input_idx + len - 1) % len
+                };
             }
             SettingsSection::OutputDevice => {
-                if !self.output_devices.is_empty() {
-                    let len = self.output_devices.len();
-                    self.selected_output_idx = if forward {
-                        (self.selected_output_idx + 1) % len
-                    } else {
-                        (self.selected_output_idx + len - 1) % len
-                    };
-                }
+                let len = self.output_devices.len() + 1;
+                self.selected_output_idx = if forward {
+                    (self.selected_output_idx + 1) % len
+                } else {
+                    (self.selected_output_idx + len - 1) % len
+                };
             }
             SettingsSection::MicTest | SettingsSection::Typing => {
                 self.settings_next_section(forward);
@@ -890,12 +888,16 @@ impl App {
 
     /// Returns the currently highlighted input device.
     pub fn selected_input_device(&self) -> Option<&AudioDeviceInfo> {
-        self.input_devices.get(self.selected_input_idx)
+        self.selected_input_idx
+            .checked_sub(1)
+            .and_then(|idx| self.input_devices.get(idx))
     }
 
     /// Returns the currently highlighted output device.
     pub fn selected_output_device(&self) -> Option<&AudioDeviceInfo> {
-        self.output_devices.get(self.selected_output_idx)
+        self.selected_output_idx
+            .checked_sub(1)
+            .and_then(|idx| self.output_devices.get(idx))
     }
 
     /// Whether the microphone is open right now.
@@ -1012,10 +1014,65 @@ mod tests {
         assert_eq!(app.selected_input_idx, 1);
 
         app.settings_navigate_item(true);
-        assert_eq!(app.selected_input_idx, 0);
+        assert_eq!(app.selected_input_idx, 2);
+        assert_eq!(app.selected_input_device().unwrap().name, "Mic 2");
 
+        app.settings_navigate_item(true);
+        assert_eq!(app.selected_input_idx, 0);
+        assert!(
+            app.selected_input_device().is_none(),
+            "zero selects system default"
+        );
         app.settings_navigate_item(false);
+        assert_eq!(app.selected_input_idx, 2);
+    }
+
+    #[test]
+    fn refreshed_device_lists_keep_the_routing_mode_and_navigation_valid() {
+        let mut app = welcomed();
+        let devices = vec![
+            AudioDeviceInfo {
+                name: "Built-in".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                is_default: true,
+                is_supported: true,
+            },
+            AudioDeviceInfo {
+                name: "Headset".into(),
+                sample_rate: 16_000,
+                channels: 1,
+                is_default: false,
+                is_supported: true,
+            },
+        ];
+        for side in [Side::Microphone, Side::Speaker] {
+            app.update_devices(side, devices.clone());
+            let selected = if side == Side::Microphone {
+                app.selected_input_idx
+            } else {
+                app.selected_output_idx
+            };
+            assert_eq!(selected, 0, "following highlights the system-default row");
+        }
+        app.follow_input = false;
+        app.active_input_name = Some("Headset".into());
+        let mut reordered = devices;
+        reordered.reverse();
+        app.update_devices(Side::Microphone, reordered);
         assert_eq!(app.selected_input_idx, 1);
+        assert_eq!(app.selected_input_device().unwrap().name, "Headset");
+        app.update_devices(Side::Microphone, vec![]);
+        assert_eq!(app.selected_input_idx, 0);
+        assert!(!app.follow_input, "refresh is not a user choice");
+        assert!(app.selected_input_device().is_none());
+        app.settings_section = SettingsSection::InputDevice;
+        app.settings_navigate_item(false);
+        app.settings_navigate_item(true);
+        assert_eq!(
+            app.selected_input_idx, 0,
+            "default is reachable even with no devices"
+        );
     }
 
     #[test]
