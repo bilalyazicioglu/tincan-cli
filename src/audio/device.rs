@@ -60,22 +60,14 @@ pub struct AudioDevices {
     capture_tx: Arc<std::sync::Mutex<Producer<f32>>>,
     playback_rx: Arc<std::sync::Mutex<Consumer<f32>>>,
     health: Arc<AudioHealth>,
-    /// The devices actually in use. `switch_*` resolves a partial name or a default
-    /// into a real one, and the interface needs to show what it landed on.
-    active_input: Arc<std::sync::Mutex<Option<String>>>,
-    active_output: Arc<std::sync::Mutex<Option<String>>>,
-    /// Set when the driver takes a stream away under us — a device unplugged, or its
-    /// sample rate changed. Written from the audio callback, which can do nothing
-    /// about it itself, and acted on by `recover`.
-    input_lost: Arc<AtomicBool>,
-    output_lost: Arc<AtomicBool>,
-    /// Remembered devices that were not there when we started, and had to be replaced
-    /// by the default.
+    input: DeviceRoute,
+    output: DeviceRoute,
+    /// Remembered devices that were not there when we started.
     missing: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// Which end of the audio a piece of news is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Side {
     Microphone,
     Speaker,
@@ -90,7 +82,7 @@ impl Side {
     }
 }
 
-/// A stream the driver took away, and what came of trying to get it back.
+/// A stream that moved to another device or was recovered after a driver error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recovered {
     pub side: Side,
@@ -99,9 +91,20 @@ pub struct Recovered {
 }
 
 impl AudioDevices {
-    /// Switches the input device dynamically at runtime.
+    /// Switches the input device at runtime, as a choice: a named device stops the
+    /// microphone following the system default, `None` starts it again.
     /// Returns the name of the activated device on success.
     pub fn switch_input(&self, wanted: Option<&str>) -> Result<String> {
+        self.input.switch(wanted, |name| self.open_input(name))
+    }
+
+    /// Switches the output device at runtime, as a choice. See `switch_input`.
+    pub fn switch_output(&self, wanted: Option<&str>) -> Result<String> {
+        self.output.switch(wanted, |name| self.open_output(name))
+    }
+
+    /// Opens a microphone stream without saying anything about whether it was chosen.
+    fn open_input(&self, wanted: Option<&str>) -> Result<String> {
         let host = cpal::default_host();
         let device = match wanted {
             Some(name) => pick(host.input_devices()?, name)
@@ -153,7 +156,7 @@ impl AudioDevices {
                         }
                     }
                 },
-                on_error(&self.input_lost, "microphone"),
+                on_error(&self.input.lost, "microphone"),
                 None,
             ),
             cpal::SampleFormat::I16 => device.build_input_stream(
@@ -178,7 +181,7 @@ impl AudioDevices {
                         }
                     }
                 },
-                on_error(&self.input_lost, "microphone"),
+                on_error(&self.input.lost, "microphone"),
                 None,
             ),
             cpal::SampleFormat::U16 => device.build_input_stream(
@@ -206,7 +209,7 @@ impl AudioDevices {
                         }
                     }
                 },
-                on_error(&self.input_lost, "microphone"),
+                on_error(&self.input.lost, "microphone"),
                 None,
             ),
             format => bail!("unsupported microphone sample format: {format:?}"),
@@ -220,18 +223,25 @@ impl AudioDevices {
             Err(poisoned) => poisoned.into_inner(),
         };
         *lock = Some(stream);
-        remember(&self.active_input, &dev_name);
         Ok(dev_name)
     }
 
     /// The microphone currently open.
     pub fn active_input(&self) -> Option<String> {
-        read(&self.active_input)
+        read(&self.input.active)
     }
 
     /// The speaker currently open.
     pub fn active_output(&self) -> Option<String> {
-        read(&self.active_output)
+        read(&self.output.active)
+    }
+
+    pub fn follows_input(&self) -> bool {
+        self.input.following.load(Ordering::Relaxed)
+    }
+
+    pub fn follows_output(&self) -> bool {
+        self.output.following.load(Ordering::Relaxed)
     }
 
     /// Remembered devices that were not plugged in at start-up.
@@ -242,7 +252,8 @@ impl AudioDevices {
         }
     }
 
-    /// Reopens any stream the driver took away.
+    /// Reopens any stream the driver took away, and moves a stream that follows the
+    /// system default to wherever the default has gone.
     ///
     /// macOS hands a stream back when the device's sample rate changes underneath it —
     /// which is exactly what a Bluetooth headset does when its microphone opens and it
@@ -250,44 +261,40 @@ impl AudioDevices {
     /// is built for a rate that no longer exists, so the only cure is to open it again
     /// and read the new configuration.
     ///
-    /// Called off the audio thread, once a second. A failure leaves the flag up so the
-    /// next second tries again.
+    /// A new default is the other case. Plugging in a headset leaves the built-in
+    /// speaker working, so nothing is lost and the driver says nothing; cpal has no
+    /// device-change notification either. So the default's name is read here and
+    /// compared with the device in use (#160).
+    ///
+    /// Only macOS polls defaults. On Linux, ALSA exposes a `default` PCM rather
+    /// than the underlying device; PipeWire/PulseAudio handle routing when used.
+    /// Windows retains its existing stream recovery behavior.
+    ///
+    /// Called off the audio thread, once a second. Failed recovery is retried.
     pub fn recover(&self) -> Vec<Recovered> {
         let mut news = Vec::new();
         for side in [Side::Microphone, Side::Speaker] {
-            let (lost, active) = match side {
-                Side::Microphone => (&self.input_lost, &self.active_input),
-                Side::Speaker => (&self.output_lost, &self.active_output),
+            let route = match side {
+                Side::Microphone => &self.input,
+                Side::Speaker => &self.output,
             };
-            if !lost.swap(false, Ordering::Relaxed) {
-                continue;
-            }
-
-            let wanted = read(active);
-            let reopen = |name: Option<&str>| match side {
-                Side::Microphone => self.switch_input(name),
-                Side::Speaker => self.switch_output(name),
-            };
-            // The device it was on may itself be what disappeared, so the default is
-            // the fallback here too.
-            match reopen(wanted.as_deref()).or_else(|_| reopen(None)) {
-                Ok(device) => news.push(Recovered {
-                    side,
-                    device: Some(device),
-                }),
-                Err(err) => {
-                    tracing::warn!("could not reopen the {}: {err:#}", side.name());
-                    lost.store(true, Ordering::Relaxed);
-                    news.push(Recovered { side, device: None });
-                }
+            if let Some(event) = route.recover(
+                side,
+                cfg!(target_os = "macos"),
+                || default_device_name(side),
+                |name| match side {
+                    Side::Microphone => self.open_input(name),
+                    Side::Speaker => self.open_output(name),
+                },
+            ) {
+                news.push(event);
             }
         }
         news
     }
 
-    /// Switches the output device dynamically at runtime.
-    /// Returns the name of the activated device on success.
-    pub fn switch_output(&self, wanted: Option<&str>) -> Result<String> {
+    /// Opens a speaker stream without saying anything about whether it was chosen.
+    fn open_output(&self, wanted: Option<&str>) -> Result<String> {
         let host = cpal::default_host();
         let device = match wanted {
             Some(name) => pick(host.output_devices()?, name)
@@ -359,7 +366,7 @@ impl AudioDevices {
                         chunk.fill(sample.clamp(-1.0, 1.0));
                     }
                 },
-                on_error(&self.output_lost, "speaker"),
+                on_error(&self.output.lost, "speaker"),
                 None,
             ),
             cpal::SampleFormat::I16 => device.build_output_stream(
@@ -401,7 +408,7 @@ impl AudioDevices {
                         chunk.fill(i16_sample);
                     }
                 },
-                on_error(&self.output_lost, "speaker"),
+                on_error(&self.output.lost, "speaker"),
                 None,
             ),
             cpal::SampleFormat::U16 => device.build_output_stream(
@@ -443,7 +450,7 @@ impl AudioDevices {
                         chunk.fill(u16_sample);
                     }
                 },
-                on_error(&self.output_lost, "speaker"),
+                on_error(&self.output.lost, "speaker"),
                 None,
             ),
             format => bail!("unsupported speaker sample format: {format:?}"),
@@ -457,8 +464,100 @@ impl AudioDevices {
             Err(poisoned) => poisoned.into_inner(),
         };
         *lock = Some(stream);
-        remember(&self.active_output, &dev_name);
         Ok(dev_name)
+    }
+}
+
+/// The user's routing preference and the stream's actual destination are separate:
+/// a remembered device falling back to the default is still an explicit preference.
+/// Stream construction is supplied by the caller so the same lifecycle can be
+/// exercised without opening hardware in tests.
+struct DeviceRoute {
+    active: Arc<std::sync::Mutex<Option<String>>>,
+    lost: Arc<AtomicBool>,
+    following: AtomicBool,
+}
+
+impl DeviceRoute {
+    fn new(wanted: &Wanted) -> Self {
+        Self {
+            active: Arc::new(std::sync::Mutex::new(None)),
+            lost: Arc::new(AtomicBool::new(false)),
+            following: AtomicBool::new(matches!(wanted, Wanted::Default)),
+        }
+    }
+
+    fn initialize(
+        &self,
+        wanted: &Wanted,
+        open: impl Fn(Option<&str>) -> Result<String>,
+    ) -> Result<Option<String>> {
+        let (device, missing) = open_wanted(wanted, open)?;
+        remember(&self.active, &device);
+        Ok(missing)
+    }
+
+    fn switch(
+        &self,
+        wanted: Option<&str>,
+        open: impl Fn(Option<&str>) -> Result<String>,
+    ) -> Result<String> {
+        let device = open(wanted)?;
+        remember(&self.active, &device);
+        self.following.store(wanted.is_none(), Ordering::Relaxed);
+        Ok(device)
+    }
+
+    fn recover(
+        &self,
+        side: Side,
+        poll_default: bool,
+        default: impl FnOnce() -> Option<String>,
+        open: impl Fn(Option<&str>) -> Result<String>,
+    ) -> Option<Recovered> {
+        let lost = self.lost.swap(false, Ordering::Relaxed);
+        let following = self.following.load(Ordering::Relaxed);
+        let current = read(&self.active);
+        if !lost {
+            // A pinned route and platforms without default polling never query it.
+            if !poll_default || !following {
+                return None;
+            }
+            let default = default();
+            if !moves_to_default(following, current.as_deref(), default.as_deref()) {
+                return None;
+            }
+        }
+
+        // Recovery never changes the user's preference. A lost pinned stream tries
+        // its current device first, with the existing default fallback on failure.
+        let wanted = if following { None } else { current.as_deref() };
+        let opened = open(wanted).or_else(|err| {
+            if lost && wanted.is_some() {
+                open(None)
+            } else {
+                Err(err)
+            }
+        });
+        match opened {
+            Ok(device) => {
+                remember(&self.active, &device);
+                Some(Recovered {
+                    side,
+                    device: Some(device),
+                })
+            }
+            Err(err) => {
+                tracing::warn!("could not reopen the {}: {err:#}", side.name());
+                if lost {
+                    self.lost.store(true, Ordering::Relaxed);
+                    Some(Recovered { side, device: None })
+                } else {
+                    // The old stream is still usable; compare again next tick.
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -477,6 +576,22 @@ fn read(slot: &Arc<std::sync::Mutex<Option<String>>>) -> Option<String> {
         Ok(guard) => guard.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     }
+}
+
+/// The name the system gives its default microphone or speaker right now.
+fn default_device_name(side: Side) -> Option<String> {
+    let host = cpal::default_host();
+    let device = match side {
+        Side::Microphone => host.default_input_device(),
+        Side::Speaker => host.default_output_device(),
+    }?;
+    device.description().ok().map(|d| d.name().to_string())
+}
+
+/// Whether a stream should move to the system default: it follows the default, the
+/// default can be named, and it is not the device already in use.
+fn moves_to_default(following: bool, current: Option<&str>, default: Option<&str>) -> bool {
+    following && default.is_some() && current != default
 }
 
 /// Which device to use, and how hard to insist on it.
@@ -707,16 +822,18 @@ pub fn open(choice: &DeviceChoice) -> Result<OpenAudio> {
         capture_tx: Arc::new(std::sync::Mutex::new(capture_tx)),
         playback_rx: Arc::new(std::sync::Mutex::new(playback_rx)),
         health: health.clone(),
-        active_input: Arc::new(std::sync::Mutex::new(None)),
-        active_output: Arc::new(std::sync::Mutex::new(None)),
-        input_lost: Arc::new(AtomicBool::new(false)),
-        output_lost: Arc::new(AtomicBool::new(false)),
+        input: DeviceRoute::new(&choice.input),
+        output: DeviceRoute::new(&choice.output),
         missing: Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
-    let (_, lost_input) = open_wanted(&choice.input, |name| devices.switch_input(name))
+    let lost_input = devices
+        .input
+        .initialize(&choice.input, |name| devices.open_input(name))
         .context("could not initialize microphone")?;
-    let (_, lost_output) = open_wanted(&choice.output, |name| devices.switch_output(name))
+    let lost_output = devices
+        .output
+        .initialize(&choice.output, |name| devices.open_output(name))
         .context("could not initialize speaker")?;
 
     for (missing, replacement) in [
@@ -844,6 +961,475 @@ mod tests {
         .into_iter()
         .map(|(name, pcm)| (name.to_string(), Some(pcm.to_string())))
         .collect()
+    }
+
+    /// Models hardware availability and stream configuration, rather than a list
+    /// of expected function calls. Failed opens leave the working stream intact.
+    #[derive(Default)]
+    struct TestHost {
+        devices: std::cell::RefCell<std::collections::BTreeMap<String, u32>>,
+        default: std::cell::RefCell<Option<String>>,
+        stream: std::cell::RefCell<Option<(String, u32)>>,
+    }
+
+    impl TestHost {
+        fn built_in() -> Self {
+            let host = Self::default();
+            host.connect("Built-in", 48_000);
+            host.connect("Headset", 16_000);
+            host.set_default(Some("Built-in"));
+            host
+        }
+
+        fn connect(&self, name: &str, rate: u32) {
+            self.devices.borrow_mut().insert(name.into(), rate);
+        }
+
+        fn disconnect(&self, name: &str) {
+            self.devices.borrow_mut().remove(name);
+        }
+
+        fn set_default(&self, name: Option<&str>) {
+            *self.default.borrow_mut() = name.map(str::to_string);
+        }
+
+        fn default_name(&self) -> Option<String> {
+            self.default.borrow().clone()
+        }
+
+        fn open(&self, wanted: Option<&str>) -> Result<String> {
+            let default = self.default_name();
+            let name = wanted.or(default.as_deref()).context("no default")?;
+            let devices = self.devices.borrow();
+            let (name, rate) = devices
+                .iter()
+                .find(|(device, _)| device.to_lowercase().contains(&name.to_lowercase()))
+                .context("device unavailable")?;
+            if *rate == 0 {
+                bail!("device will not open");
+            }
+            *self.stream.borrow_mut() = Some((name.clone(), *rate));
+            Ok(name.clone())
+        }
+
+        fn start(&self, wanted: &Wanted) -> DeviceRoute {
+            let route = DeviceRoute::new(wanted);
+            route.initialize(wanted, |name| self.open(name)).unwrap();
+            route
+        }
+
+        fn recover(&self, route: &DeviceRoute, side: Side) -> Option<Recovered> {
+            route.recover(side, true, || self.default_name(), |name| self.open(name))
+        }
+
+        fn assert_on(&self, route: &DeviceRoute, name: &str, rate: u32, following: bool) {
+            assert_eq!(read(&route.active).as_deref(), Some(name));
+            assert_eq!(*self.stream.borrow(), Some((name.into(), rate)));
+            assert_eq!(route.following.load(Ordering::Relaxed), following);
+        }
+    }
+
+    #[test]
+    fn a_call_follows_defaults_until_a_device_is_chosen_and_can_follow_again() {
+        let mic = TestHost::built_in();
+        let speaker = TestHost::built_in();
+        let input = mic.start(&Wanted::Default);
+        let output = speaker.start(&Wanted::Default);
+
+        mic.set_default(Some("Headset"));
+        speaker.set_default(Some("Headset"));
+        for (host, route, side) in [
+            (&mic, &input, Side::Microphone),
+            (&speaker, &output, Side::Speaker),
+        ] {
+            assert_eq!(
+                host.recover(route, side),
+                Some(Recovered {
+                    side,
+                    device: Some("Headset".into()),
+                })
+            );
+            host.assert_on(route, "Headset", 16_000, true);
+            assert!(
+                host.recover(route, side).is_none(),
+                "stable devices emit no change"
+            );
+        }
+
+        input
+            .switch(Some("Built-in"), |name| mic.open(name))
+            .unwrap();
+        mic.set_default(Some("Built-in"));
+        speaker.set_default(Some("Built-in"));
+        assert!(mic.recover(&input, Side::Microphone).is_none());
+        speaker.recover(&output, Side::Speaker).unwrap();
+        mic.assert_on(&input, "Built-in", 48_000, false);
+        speaker.assert_on(&output, "Built-in", 48_000, true);
+
+        mic.set_default(Some("Headset"));
+        assert!(mic.recover(&input, Side::Microphone).is_none());
+        mic.assert_on(&input, "Built-in", 48_000, false);
+        input.switch(None, |name| mic.open(name)).unwrap();
+        mic.assert_on(&input, "Headset", 16_000, true);
+        mic.disconnect("Headset");
+        mic.set_default(Some("Built-in"));
+        input.lost.store(true, Ordering::Relaxed);
+        mic.recover(&input, Side::Microphone).unwrap();
+        mic.assert_on(&input, "Built-in", 48_000, true);
+    }
+
+    #[test]
+    fn remembered_fallback_and_named_recovery_do_not_enable_following() {
+        for wanted in [
+            Wanted::Named("Head".into()),
+            Wanted::Remembered("Head".into()),
+        ] {
+            let host = TestHost::built_in();
+            if matches!(wanted, Wanted::Remembered(_)) {
+                host.disconnect("Headset");
+            }
+            let route = host.start(&wanted);
+            host.connect("Headset", 16_000);
+            host.set_default(Some("Headset"));
+            assert!(host.recover(&route, Side::Microphone).is_none());
+            assert!(!route.following.load(Ordering::Relaxed));
+
+            // A pinned device that disappears may fall back, but remains pinned
+            // to the replacement instead of following later default changes.
+            host.disconnect("Headset");
+            host.set_default(Some("Built-in"));
+            route.lost.store(true, Ordering::Relaxed);
+            host.recover(&route, Side::Microphone).unwrap();
+            host.assert_on(&route, "Built-in", 48_000, false);
+            host.connect("Headset", 16_000);
+            host.set_default(Some("Headset"));
+            assert!(host.recover(&route, Side::Microphone).is_none());
+            host.assert_on(&route, "Built-in", 48_000, false);
+        }
+    }
+
+    #[test]
+    fn failed_changes_preserve_working_audio_and_recovery_eventually_converges() {
+        let host = TestHost::built_in();
+        let route = host.start(&Wanted::Default);
+        host.connect("Headset", 0);
+        assert!(
+            route
+                .switch(Some("Headset"), |name| host.open(name))
+                .is_err()
+        );
+        host.assert_on(&route, "Built-in", 48_000, true);
+        host.set_default(Some("Headset"));
+        for _ in 0..3 {
+            assert!(host.recover(&route, Side::Microphone).is_none());
+            host.assert_on(&route, "Built-in", 48_000, true);
+        }
+        host.set_default(None);
+        assert!(host.recover(&route, Side::Microphone).is_none());
+        host.assert_on(&route, "Built-in", 48_000, true);
+        host.set_default(Some("Headset"));
+        host.connect("Headset", 16_000);
+        host.recover(&route, Side::Microphone).unwrap();
+        host.assert_on(&route, "Headset", 16_000, true);
+
+        route
+            .switch(Some("Headset"), |name| host.open(name))
+            .unwrap();
+        host.set_default(None);
+        assert!(route.switch(None, |name| host.open(name)).is_err());
+        host.assert_on(&route, "Headset", 16_000, false);
+    }
+
+    #[test]
+    fn profile_changes_and_total_device_loss_recover_without_losing_the_preference() {
+        for wanted in [Wanted::Default, Wanted::Named("Built-in".into())] {
+            let host = TestHost::built_in();
+            let route = host.start(&wanted);
+            let following = matches!(wanted, Wanted::Default);
+            host.connect("Built-in", 16_000);
+            route.lost.store(true, Ordering::Relaxed);
+            host.recover(&route, Side::Microphone).unwrap();
+            host.assert_on(&route, "Built-in", 16_000, following);
+
+            host.disconnect("Built-in");
+            host.set_default(None);
+            route.lost.store(true, Ordering::Relaxed);
+            for _ in 0..3 {
+                assert_eq!(
+                    host.recover(&route, Side::Microphone),
+                    Some(Recovered {
+                        side: Side::Microphone,
+                        device: None,
+                    })
+                );
+                assert!(
+                    route.lost.load(Ordering::Relaxed),
+                    "failure remains retryable"
+                );
+                assert_eq!(route.following.load(Ordering::Relaxed), following);
+            }
+            host.connect("Built-in", 48_000);
+            host.set_default(Some("Built-in"));
+            host.recover(&route, Side::Microphone).unwrap();
+            host.assert_on(&route, "Built-in", 48_000, following);
+            assert!(!route.lost.load(Ordering::Relaxed));
+            assert!(host.recover(&route, Side::Microphone).is_none());
+        }
+    }
+
+    #[test]
+    fn platforms_without_polling_and_pinned_devices_never_query_defaults() {
+        let host = TestHost::built_in();
+        let route = host.start(&Wanted::Default);
+        host.set_default(Some("Headset"));
+        assert!(
+            route
+                .recover(
+                    Side::Speaker,
+                    false,
+                    || panic!("must not poll"),
+                    |name| host.open(name)
+                )
+                .is_none()
+        );
+        host.assert_on(&route, "Built-in", 48_000, true);
+        route
+            .switch(Some("Built-in"), |name| host.open(name))
+            .unwrap();
+        assert!(
+            route
+                .recover(
+                    Side::Speaker,
+                    true,
+                    || panic!("pinned device must not poll"),
+                    |name| host.open(name)
+                )
+                .is_none()
+        );
+        host.assert_on(&route, "Built-in", 48_000, false);
+        route.lost.store(true, Ordering::Relaxed);
+        route
+            .recover(
+                Side::Speaker,
+                false,
+                || panic!("recovery does not poll"),
+                |name| host.open(name),
+            )
+            .unwrap();
+        host.assert_on(&route, "Built-in", 48_000, false);
+    }
+
+    #[test]
+    fn routing_converges_across_event_sequences_without_overriding_explicit_choices() {
+        // Exercise all 6^5 combinations, including repeated choices, failures,
+        // disappearance and driver errors. Assert outcomes after every event;
+        // no particular sequence of internal calls is prescribed.
+        for mut sequence in 0..6usize.pow(5) {
+            let host = TestHost::built_in();
+            let route = host.start(&Wanted::Default);
+            let mut following = true;
+            let mut actual = "Built-in".to_string();
+            let mut available = true;
+            let mut default = "Built-in";
+            let mut retry = false;
+            for _ in 0..5 {
+                let action = sequence % 6;
+                sequence /= 6;
+                match action {
+                    0 => {
+                        default = "Built-in";
+                        host.set_default(Some(default));
+                    }
+                    1 => {
+                        default = "Headset";
+                        host.set_default(Some(default));
+                    }
+                    2 => {
+                        available = !available;
+                        if available {
+                            host.connect("Headset", 16_000);
+                        } else {
+                            host.disconnect("Headset");
+                        }
+                    }
+                    3 => {
+                        let result = route.switch(Some("Headset"), |name| host.open(name));
+                        assert_eq!(result.is_ok(), available);
+                        if available {
+                            actual = "Headset".into();
+                            following = false;
+                        }
+                    }
+                    4 => {
+                        let result = route.switch(None, |name| host.open(name));
+                        let usable = default == "Built-in" || available;
+                        assert_eq!(result.is_ok(), usable);
+                        if usable {
+                            actual = default.into();
+                            following = true;
+                        }
+                    }
+                    5 => {
+                        retry = true;
+                        route.lost.store(true, Ordering::Relaxed);
+                    }
+                    _ => unreachable!(),
+                }
+                let lost = retry;
+                let wanted = if following { default } else { actual.as_str() };
+                let usable = wanted == "Built-in" || available;
+                if (lost || following) && usable {
+                    actual = wanted.into();
+                } else if lost && !following && (default == "Built-in" || available) {
+                    actual = default.into();
+                }
+                if lost {
+                    retry = !(usable || (!following && (default == "Built-in" || available)));
+                }
+                host.recover(&route, Side::Microphone);
+                assert_eq!(route.lost.load(Ordering::Relaxed), retry);
+                let rate = if actual == "Headset" { 16_000 } else { 48_000 };
+                host.assert_on(&route, &actual, rate, following);
+            }
+        }
+    }
+
+    /// Runs the real CPAL streams, resamplers and ring buffers. BlackHole lets us
+    /// verify a known signal without playing it through the user's speakers.
+    /// No system defaults or persistent preferences are changed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires BlackHole 2ch and macOS microphone access; run deliberately"]
+    fn live_macos_streams_recover_and_keep_transferring_samples() -> Result<()> {
+        use std::time::{Duration, Instant};
+        let virtual_device = "BlackHole 2ch";
+        let default_input =
+            default_device_name(Side::Microphone).context("no default microphone")?;
+        let default_output = default_device_name(Side::Speaker).context("no default speaker")?;
+        assert_ne!(
+            default_input, virtual_device,
+            "use a physical system default for this test"
+        );
+        assert_ne!(
+            default_output, virtual_device,
+            "use a physical system default for this test"
+        );
+        let (devices, mut capture, mut playback, _) = open(&DeviceChoice {
+            input: Wanted::Named(virtual_device.into()),
+            output: Wanted::Named(virtual_device.into()),
+        })?;
+
+        assert!(
+            devices
+                .switch_input(Some("tincan-test-device-that-does-not-exist"))
+                .is_err()
+        );
+        assert!(
+            devices
+                .switch_output(Some("tincan-test-device-that-does-not-exist"))
+                .is_err()
+        );
+        assert_eq!(devices.active_input().as_deref(), Some(virtual_device));
+        assert_eq!(devices.active_output().as_deref(), Some(virtual_device));
+        assert!(!devices.follows_input() && !devices.follows_output());
+
+        // Send a known tone through the OS's loopback device, and measure what
+        // actually returns through tincan's capture callback, not a mocked one.
+        let started = Instant::now();
+        let mut phase = 0usize;
+        let mut energy = 0.0f64;
+        let mut captured = 0usize;
+        let mut sine = 0.0f64;
+        let mut cosine = 0.0f64;
+        while started.elapsed() < Duration::from_millis(600) {
+            for _ in 0..playback.slots().min(FRAME) {
+                let sample = 0.05
+                    * (std::f32::consts::TAU * 440.0 * phase as f32 / SAMPLE_RATE as f32).sin();
+                playback.push(sample).unwrap();
+                phase += 1;
+            }
+            while let Ok(sample) = capture.pop() {
+                assert!(sample.is_finite() && sample.abs() <= 1.0);
+                let angle = std::f64::consts::TAU * 440.0 * captured as f64 / SAMPLE_RATE as f64;
+                sine += f64::from(sample) * angle.sin();
+                cosine += f64::from(sample) * angle.cos();
+                energy += f64::from(sample).powi(2);
+                captured += 1;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            captured >= FRAME * 5,
+            "real capture callbacks must transfer audio"
+        );
+        assert!(
+            energy / captured as f64 > 1e-8,
+            "the loopback must contain the transmitted signal (samples={captured}, mean square={})",
+            energy / captured as f64
+        );
+
+        // Device volume can attenuate the signal. Check its identity as well as
+        // its presence rather than requiring a particular hardware gain.
+        let tone_share = 2.0 * (sine * sine + cosine * cosine) / captured as f64 / energy;
+        assert!(
+            tone_share > 0.2,
+            "the captured signal must contain the sent 440 Hz tone (share={tone_share})"
+        );
+
+        {
+            // Clear the test tone before the real speakers are opened.
+            let mut queued = devices.playback_rx.lock().unwrap();
+            while queued.pop().is_ok() {}
+        }
+
+        // Represent streams opened on a previous default, then observe the actual
+        // current system defaults through the public recovery path. This avoids
+        // changing the user's global audio settings to manufacture a default change.
+        devices.input.following.store(true, Ordering::Relaxed);
+        devices.output.following.store(true, Ordering::Relaxed);
+        let news = devices.recover();
+        assert!(news.contains(&Recovered {
+            side: Side::Microphone,
+            device: Some(default_input.clone())
+        }));
+        assert!(news.contains(&Recovered {
+            side: Side::Speaker,
+            device: Some(default_output.clone())
+        }));
+        assert_eq!(
+            devices.active_input().as_deref(),
+            Some(default_input.as_str())
+        );
+        assert_eq!(
+            devices.active_output().as_deref(),
+            Some(default_output.as_str())
+        );
+        assert!(devices.follows_input() && devices.follows_output());
+        assert!(devices.recover().is_empty());
+
+        // A driver loss must rebuild both streams without replacing the buffers
+        // held by the audio engine or changing the user's following preference.
+        devices.input.lost.store(true, Ordering::Relaxed);
+        devices.output.lost.store(true, Ordering::Relaxed);
+        let recovered = devices.recover();
+        assert_eq!(recovered.len(), 2);
+        assert!(recovered.iter().all(|event| event.device.is_some()));
+        while capture.pop().is_ok() {}
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while capture.slots() < FRAME && Instant::now() < deadline {
+            for _ in 0..playback.slots().min(FRAME) {
+                playback.push(0.0).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            capture.slots() >= FRAME,
+            "the original capture consumer must still receive samples after recovery"
+        );
+        for _ in 0..FRAME {
+            assert!(capture.pop().unwrap().is_finite());
+        }
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]

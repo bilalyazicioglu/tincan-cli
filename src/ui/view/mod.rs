@@ -305,6 +305,66 @@ mod tests {
     }
 
     #[test]
+    fn every_audio_choice_is_visible_in_a_crowded_picker() {
+        use crate::ui::state::SettingsSection;
+        let mut app = App::new(PeerId([1; 32]), "code".into());
+        app.view_mode = ViewMode::Settings;
+        app.voice_available = true;
+        let devices: Vec<_> = (0..12)
+            .map(|index| crate::audio::device::AudioDeviceInfo {
+                name: format!("Device[{index:02}]"),
+                sample_rate: 48_000,
+                channels: 1,
+                is_default: index == 0,
+                is_supported: true,
+            })
+            .collect();
+        app.input_devices = devices
+            .iter()
+            .cloned()
+            .map(|mut device| {
+                device.name = device.name.replace("Device", "Mic");
+                device
+            })
+            .collect();
+        app.output_devices = devices
+            .into_iter()
+            .map(|mut device| {
+                device.name = device.name.replace("Device", "Speaker");
+                device
+            })
+            .collect();
+        for (width, height) in [(84, 24), (50, 24), (84, 22)] {
+            for side in [SettingsSection::InputDevice, SettingsSection::OutputDevice] {
+                app.settings_section = side;
+                for selected in 0..=12 {
+                    match side {
+                        SettingsSection::InputDevice => app.selected_input_idx = selected,
+                        SettingsSection::OutputDevice => app.selected_output_idx = selected,
+                        _ => unreachable!(),
+                    }
+                    let screen = rendered(width, height, &app);
+                    let label = if selected == 0 {
+                        "System default".to_string()
+                    } else {
+                        let prefix = if side == SettingsSection::InputDevice {
+                            "Mic"
+                        } else {
+                            "Speaker"
+                        };
+                        format!("{prefix}[{:02}]", selected - 1)
+                    };
+                    assert!(
+                        screen.lines().any(|line| line.contains(&label)
+                            && line.contains(&Theme::from_env().glyphs.cursor.to_string())),
+                        "{width}x{height}, {side:?}: {label} must be visible\n{screen}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn draws_without_panicking_at_awkward_sizes() {
         for (width, height) in [(80, 24), (20, 8), (200, 60), (10, 5), (1, 1), (62, 4)] {
             let mut app = room();
