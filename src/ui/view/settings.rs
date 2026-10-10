@@ -32,8 +32,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let [sep_area, banner, input, output, test, typing, _rest] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(problem),
-        Constraint::Max(rows_for(app.input_devices.len())),
-        Constraint::Max(rows_for(app.output_devices.len())),
+        Constraint::Max(rows_for(app.input_devices.len() + 1)),
+        Constraint::Max(rows_for(app.output_devices.len() + 1)),
         Constraint::Length(7),
         Constraint::Length(4),
         Constraint::Min(0),
@@ -93,12 +93,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         theme,
         "MICROPHONE",
         app.settings_section == SettingsSection::InputDevice,
-        devices(
+        device_choices(
             input.width,
+            input.height.saturating_sub(1) as usize,
             theme,
             &app.input_devices,
             app.selected_input_idx,
             &app.active_input_name,
+            app.follow_input,
             app.settings_section == SettingsSection::InputDevice,
             "no microphone found. press r to look again.",
         ),
@@ -110,12 +112,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         theme,
         "SPEAKER",
         app.settings_section == SettingsSection::OutputDevice,
-        devices(
+        device_choices(
             output.width,
+            output.height.saturating_sub(1) as usize,
             theme,
             &app.output_devices,
             app.selected_output_idx,
             &app.active_output_name,
+            app.follow_output,
             app.settings_section == SettingsSection::OutputDevice,
             "no speaker found. press r to look again.",
         ),
@@ -207,6 +211,68 @@ fn section(
             .take(area.height.saturating_sub(1) as usize),
     );
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn device_choices(
+    width: u16,
+    max_rows: usize,
+    theme: &Theme,
+    list: &[AudioDeviceInfo],
+    selected: usize,
+    active: &Option<String>,
+    following: bool,
+    focused: bool,
+    empty: &'static str,
+) -> Vec<TextLine<'static>> {
+    let highlighted = focused && selected == 0;
+    let label = if cfg!(target_os = "macos") {
+        "System default (follow changes)"
+    } else {
+        "System default"
+    };
+    let mut rows = vec![spread(
+        width,
+        vec![
+            Span::raw("  "),
+            Span::styled(
+                if highlighted {
+                    theme.glyphs.cursor.to_string()
+                } else {
+                    " ".into()
+                },
+                theme.accent(),
+            ),
+            Span::raw("   "),
+            Span::styled(
+                label,
+                if highlighted {
+                    theme.accent()
+                } else if following {
+                    theme.ok()
+                } else {
+                    theme.text()
+                },
+            ),
+        ],
+        vec![Span::styled(
+            if following { "selected " } else { "" },
+            theme.dim(),
+        )],
+    )];
+    rows.extend(devices(
+        width,
+        theme,
+        list,
+        selected.saturating_sub(1),
+        active,
+        focused && selected > 0,
+        empty,
+    ));
+    // Keep the highlighted choice visible even when adding the default row or
+    // plugging in more devices makes the list taller than its section.
+    let start = selected.saturating_sub(max_rows.saturating_sub(1));
+    rows.into_iter().skip(start).take(max_rows).collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -502,6 +568,53 @@ mod tests {
             device("Broken Thing", 0, false),
         ];
         app
+    }
+
+    #[test]
+    fn the_default_choice_and_physical_device_are_distinct_and_always_available() {
+        let app = app();
+        let theme = Theme::from_env();
+        let rows = device_choices(
+            80,
+            usize::MAX,
+            &theme,
+            &app.input_devices,
+            0,
+            &Some("AirPods".into()),
+            true,
+            true,
+            "no microphone found",
+        );
+        assert!(text(&rows[0]).contains("System default"));
+        assert!(text(&rows[0]).contains("selected"));
+        assert!(text(&rows[2]).contains("AirPods"));
+        assert!(text(&rows[2]).contains("in use"));
+        let pinned = device_choices(
+            80,
+            usize::MAX,
+            &theme,
+            &app.input_devices,
+            2,
+            &Some("AirPods".into()),
+            false,
+            true,
+            "no microphone found",
+        );
+        assert!(!text(&pinned[0]).contains("selected"));
+        assert!(text(&pinned[2]).contains(&theme.glyphs.cursor.to_string()));
+        let empty = device_choices(
+            80,
+            usize::MAX,
+            &theme,
+            &[],
+            0,
+            &None,
+            true,
+            true,
+            "no microphone found. press r to look again.",
+        );
+        assert!(text(&empty[0]).contains("System default"));
+        assert!(text(&empty[1]).contains("press r"));
     }
 
     #[test]

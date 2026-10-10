@@ -10,7 +10,8 @@ Fixes #(issue number)
 - [ ] Documentation update
 
 ## Checklist
-- [ ] I have run `cargo test` and all 93+ tests pass cleanly.
+- [ ] This PR is for an issue assigned to me (see [Finding an Issue](https://github.com/bilalyazicioglu/tincan-cli/blob/develop/CONTRIBUTING.md#1-finding-an-issue)), or it fixes a typo or a broken link.
+- [ ] I have run `cargo test` and all tests pass.
 - [ ] I have run `cargo clippy --all-targets` and resolved all warnings.
 - [ ] I have formatted my code with `cargo fmt`.
 - [ ] I have updated relevant documentation / Wiki files.

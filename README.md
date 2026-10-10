@@ -130,6 +130,18 @@ terminal UI, WASAPI device enumeration and the microphone permission prompt have
 been exercised on a real Windows machine. If you try it, [say how it
 went](https://github.com/bilalyazicioglu/tincan-cli/issues).
 
+**Nix flakes:**
+
+```bash
+# Run without installing:
+nix shell github:bilalyazicioglu/tincan-cli --command tincan host
+
+# Or install into your user profile:
+nix profile install github:bilalyazicioglu/tincan-cli
+```
+
+See [flake.nix](flake.nix) for the overlay exposing `pkgs.tincan-cli`.
+
 **Cargo**, if you have a Rust toolchain:
 
 ```bash
@@ -272,6 +284,19 @@ To pick a device, list them with `tincan devices` first, then pass part of a nam
 ```bash
 tincan join <code> --input "MacBook Pro Mic" --output "AirPods"
 ```
+
+On macOS, tincan follows changes to the system's default microphone and speaker
+while running, including when a headset is connected or disconnected. A device
+named with `--input` / `--output`, remembered in `config.toml`, or picked in audio
+settings stays selected instead. Choose **System default (follow changes)** in
+`F6` settings to follow again; this also clears that side's remembered device.
+On macOS, the device lists also update while settings are open, so a reconnected
+headset appears without pressing refresh. The highlighted choice stays on the same
+device while you browse; if it disappears, the picker focuses the active replacement.
+If a selected device disappears, tincan tries the system default to keep audio
+working, but does not enable following or automatically return when it reconnects.
+On Linux, routing through the default device is handled by PipeWire/PulseAudio
+when those sound servers are in use.
 
 The channel you are looking at and the channel you are connected to by voice are
 independent: you can read the chat in "general" while talking in "gaming". In the channel
@@ -509,6 +534,8 @@ decisions and are not used in the product.
 Bug reports and feature requests are welcome! Please use the
 [issue templates](.github/ISSUE_TEMPLATE) when opening an issue, and review the
 [pull request checklist](.github/PULL_REQUEST_TEMPLATE.md) before submitting a PR.
+
+If tincan is useful to you, you can [sponsor its development](https://github.com/sponsors/bilalyazicioglu).
 
 ## License
 

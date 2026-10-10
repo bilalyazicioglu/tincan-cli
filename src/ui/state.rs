@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::audio::MicTest;
-use crate::audio::device::AudioDeviceInfo;
+use crate::audio::device::{AudioDeviceInfo, Side};
 use crate::net::Event;
 use crate::net::voice::{LinkStatus, PeerLink};
 use crate::proto::{ChannelId, ChatLine, PeerId, PeerInfo};
@@ -185,6 +185,8 @@ pub struct App {
     pub selected_output_idx: usize,
     pub active_input_name: Option<String>,
     pub active_output_name: Option<String>,
+    pub follow_input: bool,
+    pub follow_output: bool,
     pub mic_level: f32,
     /// Whether typing makes a sound.
     pub typing_clicks: bool,
@@ -253,6 +255,8 @@ impl App {
             selected_output_idx: 0,
             active_input_name: None,
             active_output_name: None,
+            follow_input: true,
+            follow_output: true,
             mic_level: 0.0,
             typing_clicks: false,
             denoise: true,
@@ -806,43 +810,79 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// Refreshes the cached list of audio devices from the host system.
+    /// Refreshes devices and focuses the current routing choice when settings open
+    /// or the user explicitly asks for a refresh.
     pub fn refresh_devices(&mut self) {
-        if let Ok(inputs) = crate::audio::device::list_input_devices() {
-            self.input_devices = inputs;
-            if !self.input_devices.is_empty() {
-                if let Some(active) = &self.active_input_name {
-                    if let Some(idx) = self.input_devices.iter().position(|d| d.name == *active) {
-                        self.selected_input_idx = idx;
-                    }
-                } else if let Some(default_idx) =
-                    self.input_devices.iter().position(|d| d.is_default)
-                {
-                    self.selected_input_idx = default_idx;
-                }
-                if self.selected_input_idx >= self.input_devices.len() {
-                    self.selected_input_idx = 0;
-                }
-            }
-        }
+        self.refresh_device_lists(false);
+    }
 
-        if let Ok(outputs) = crate::audio::device::list_output_devices() {
-            self.output_devices = outputs;
-            if !self.output_devices.is_empty() {
-                if let Some(active) = &self.active_output_name {
-                    if let Some(idx) = self.output_devices.iter().position(|d| d.name == *active) {
-                        self.selected_output_idx = idx;
-                    }
-                } else if let Some(default_idx) =
-                    self.output_devices.iter().position(|d| d.is_default)
-                {
-                    self.selected_output_idx = default_idx;
-                }
-                if self.selected_output_idx >= self.output_devices.len() {
-                    self.selected_output_idx = 0;
-                }
-            }
+    /// Detects hotplug while settings remain open, including devices that do not
+    /// cause a stream recovery. Preserve the item being browsed by name, not index.
+    pub fn poll_devices(&mut self) {
+        self.refresh_device_lists(true);
+    }
+
+    fn refresh_device_lists(&mut self, preserve_selection: bool) {
+        if let Ok(inputs) = crate::audio::device::list_input_devices() {
+            self.update_device_list(Side::Microphone, inputs, preserve_selection);
         }
+        if let Ok(outputs) = crate::audio::device::list_output_devices() {
+            self.update_device_list(Side::Speaker, outputs, preserve_selection);
+        }
+    }
+
+    /// Index zero is the system-default choice; physical devices start at one.
+    pub fn update_devices(&mut self, side: Side, devices: Vec<AudioDeviceInfo>) {
+        self.update_device_list(side, devices, false);
+    }
+
+    fn update_device_list(
+        &mut self,
+        side: Side,
+        devices: Vec<AudioDeviceInfo>,
+        preserve_selection: bool,
+    ) {
+        let (list, selected, active, following) = match side {
+            Side::Microphone => (
+                &mut self.input_devices,
+                &mut self.selected_input_idx,
+                &self.active_input_name,
+                self.follow_input,
+            ),
+            Side::Speaker => (
+                &mut self.output_devices,
+                &mut self.selected_output_idx,
+                &self.active_output_name,
+                self.follow_output,
+            ),
+        };
+        let highlighted = selected
+            .checked_sub(1)
+            .and_then(|index| list.get(index))
+            .map(|device| device.name.as_str());
+        let retained = if preserve_selection {
+            if *selected == 0 {
+                Some(0)
+            } else {
+                devices
+                    .iter()
+                    .position(|device| Some(device.name.as_str()) == highlighted)
+                    .map(|index| index + 1)
+            }
+        } else {
+            None
+        };
+        *list = devices;
+        *selected = retained.unwrap_or_else(|| {
+            if following {
+                0
+            } else {
+                list.iter()
+                    .position(|device| Some(&device.name) == active.as_ref())
+                    .map(|index| index + 1)
+                    .unwrap_or(0)
+            }
+        });
     }
 
     /// Cycles through sections in the Settings view.
@@ -862,24 +902,20 @@ impl App {
     pub fn settings_navigate_item(&mut self, forward: bool) {
         match self.settings_section {
             SettingsSection::InputDevice => {
-                if !self.input_devices.is_empty() {
-                    let len = self.input_devices.len();
-                    self.selected_input_idx = if forward {
-                        (self.selected_input_idx + 1) % len
-                    } else {
-                        (self.selected_input_idx + len - 1) % len
-                    };
-                }
+                let len = self.input_devices.len() + 1;
+                self.selected_input_idx = if forward {
+                    (self.selected_input_idx + 1) % len
+                } else {
+                    (self.selected_input_idx + len - 1) % len
+                };
             }
             SettingsSection::OutputDevice => {
-                if !self.output_devices.is_empty() {
-                    let len = self.output_devices.len();
-                    self.selected_output_idx = if forward {
-                        (self.selected_output_idx + 1) % len
-                    } else {
-                        (self.selected_output_idx + len - 1) % len
-                    };
-                }
+                let len = self.output_devices.len() + 1;
+                self.selected_output_idx = if forward {
+                    (self.selected_output_idx + 1) % len
+                } else {
+                    (self.selected_output_idx + len - 1) % len
+                };
             }
             SettingsSection::MicTest | SettingsSection::Typing => {
                 self.settings_next_section(forward);
@@ -890,12 +926,16 @@ impl App {
 
     /// Returns the currently highlighted input device.
     pub fn selected_input_device(&self) -> Option<&AudioDeviceInfo> {
-        self.input_devices.get(self.selected_input_idx)
+        self.selected_input_idx
+            .checked_sub(1)
+            .and_then(|idx| self.input_devices.get(idx))
     }
 
     /// Returns the currently highlighted output device.
     pub fn selected_output_device(&self) -> Option<&AudioDeviceInfo> {
-        self.output_devices.get(self.selected_output_idx)
+        self.selected_output_idx
+            .checked_sub(1)
+            .and_then(|idx| self.output_devices.get(idx))
     }
 
     /// Whether the microphone is open right now.
@@ -1012,10 +1052,260 @@ mod tests {
         assert_eq!(app.selected_input_idx, 1);
 
         app.settings_navigate_item(true);
-        assert_eq!(app.selected_input_idx, 0);
+        assert_eq!(app.selected_input_idx, 2);
+        assert_eq!(app.selected_input_device().unwrap().name, "Mic 2");
 
+        app.settings_navigate_item(true);
+        assert_eq!(app.selected_input_idx, 0);
+        assert!(
+            app.selected_input_device().is_none(),
+            "zero selects system default"
+        );
         app.settings_navigate_item(false);
+        assert_eq!(app.selected_input_idx, 2);
+    }
+
+    #[test]
+    fn refreshed_device_lists_keep_the_routing_mode_and_navigation_valid() {
+        let mut app = welcomed();
+        let devices = vec![
+            AudioDeviceInfo {
+                name: "Built-in".into(),
+                sample_rate: 48_000,
+                channels: 1,
+                is_default: true,
+                is_supported: true,
+            },
+            AudioDeviceInfo {
+                name: "Headset".into(),
+                sample_rate: 16_000,
+                channels: 1,
+                is_default: false,
+                is_supported: true,
+            },
+        ];
+        for side in [Side::Microphone, Side::Speaker] {
+            app.update_devices(side, devices.clone());
+            let selected = if side == Side::Microphone {
+                app.selected_input_idx
+            } else {
+                app.selected_output_idx
+            };
+            assert_eq!(selected, 0, "following highlights the system-default row");
+        }
+        app.follow_input = false;
+        app.active_input_name = Some("Headset".into());
+        let mut reordered = devices;
+        reordered.reverse();
+        app.update_devices(Side::Microphone, reordered);
         assert_eq!(app.selected_input_idx, 1);
+        assert_eq!(app.selected_input_device().unwrap().name, "Headset");
+        app.update_devices(Side::Microphone, vec![]);
+        assert_eq!(app.selected_input_idx, 0);
+        assert!(!app.follow_input, "refresh is not a user choice");
+        assert!(app.selected_input_device().is_none());
+        app.settings_section = SettingsSection::InputDevice;
+        app.settings_navigate_item(false);
+        app.settings_navigate_item(true);
+        assert_eq!(
+            app.selected_input_idx, 0,
+            "default is reachable even with no devices"
+        );
+    }
+
+    #[test]
+    fn hotplug_updates_actual_audio_and_the_open_picker_without_stealing_selection() {
+        use crate::audio::device::Recovered;
+        use crate::config::Config;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = welcomed();
+        app.view_mode = ViewMode::Settings;
+        app.voice_available = true;
+        app.follow_input = false;
+        app.follow_output = false;
+        app.active_input_name = Some("Headset mic".into());
+        app.active_output_name = Some("Headset speaker".into());
+        let device = |name: &str, default: bool| AudioDeviceInfo {
+            name: name.into(),
+            sample_rate: 48_000,
+            channels: 1,
+            is_default: default,
+            is_supported: true,
+        };
+        let inputs = vec![
+            device("Headset mic", true),
+            device("BlackHole mic", false),
+            device("Built-in mic", false),
+        ];
+        let outputs = vec![
+            device("Headset speaker", true),
+            device("BlackHole speaker", false),
+            device("Built-in speaker", false),
+        ];
+        app.update_devices(Side::Microphone, inputs.clone());
+        app.update_devices(Side::Speaker, outputs.clone());
+        let mut config = Config::default();
+        config.set_gate("Headset mic", 0.4);
+        config.set_gate("Built-in mic", 0.2);
+        app.input_gate = 0.4;
+
+        // The streams recover to built-in devices while the screen is open.
+        // Both the rail and picker must show the actual destination, not the
+        // remembered headset or the first available device (BlackHole).
+        (config, _) = crate::ui::apply_audio_change(
+            &mut app,
+            config,
+            &Recovered {
+                side: Side::Microphone,
+                device: Some("Built-in mic".into()),
+            },
+        );
+        (config, _) = crate::ui::apply_audio_change(
+            &mut app,
+            config,
+            &Recovered {
+                side: Side::Speaker,
+                device: Some("Built-in speaker".into()),
+            },
+        );
+        app.update_device_list(
+            Side::Microphone,
+            vec![device("BlackHole mic", false), device("Built-in mic", true)],
+            true,
+        );
+        app.update_device_list(
+            Side::Speaker,
+            vec![
+                device("BlackHole speaker", false),
+                device("Built-in speaker", true),
+            ],
+            true,
+        );
+        assert_eq!(app.active_input_name.as_deref(), Some("Built-in mic"));
+        assert_eq!(app.active_output_name.as_deref(), Some("Built-in speaker"));
+        assert_eq!(app.selected_input_device().unwrap().name, "Built-in mic");
+        assert_eq!(
+            app.selected_output_device().unwrap().name,
+            "Built-in speaker"
+        );
+        assert_eq!(app.input_gate, 0.2);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::view::draw(frame, &app, &crate::ui::theme::Theme::from_env()))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            !screen.contains("Headset"),
+            "disconnected devices must disappear everywhere"
+        );
+        assert!(
+            screen.matches("Built-in mic").count() >= 2,
+            "rail and picker agree"
+        );
+        assert!(
+            screen.matches("Built-in speaker").count() >= 2,
+            "rail and picker agree"
+        );
+
+        // Reconnecting updates the cached list even though a pinned route emits
+        // no recovery event. This must not silently turn tracking back on.
+        app.update_device_list(Side::Microphone, inputs.clone(), true);
+        app.update_device_list(Side::Speaker, outputs.clone(), true);
+        assert!(app.input_devices.iter().any(|d| d.name == "Headset mic"));
+        assert!(
+            app.output_devices
+                .iter()
+                .any(|d| d.name == "Headset speaker")
+        );
+        assert_eq!(app.selected_input_device().unwrap().name, "Built-in mic");
+        assert_eq!(
+            app.selected_output_device().unwrap().name,
+            "Built-in speaker"
+        );
+        assert!(!app.follow_input && !app.follow_output);
+
+        terminal
+            .draw(|frame| crate::ui::view::draw(frame, &app, &crate::ui::theme::Theme::from_env()))
+            .unwrap();
+        let reconnected: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            reconnected.contains("Headset mic") && reconnected.contains("Headset speaker"),
+            "the reconnected headset appears without reopening settings or pressing refresh"
+        );
+        assert!(reconnected.matches("Built-in mic").count() >= 2);
+        assert!(reconnected.matches("Built-in speaker").count() >= 2);
+
+        // Browsing another device survives periodic refresh and list reordering.
+        app.selected_input_idx = 2; // BlackHole, not the active built-in microphone.
+        let mut reordered = inputs;
+        reordered.reverse();
+        for _ in 0..3 {
+            app.update_device_list(Side::Microphone, reordered.clone(), true);
+            assert_eq!(app.selected_input_device().unwrap().name, "BlackHole mic");
+        }
+        // The user can choose the reconnected device using the usual settings path.
+        app.selected_input_idx = 3;
+        assert_eq!(app.selected_input_device().unwrap().name, "Headset mic");
+        config = crate::ui::choose_audio_device(
+            &mut app,
+            Side::Microphone,
+            Some("Headset mic"),
+            config,
+            |_| Ok("Headset mic".into()),
+        )
+        .unwrap();
+        app.update_device_list(Side::Microphone, reordered, true);
+        assert_eq!(app.active_input_name.as_deref(), Some("Headset mic"));
+        assert_eq!(config.input_device.as_deref(), Some("Headset mic"));
+        assert_eq!(app.selected_input_device().unwrap().name, "Headset mic");
+        assert_eq!(app.input_gate, 0.4);
+        assert_eq!(app.active_output_name.as_deref(), Some("Built-in speaker"));
+    }
+
+    #[test]
+    fn polling_keeps_the_default_choice_and_follows_active_devices_when_selection_disappears() {
+        let mut app = welcomed();
+        let device = |name: &str| AudioDeviceInfo {
+            name: name.into(),
+            sample_rate: 48_000,
+            channels: 1,
+            is_default: false,
+            is_supported: true,
+        };
+        app.update_devices(Side::Microphone, vec![device("Built-in")]);
+        app.update_device_list(
+            Side::Microphone,
+            vec![device("Headset"), device("Built-in")],
+            true,
+        );
+        assert_eq!(
+            app.selected_input_idx, 0,
+            "refresh must not turn default into a named selection"
+        );
+        app.follow_input = false;
+        app.active_input_name = Some("Built-in".into());
+        app.selected_input_idx = 1; // Browsing the headset.
+        app.update_device_list(Side::Microphone, vec![device("Built-in")], true);
+        assert_eq!(app.selected_input_device().unwrap().name, "Built-in");
+        app.update_device_list(Side::Microphone, vec![], true);
+        assert_eq!(app.selected_input_idx, 0);
+        assert!(app.selected_input_device().is_none());
+        assert!(
+            !app.follow_input,
+            "list changes never change routing intent"
+        );
     }
 
     #[test]
