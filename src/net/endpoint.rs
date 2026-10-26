@@ -16,6 +16,18 @@ use tracing::debug;
 
 use crate::proto::{self, PeerId};
 
+/// The protocols an endpoint answers: today's control plane and voice, and the retired
+/// control versions, which are only answered with an update notice.
+fn alpns() -> Vec<Vec<u8>> {
+    let mut alpns = vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()];
+    alpns.extend(
+        proto::RETIRED_CONTROL_ALPNS
+            .iter()
+            .map(|alpn| alpn.to_vec()),
+    );
+    alpns
+}
+
 /// Opens the endpoint for the control plane and waits until it is ready.
 ///
 /// `presets::N0` brings in n0's public relays for hole punching plus DNS discovery,
@@ -27,7 +39,7 @@ use crate::proto::{self, PeerId};
 /// the same key finds them through the same lookup an invite code goes through.
 pub async fn bind(identity: Option<SecretKey>) -> Result<Endpoint> {
     let mut builder = Endpoint::builder(presets::N0)
-        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .alpns(alpns())
         .relay_mode(RelayMode::Default);
     if let Some(identity) = identity {
         builder = builder.secret_key(identity);
@@ -72,7 +84,7 @@ impl AddressLookup for SameRelayLookup {
 /// Exposed as a builder so tests can trust a local relay's self-signed certificate.
 pub fn relay_builder(identity: Option<SecretKey>, relay: &RelayUrl) -> Builder {
     let mut builder = Endpoint::builder(presets::Minimal)
-        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .alpns(alpns())
         .relay_mode(RelayMode::Custom(relay.clone().into()))
         .address_lookup(SameRelayLookup {
             relay: relay.clone(),
@@ -177,7 +189,7 @@ pub async fn bind_offline() -> Result<Endpoint> {
 pub async fn bind_offline_as(identity: SecretKey) -> Result<Endpoint> {
     Endpoint::builder(presets::Minimal)
         .secret_key(identity)
-        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .alpns(alpns())
         .relay_mode(RelayMode::Disabled)
         .bind()
         .await
@@ -192,7 +204,7 @@ pub async fn bind_offline_as(identity: SecretKey) -> Result<Endpoint> {
 pub async fn bind_offline_with_lookup() -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::default();
     let endpoint = Endpoint::builder(presets::Minimal)
-        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .alpns(alpns())
         .relay_mode(RelayMode::Disabled)
         .address_lookup(lookup.clone())
         .bind()
