@@ -8,9 +8,12 @@ use iroh::tls::CaTlsConfig;
 use iroh::{Endpoint, RelayUrl};
 use tincan::auth::{Admission, RoomSecret};
 use tincan::net::control::{Client, Coordinator};
-use tincan::net::endpoint::{bind_on_relay, relay_builder, to_endpoint_id};
+use tincan::net::endpoint::{bind_on_relay, relay_builder, to_endpoint_id, to_peer_id};
+use tincan::net::voice::{VoiceMesh, spawn_accept};
 use tincan::net::{Event, Session};
+use tincan::proto::ChannelId;
 use tincan::room::Room;
+use tokio::sync::mpsc;
 
 const PATIENCE: Duration = Duration::from_secs(10);
 
@@ -85,4 +88,45 @@ async fn an_unreachable_relay_fails_in_bounded_time() -> Result<()> {
         "{err:#}"
     );
     Ok(())
+}
+
+/// The voice mesh dials peers by identity; on a relay of your own that has to resolve
+/// through the relay, since there is no discovery service to ask.
+#[tokio::test]
+async fn voice_reaches_a_peer_through_the_shared_relay() -> Result<()> {
+    let (_map, relay, _server) = iroh::test_utils::run_relay_server().await?;
+
+    let a_ep = on_relay(None, &relay).await?;
+    let b_ep = on_relay(None, &relay).await?;
+    let (a_id, b_id) = (to_peer_id(a_ep.id()), to_peer_id(b_ep.id()));
+
+    let (a_in, _a_received) = mpsc::channel(64);
+    let (a_mic, a_out) = mpsc::channel::<Vec<u8>>(64);
+    let a = VoiceMesh::start(a_ep.clone(), a_id, a_in, a_out);
+    spawn_accept(a_ep, a.clone());
+
+    let (b_in, mut b_received) = mpsc::channel(64);
+    let (_b_mic, b_out) = mpsc::channel::<Vec<u8>>(64);
+    let b = VoiceMesh::start(b_ep.clone(), b_id, b_in, b_out);
+    spawn_accept(b_ep, b.clone());
+
+    let channel = Some(ChannelId(0));
+    a.set_membership(channel, vec![b_id]).await;
+    b.set_membership(channel, vec![a_id]).await;
+
+    // Datagrams can be lost while the link comes up, so keep speaking until one lands.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            bail!("no audio crossed the relay");
+        }
+        a_mic.send(b"merhaba".to_vec()).await?;
+        if let Ok(Some(frame)) =
+            tokio::time::timeout(Duration::from_millis(200), b_received.recv()).await
+        {
+            assert_eq!(frame.from, a_id);
+            assert_eq!(frame.payload, b"merhaba");
+            return Ok(());
+        }
+    }
 }
