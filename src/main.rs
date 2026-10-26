@@ -250,6 +250,9 @@ async fn host(
         (Some(_), None) => Some(UNNAMED_ROOM.to_string()),
         (_, named) => named,
     };
+    if let Some(name) = &room_name {
+        invite::check_room_name(name, relay.as_ref())?;
+    }
     let channels: Vec<String> = channels
         .split(',')
         .map(|c| c.trim().to_string())

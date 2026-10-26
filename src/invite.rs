@@ -150,6 +150,31 @@ pub fn relay_invite(room: Option<&str>, relay: &RelayUrl) -> String {
     }
 }
 
+/// Refuses a room name the host would hand out but `join` would read as something else:
+/// on n0's network a name with a dot, an `@` or a port looks like a relay; on a relay, a
+/// name that starts like a URL swallows the relay. Better said at `host` than discovered
+/// by everyone who tries to join.
+pub fn check_room_name(name: &str, relay: Option<&RelayUrl>) -> Result<()> {
+    let name = name.trim();
+    let (typed, expected) = match relay {
+        Some(relay) => (
+            relay_invite(Some(name), relay),
+            Target::RelayRoom {
+                room: Some(name.to_string()),
+                relay: relay.clone(),
+            },
+        ),
+        None => (name.to_string(), Target::Room(name.to_string())),
+    };
+    match parse_target(&typed) {
+        Ok(read) if read == expected => Ok(()),
+        _ => bail!(
+            "{name:?} cannot be a room name: `tincan join` would not read it back as one. \
+             leave out dots, @, a :port and a leading http:// or tincan:"
+        ),
+    }
+}
+
 /// Reads a relay address: a bare host means HTTPS, as every public relay is served.
 pub fn parse_relay(input: &str) -> Result<RelayUrl> {
     let input = input.trim();
@@ -350,5 +375,22 @@ mod tests {
             relay_invite(Some("lobby"), &relay),
             "lobby@relay.example.com"
         );
+    }
+
+    #[test]
+    fn a_room_name_join_would_misread_is_refused_by_the_host() {
+        for name in ["team.alpha", "bob@home", "clan:42", "tincan:x"] {
+            let Err(err) = check_room_name(name, None) else {
+                panic!("{name:?} would be read as something else by join");
+            };
+            assert!(format!("{err:#}").contains(name), "{err:#}");
+        }
+        assert!(check_room_name("lobby", None).is_ok());
+        assert!(check_room_name("game night", None).is_ok());
+
+        let relay: RelayUrl = "https://relay.example.com".parse().unwrap();
+        assert!(check_room_name("lobby", Some(&relay)).is_ok());
+        assert!(check_room_name("http://x", Some(&relay)).is_err());
+        assert!(check_room_name("tincan:x", Some(&relay)).is_err());
     }
 }

@@ -574,7 +574,8 @@ decisions and are not used in the product.
   connection or a relay both can reach (#176 tracks local discovery).
 - **A room name with a dot in it is read as a relay address.** `tincan join ev.odasi`
   looks for a relay at `ev.odasi`, which is what lets `tincan join relay.example.com`
-  work. Host such a room under a name without a dot.
+  work. `tincan host` refuses a room name that `join` would misread this way (a dot, an
+  `@`, a `:port`, or a leading `http://` or `tincan:`), so pick one without.
 - **A room on a relay needs tincan 0.4.0 or newer to join.** Older versions read
   `lobby@relay.example.com` as a room name, look for it on n0's network and report that
   the room could not be reached; they cannot be told to update, because they never get
