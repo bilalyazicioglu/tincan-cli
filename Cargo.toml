@@ -61,3 +61,9 @@ libc = "0.2.189"
 # Argon2 is unacceptably slow in a debug build; optimize just that package.
 [profile.dev.package.argon2]
 opt-level = 3
+
+[dev-dependencies]
+# Only for `iroh::test_utils::run_relay_server` and skipping the test relay's
+# self-signed certificate. n0's staging servers are chosen by an environment
+# variable, not by this feature, so the other tests still see production.
+iroh = { version = "1", features = ["test-utils"] }

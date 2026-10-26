@@ -4,9 +4,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use iroh::address_lookup::{
-    DEFAULT_PKARR_TTL, EndpointInfo, MemoryLookup, N0_DNS_PKARR_RELAY_PROD, PkarrRelayClient,
+    self, AddressLookup, DEFAULT_PKARR_TTL, EndpointInfo, Item, MemoryLookup,
+    N0_DNS_PKARR_RELAY_PROD, PkarrRelayClient,
 };
-use iroh::{Endpoint, EndpointId, RelayMode, SecretKey, endpoint::presets};
+use iroh::endpoint::Builder;
+use iroh::{Endpoint, EndpointId, RelayMode, RelayUrl, SecretKey, endpoint::presets};
+use n0_future::boxed::BoxStream;
+use n0_future::{StreamExt, stream};
 
 use tracing::debug;
 
@@ -33,6 +37,68 @@ pub async fn bind(identity: Option<SecretKey>) -> Result<Endpoint> {
         .await
         .context("could not open the network interface")?;
     endpoint.online().await;
+    Ok(endpoint)
+}
+
+/// How long a relay room waits to reach its relay before giving up on it.
+const RELAY_PATIENCE: Duration = Duration::from_secs(10);
+
+/// The address book of a room on its own relay: every endpoint is "reachable through
+/// this relay", because everyone in such a room is on it.
+///
+/// That is what lets the control plane and the voice mesh keep dialing by identity alone,
+/// as they do on n0's network, without a lookup service and without any change to what
+/// peers tell each other. Once two peers meet on the relay, iroh still tries for a direct
+/// path between them.
+#[derive(Debug, Clone)]
+pub struct SameRelayLookup {
+    relay: RelayUrl,
+}
+
+impl AddressLookup for SameRelayLookup {
+    fn resolve(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Option<BoxStream<Result<Item, address_lookup::Error>>> {
+        let info = EndpointInfo::new(endpoint_id).with_relay_url(self.relay.clone());
+        let item = Item::new(info, "same relay", None);
+        Some(stream::iter(Some(Ok(item))).boxed())
+    }
+}
+
+/// The builder for an endpoint that lives on one relay and nowhere else: no n0 relays,
+/// no pkarr publishing, no DNS lookups. `presets::Minimal` only picks the crypto provider.
+///
+/// Exposed as a builder so tests can trust a local relay's self-signed certificate.
+pub fn relay_builder(identity: Option<SecretKey>, relay: &RelayUrl) -> Builder {
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .relay_mode(RelayMode::Custom(relay.clone().into()))
+        .address_lookup(SameRelayLookup {
+            relay: relay.clone(),
+        });
+    if let Some(identity) = identity {
+        builder = builder.secret_key(identity);
+    }
+    builder
+}
+
+/// Opens an endpoint on the given relay and waits until the relay has it.
+///
+/// A relay that is down or is not a relay would leave `online()` waiting forever, so the
+/// wait is bounded and the endpoint is closed again when it runs out.
+pub async fn bind_on_relay(identity: Option<SecretKey>, relay: &RelayUrl) -> Result<Endpoint> {
+    let endpoint = relay_builder(identity, relay)
+        .bind()
+        .await
+        .context("could not open the network interface")?;
+    if tokio::time::timeout(RELAY_PATIENCE, endpoint.online())
+        .await
+        .is_err()
+    {
+        endpoint.close().await;
+        anyhow::bail!("could not reach the relay at {relay}");
+    }
     Ok(endpoint)
 }
 
