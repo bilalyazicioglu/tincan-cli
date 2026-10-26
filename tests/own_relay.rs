@@ -130,3 +130,41 @@ async fn voice_reaches_a_peer_through_the_shared_relay() -> Result<()> {
         }
     }
 }
+
+/// A wrong passphrase derives a key nobody holds, so on a relay it is a room nobody
+/// answers for, the same as on n0's network.
+#[tokio::test]
+async fn a_wrong_passphrase_on_a_relay_looks_like_a_closed_room() -> Result<()> {
+    let (_map, relay, _server) = iroh::test_utils::run_relay_server().await?;
+    let secret = RoomSecret::derive("lobby", "pass")?;
+    let host_ep = on_relay(Some(secret.identity()), &relay).await?;
+    let room = Room::new("lobby", vec!["general".into()])?;
+    let _host = Coordinator::spawn(
+        host_ep,
+        room,
+        Admission::room(&secret, "pass")?,
+        "alice",
+        None,
+    )
+    .await?;
+
+    let wrong = RoomSecret::derive("lobby", "wrong")?;
+    let refused = Client::connect_patiently(
+        on_relay(None, &relay).await?,
+        to_endpoint_id(&wrong.coordinator())?,
+        wrong.key(),
+        "mallory",
+        None,
+        Duration::from_secs(3),
+        |_| {},
+    )
+    .await;
+    let Err(err) = refused else {
+        bail!("a wrong passphrase must not reach the room");
+    };
+    assert!(
+        format!("{err:#}").contains("could not reach the room"),
+        "{err:#}"
+    );
+    Ok(())
+}

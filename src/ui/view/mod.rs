@@ -160,7 +160,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
     let right = vec![
         Span::styled("f1 code ", theme.dim()),
-        Span::styled(short_code(&app.invite_code, theme), theme.brass()),
+        Span::styled(
+            short_invite(&app.invite_code, area.width as usize, theme),
+            theme.brass(),
+        ),
         Span::raw(" "),
     ];
     // One column for the indent, one so the two halves never touch.
@@ -265,6 +268,28 @@ fn clip(text: &str, width: usize, theme: &Theme) -> String {
     }
     let kept: String = text.chars().take(width - 1).collect();
     format!("{kept}{}", theme.glyphs.cut)
+}
+
+/// An invite code is cut to its head; a relay invite (`room@relay`) is shown whole when
+/// the footer can spare half its width for it, and cut to its room otherwise, since the
+/// relay is the part the person already knows.
+fn short_invite(invite: &str, width: usize, theme: &Theme) -> String {
+    if !is_relay_invite(invite) {
+        return short_code(invite, theme);
+    }
+    if invite.chars().count() + "f1 code ".len() <= width / 2 {
+        return invite.to_string();
+    }
+    let room = invite.split('@').next().unwrap_or(invite);
+    let head: String = room.chars().take(RELAY_HEAD).collect();
+    format!("{head}{}", theme.glyphs.cut)
+}
+
+/// How much of a relay invite a crowded footer keeps.
+const RELAY_HEAD: usize = 16;
+
+pub(crate) fn is_relay_invite(invite: &str) -> bool {
+    invite.contains('@') || invite.contains('.') || invite.contains(':')
 }
 
 fn short_code(code: &str, theme: &Theme) -> String {
@@ -465,6 +490,26 @@ mod tests {
                 "lost the code at {width}: {footer}"
             );
         }
+    }
+
+    #[test]
+    fn a_relay_invite_fits_a_narrow_footer() {
+        let mut app = room();
+        app.invite_code = "a-long-room-name@relay.example.com".into();
+
+        let wide = rendered(120, 24, &app);
+        let footer = wide.lines().last().unwrap();
+        assert!(
+            footer.contains("a-long-room-name@relay.example.com"),
+            "a wide footer has room for the whole invite: {footer}"
+        );
+
+        let narrow = rendered(40, 24, &app);
+        let footer = narrow.lines().last().unwrap();
+        assert!(
+            footer.contains("a-long-room-name") && !footer.contains("relay.example.com"),
+            "a narrow footer keeps the room and cuts the relay: {footer}"
+        );
     }
 
     #[test]

@@ -134,6 +134,22 @@ fn has_port(input: &str) -> bool {
     })
 }
 
+/// The invite for a room on a relay, as `parse_target` reads it back: the relay's host
+/// when it is served over HTTPS, the full URL otherwise, after the room name and an `@`.
+pub fn relay_invite(room: Option<&str>, relay: &RelayUrl) -> String {
+    let address = match (relay.scheme(), relay.host_str()) {
+        ("https", Some(host)) => match relay.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        },
+        _ => relay.as_str().trim_end_matches('/').to_string(),
+    };
+    match room {
+        Some(room) => format!("{room}@{address}"),
+        None => address,
+    }
+}
+
 /// Reads a relay address: a bare host means HTTPS, as every public relay is served.
 pub fn parse_relay(input: &str) -> Result<RelayUrl> {
     let input = input.trim();
@@ -310,5 +326,29 @@ mod tests {
             let message = format!("{err:#}");
             assert!(message.contains(input), "{input:?}: {message}");
         }
+    }
+
+    #[test]
+    fn relay_invite_is_what_join_reads_back() {
+        for relay in ["https://relay.example.com", "http://127.0.0.1:3340"] {
+            let relay: RelayUrl = relay.parse().unwrap();
+            for room in [None, Some("lobby")] {
+                let invite = relay_invite(room, &relay);
+                assert_eq!(
+                    parse_target(&invite).unwrap(),
+                    Target::RelayRoom {
+                        room: room.map(str::to_string),
+                        relay: relay.clone()
+                    },
+                    "{invite}"
+                );
+            }
+        }
+        let relay: RelayUrl = "https://relay.example.com".parse().unwrap();
+        assert_eq!(relay_invite(None, &relay), "relay.example.com");
+        assert_eq!(
+            relay_invite(Some("lobby"), &relay),
+            "lobby@relay.example.com"
+        );
     }
 }

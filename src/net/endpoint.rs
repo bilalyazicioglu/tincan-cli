@@ -102,6 +102,18 @@ pub async fn bind_on_relay(identity: Option<SecretKey>, relay: &RelayUrl) -> Res
     Ok(endpoint)
 }
 
+/// Whether an endpoint homed on these relays is one that n0's preset publishes for.
+///
+/// A room on its own relay never published anything to n0, and must not reach out to n0
+/// on the way out either; an offline endpoint has no relay at all.
+pub fn publishes_to_n0<'a>(relays: impl IntoIterator<Item = &'a RelayUrl>) -> bool {
+    let prod = iroh::defaults::prod::default_relay_map();
+    let staging = iroh::defaults::staging::default_relay_map();
+    relays
+        .into_iter()
+        .any(|relay| prod.contains(relay) || staging.contains(relay))
+}
+
 /// Closes the endpoint and takes its address record down with it.
 ///
 /// iroh's pkarr publisher stops when the endpoint does, but leaves its last record up,
@@ -120,7 +132,8 @@ pub async fn bind_on_relay(identity: Option<SecretKey>, relay: &RelayUrl) -> Res
 pub async fn close_and_retract(endpoint: &Endpoint) {
     const RETRACT_TIMEOUT: Duration = Duration::from_secs(2);
 
-    let publishes = endpoint.addr().relay_urls().next().is_some();
+    let addr = endpoint.addr();
+    let publishes = publishes_to_n0(addr.relay_urls());
     let client = match (endpoint.dns_resolver(), N0_DNS_PKARR_RELAY_PROD.parse()) {
         (Ok(resolver), Ok(relay)) if publishes => Some(PkarrRelayClient::new(
             relay,
@@ -225,5 +238,15 @@ mod tests {
             invalid_count > 0,
             "no byte string was rejected — validation may not be happening"
         );
+    }
+
+    #[test]
+    fn only_rooms_on_n0_relays_are_retracted_from_n0() {
+        let own: iroh::RelayUrl = "https://relay.example.com".parse().unwrap();
+        assert!(!publishes_to_n0([&own]));
+        assert!(!publishes_to_n0(std::iter::empty::<&iroh::RelayUrl>()));
+        let map = iroh::defaults::prod::default_relay_map();
+        let n0 = map.urls::<Vec<_>>();
+        assert!(publishes_to_n0(n0.iter().take(1)));
     }
 }
