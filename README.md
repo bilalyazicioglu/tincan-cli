@@ -207,6 +207,39 @@ Once the interface is up the footer only has room for the first group of the cod
 `F1` to print the whole thing into the chat pane and copy it again, so you can invite
 someone without restarting the room.
 
+**Open a room on your own relay:**
+
+```bash
+tincan host --relay relay.example.com --name alice
+```
+
+```
+passphrase:  chestnut-ferry-lens-moss
+they run:    tincan join relay.example.com
+```
+
+The room lives on a relay you run and touches nothing of n0's: nothing is published to
+n0's lookup service, nothing is looked up there, and n0's relays are not used as a
+fallback. Your friends type the relay's address and the passphrase; there is no invite
+code. Give the room a name (`tincan host lobby --relay relay.example.com`) when more than
+one room shares a relay, and they join it with `tincan join lobby@relay.example.com`.
+
+Running the relay is one program:
+
+```bash
+cargo install iroh-relay --features server
+iroh-relay --dev                                  # http://localhost:3340, for trying it out
+```
+
+`--dev` is plain HTTP on one machine. For a relay your friends reach over the internet,
+give it a domain and a certificate (it can fetch one from Let's Encrypt itself); the
+[iroh-relay README](https://github.com/n0-computer/iroh/tree/main/iroh-relay) has the
+config file. Everyone joining needs tincan 0.4.0 or newer, and an older one only says it
+could not reach the room.
+
+To check the claim rather than take it: while a room on your relay is running,
+`lsof -i -P | grep tincan` lists the relay and the peers, and no `iroh.link` address.
+
 **Join a room:**
 
 ```bash
@@ -214,7 +247,8 @@ tincan join lobby --name bob                            # asks for the passphras
 tincan join n73w-kuqc-uog2-... --name bob --password secret
 ```
 
-`join` takes either a room name or an invite code. Joining by name without `-p` asks for
+`join` takes a room name, an invite code, or a relay address (`relay.example.com`,
+`lobby@relay.example.com`, `http://localhost:3340`). Joining by name without `-p` asks for
 the passphrase, which keeps it out of the process list. Case, spaces, dashes and
 underscores are forgiven in both room names and passphrases: `Chestnut Ferry Lens Moss`
 works.
@@ -246,9 +280,10 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | Option             | Description                                                    |
 | ------------------ | -------------------------------------------------------------- |
 | `--name`, `-n`     | Your nickname in the room (default: your system username)      |
-| `ROOM`             | `host`: room name (optional). `join`: room name or invite code |
+| `ROOM`             | `host`: room name (optional). `join`: room name, invite code or relay address |
 | `--password`, `-p` | Passphrase. Generated for a named room when left out           |
 | `--channels`       | Comma-separated channel list (default: `general,gaming,music`) |
+| `--relay`          | `host`: open the room on a relay you run instead of n0's       |
 | `--no-voice`       | Skip audio entirely; text chat only                            |
 | `--input`          | Microphone to use (a distinctive part of the name is enough)   |
 | `--output`         | Speaker to use                                                 |
@@ -362,11 +397,17 @@ behind iroh:
   key for, because the QUIC session is established between the two peers rather than with
   the relay.
 
-So, put plainly: no server holds your room and no server can hear it, but two people
-cannot currently find each other without n0's. If those services went away, new
-connections would stop working. Pointing tincan at a relay and a DNS server you run
-yourself is something iroh supports and tincan does not expose yet — that is
-[issue #136](https://github.com/bilalyazicioglu/tincan-cli/issues/136).
+So, put plainly: no server holds your room and no server can hear it, but by default two
+people find each other through n0's. If those services went away, new connections to
+such rooms would stop working.
+
+A room opened with `--relay` needs none of them. Everyone in it is on the one relay you
+named, so its address is all anyone needs: there is nothing to publish and nothing to look
+up, and the only server involved is yours. Peers still try for a direct path between
+them once they meet there. The relay is given on the command line each time for now;
+remembering it in the config is [#179](https://github.com/bilalyazicioglu/tincan-cli/issues/179),
+and rooms on a local network with no internet at all are
+[#176](https://github.com/bilalyazicioglu/tincan-cli/issues/176).
 
 ### What the microphone sends
 
@@ -416,6 +457,11 @@ want: on a real string, the other end knows where you are. A service with server
 middle can stand between you and hide it. tincan has no such middle, and that cuts both
 ways — nobody is keeping your conversation, and nobody is keeping your address out of it
 either.
+
+A room on your own relay publishes no record. Its address is the relay and the room's
+key, so it is found only by someone who knows the relay, the room name and the
+passphrase, and what the relay sees about who talks to whom is seen by whoever runs it
+rather than by n0.
 
 A room opened by name goes further: its coordinator key *is* `Argon2id(passphrase, room
 name)`, so the passphrase is the room's address as well as its lock. That is what makes
@@ -521,11 +567,20 @@ decisions and are not used in the product.
 - **Push-to-talk is not hold-to-talk.** Terminals generally do not report key-release
   events, so in `--ptt` mode F4 works as a toggle: press once to open the microphone,
   press again to close it.
-- **Finding each other depends on n0's public infrastructure.** Discovery and hole
-  punching both go through servers run by Number Zero, set out under
-  [What tincan depends on](#what-tincan-depends-on). This holds even for two machines on
-  the same network: the preset tincan uses carries no local discovery, so a room does not
-  form without an internet connection. None of it is configurable yet; #136 tracks that.
+- **Finding each other depends on n0's public infrastructure,** unless the room is on a
+  relay you run (`--relay`). Discovery and hole punching both go through servers run by
+  Number Zero, set out under [What tincan depends on](#what-tincan-depends-on). This holds
+  even for two machines on the same network: a room does not form without an internet
+  connection or a relay both can reach (#176 tracks local discovery).
+- **A room name with a dot in it is read as a relay address.** `tincan join ev.odasi`
+  looks for a relay at `ev.odasi`, which is what lets `tincan join relay.example.com`
+  work. `tincan host` refuses a room name that `join` would misread this way (a dot, an
+  `@`, a `:port`, or a leading `http://` or `tincan:`), so pick one without.
+- **A room on a relay needs tincan 0.4.0 or newer to join.** Older versions read
+  `lobby@relay.example.com` as a room name, look for it on n0's network and report that
+  the room could not be reached; they cannot be told to update, because they never get
+  as far as the room. From 0.4.0 on, a room or invite that needs a newer version says so
+  and prints the update command.
 - **The first second of a connection flows through a relay** before switching to a direct
   link. You may notice the latency in the first moments after joining.
 

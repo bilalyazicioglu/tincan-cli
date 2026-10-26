@@ -11,7 +11,7 @@ use tincan::audio::device::Wanted;
 use tincan::auth::{Admission, Key, RoomSecret};
 use tincan::clipboard;
 use tincan::config::Config;
-use tincan::invite;
+use tincan::invite::{self, Target};
 use tincan::net::Command;
 use tincan::net::control::{Client, Coordinator};
 use tincan::net::endpoint;
@@ -23,8 +23,11 @@ use tincan::ui::{self, VoiceControl};
 
 /// Channels created by default when a room is opened.
 const DEFAULT_CHANNELS: &str = "general,gaming,music";
-/// What a room opened without a name is called on screen.
+/// What a room opened without a name is called on screen, and the name a room on a relay
+/// gets when none is given, so that `tincan join <relay>` finds it.
 const UNNAMED_ROOM: &str = "tincan";
+/// The first version that can join a room on a relay.
+const RELAY_MIN_VERSION: &str = "0.4.0";
 
 #[derive(Parser)]
 #[command(
@@ -55,6 +58,10 @@ enum Sub {
         /// Comma-separated list of channels.
         #[arg(long, default_value = DEFAULT_CHANNELS)]
         channels: String,
+        /// Open the room on a relay you run, and nothing of n0's: friends join with
+        /// `tincan join <relay>`, or `tincan join <room>@<relay>` for a named room.
+        #[arg(long, value_name = "HOST")]
+        relay: Option<String>,
         #[command(flatten)]
         audio: AudioArgs,
     },
@@ -206,8 +213,9 @@ async fn run(command: Sub) -> Result<()> {
             name,
             password,
             channels,
+            relay,
             audio,
-        } => host(room, name, password, channels, audio).await,
+        } => host(room, name, password, channels, relay, audio).await,
         Sub::Join {
             room,
             name,
@@ -231,9 +239,20 @@ async fn host(
     name: Option<String>,
     password: Option<String>,
     channels: String,
+    relay: Option<String>,
     audio: AudioArgs,
 ) -> Result<()> {
     tincan::logo::print_banner();
+    let relay = relay.as_deref().map(invite::parse_relay).transpose()?;
+    // A room on your own relay has no invite code to fall back on: whatever it is called,
+    // the name and passphrase are how it is found.
+    let room_name = match (&relay, room_name) {
+        (Some(_), None) => Some(UNNAMED_ROOM.to_string()),
+        (_, named) => named,
+    };
+    if let Some(name) = &room_name {
+        invite::check_room_name(name, relay.as_ref())?;
+    }
     let channels: Vec<String> = channels
         .split(',')
         .map(|c| c.trim().to_string())
@@ -243,6 +262,7 @@ async fn host(
     // A room opened by name always has a passphrase, generated unless one was given: with
     // the name it is the room's address, and a guessable one is a room anyone can find.
     let generated = room_name.is_some() && password.is_none();
+    let named = relay.is_none() || room_name.as_deref() != Some(UNNAMED_ROOM);
     let password = match password {
         Some(typed) => typed,
         None if generated => passphrase::generate(),
@@ -268,7 +288,11 @@ async fn host(
     )?;
 
     println!("{}", tincan::logo::heading("  connecting to the network…"));
-    let endpoint = endpoint::bind(secret.as_ref().map(RoomSecret::identity)).await?;
+    let identity = secret.as_ref().map(RoomSecret::identity);
+    let endpoint = match &relay {
+        Some(relay) => endpoint::bind_on_relay(identity, relay).await?,
+        None => endpoint::bind(identity).await?,
+    };
     let me = endpoint::to_peer_id(endpoint.id());
     let admission = match &secret {
         Some(secret) => Admission::room(secret, &password)?,
@@ -278,7 +302,39 @@ async fn host(
 
     let mut session = Coordinator::spawn(endpoint, room, admission, &nickname(name), mesh).await?;
 
+    if let Some(relay) = &relay {
+        let shown = room_name.as_deref().filter(|_| named).map(str::trim);
+        session.invite_code = invite::relay_invite(shown, relay);
+    }
+
     match &room_name {
+        Some(room) if relay.is_some() => {
+            println!(
+                "\n{}",
+                tincan::logo::heading(&format!(
+                    "  the room is open on {}. tell whoever you want in it:",
+                    relay
+                        .as_ref()
+                        .and_then(|r| r.host_str().map(str::to_string))
+                        .unwrap_or_default()
+                ))
+            );
+            if named {
+                println!("\n    room:        {}", tincan::logo::code(room.trim()));
+            }
+            println!("    passphrase:  {}\n", tincan::logo::code(&password));
+            println!(
+                "{}",
+                tincan::logo::heading(&format!(
+                    "  they run:  tincan join {}",
+                    shell_word(&session.invite_code)
+                ))
+            );
+            println!(
+                "{}",
+                tincan::logo::heading(&format!("  they need tincan {RELAY_MIN_VERSION} or newer."))
+            );
+        }
         Some(room) => {
             println!(
                 "\n{}",
@@ -350,22 +406,31 @@ async fn join(
     audio: AudioArgs,
 ) -> Result<()> {
     tincan::logo::print_banner();
-    let (coordinator, key) = if invite::looks_like_code(&room) {
-        let coordinator = PeerId(invite::decode(&room).context("could not read the invite code")?);
-        let key = Key::for_invite(&password.unwrap_or_default(), &coordinator)?;
-        (coordinator, key)
-    } else {
-        let passphrase = match password {
-            Some(typed) => typed,
-            None => ask_passphrase(&room)?,
-        };
-        let secret = RoomSecret::derive(&room, &passphrase)?;
-        (secret.coordinator(), secret.key().clone())
+    let target = invite::parse_target(&room)?;
+    let mut relay = None;
+    let (coordinator, key) = match target {
+        Target::Code(code) => {
+            let coordinator = PeerId(code);
+            let key = Key::for_invite(&password.unwrap_or_default(), &coordinator)?;
+            (coordinator, key)
+        }
+        Target::Room(name) => named_room(&name, &name, password)?,
+        Target::RelayRoom {
+            room: name,
+            relay: on,
+        } => {
+            let name = name.unwrap_or_else(|| UNNAMED_ROOM.to_string());
+            relay = Some(on);
+            named_room(&name, &room, password)?
+        }
     };
 
     println!("{}", tincan::logo::heading("  connecting to the room…"));
     // The joiner's own identity is always fresh: only the coordinator's is derived.
-    let endpoint = endpoint::bind(None).await?;
+    let endpoint = match &relay {
+        Some(relay) => endpoint::bind_on_relay(None, relay).await?,
+        None => endpoint::bind(None).await?,
+    };
     let me = endpoint::to_peer_id(endpoint.id());
     let (mesh, control) = setup_voice(&endpoint, me, &audio);
 
@@ -392,6 +457,17 @@ async fn join(
     .await?;
 
     ui::run(session, control, audio.ptt).await
+}
+
+/// The coordinator and key of a room found by name and passphrase.
+/// `typed` is what the prompt calls it: the room for a name, the relay for a bare relay.
+fn named_room(name: &str, typed: &str, password: Option<String>) -> Result<(PeerId, Key)> {
+    let passphrase = match password {
+        Some(typed_passphrase) => typed_passphrase,
+        None => ask_passphrase(typed)?,
+    };
+    let secret = RoomSecret::derive(name, &passphrase)?;
+    Ok((secret.coordinator(), secret.key().clone()))
 }
 
 /// Reads the passphrase from the terminal, or from stdin when it is piped.
@@ -533,6 +609,24 @@ mod tests {
     #[test]
     fn join_takes_a_room_name_or_a_code() {
         for target in ["lobby", "n73w-kuqc-uog2"] {
+            let cli = Cli::try_parse_from(["tincan", "join", target]).unwrap();
+            assert!(matches!(cli.command, Sub::Join { ref room, .. } if room == target));
+        }
+    }
+
+    #[test]
+    fn host_takes_a_relay() {
+        let cli = Cli::try_parse_from(["tincan", "host", "--relay", "relay.example.com"]).unwrap();
+        let Sub::Host { room, relay, .. } = cli.command else {
+            panic!("expected host");
+        };
+        assert_eq!(room, None);
+        assert_eq!(relay.as_deref(), Some("relay.example.com"));
+    }
+
+    #[test]
+    fn join_takes_a_relay_target() {
+        for target in ["relay.example.com", "lobby@relay.example.com"] {
             let cli = Cli::try_parse_from(["tincan", "join", target]).unwrap();
             assert!(matches!(cli.command, Sub::Join { ref room, .. } if room == target));
         }

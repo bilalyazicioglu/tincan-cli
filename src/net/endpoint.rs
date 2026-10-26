@@ -4,13 +4,29 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use iroh::address_lookup::{
-    DEFAULT_PKARR_TTL, EndpointInfo, MemoryLookup, N0_DNS_PKARR_RELAY_PROD, PkarrRelayClient,
+    self, AddressLookup, DEFAULT_PKARR_TTL, EndpointInfo, Item, MemoryLookup,
+    N0_DNS_PKARR_RELAY_PROD, PkarrRelayClient,
 };
-use iroh::{Endpoint, EndpointId, RelayMode, SecretKey, endpoint::presets};
+use iroh::endpoint::Builder;
+use iroh::{Endpoint, EndpointId, RelayMode, RelayUrl, SecretKey, endpoint::presets};
+use n0_future::boxed::BoxStream;
+use n0_future::{StreamExt, stream};
 
 use tracing::debug;
 
 use crate::proto::{self, PeerId};
+
+/// The protocols an endpoint answers: today's control plane and voice, and the retired
+/// control versions, which are only answered with an update notice.
+fn alpns() -> Vec<Vec<u8>> {
+    let mut alpns = vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()];
+    alpns.extend(
+        proto::RETIRED_CONTROL_ALPNS
+            .iter()
+            .map(|alpn| alpn.to_vec()),
+    );
+    alpns
+}
 
 /// Opens the endpoint for the control plane and waits until it is ready.
 ///
@@ -23,7 +39,7 @@ use crate::proto::{self, PeerId};
 /// the same key finds them through the same lookup an invite code goes through.
 pub async fn bind(identity: Option<SecretKey>) -> Result<Endpoint> {
     let mut builder = Endpoint::builder(presets::N0)
-        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .alpns(alpns())
         .relay_mode(RelayMode::Default);
     if let Some(identity) = identity {
         builder = builder.secret_key(identity);
@@ -34,6 +50,80 @@ pub async fn bind(identity: Option<SecretKey>) -> Result<Endpoint> {
         .context("could not open the network interface")?;
     endpoint.online().await;
     Ok(endpoint)
+}
+
+/// How long a relay room waits to reach its relay before giving up on it.
+const RELAY_PATIENCE: Duration = Duration::from_secs(10);
+
+/// The address book of a room on its own relay: every endpoint is "reachable through
+/// this relay", because everyone in such a room is on it.
+///
+/// That is what lets the control plane and the voice mesh keep dialing by identity alone,
+/// as they do on n0's network, without a lookup service and without any change to what
+/// peers tell each other. Once two peers meet on the relay, iroh still tries for a direct
+/// path between them.
+#[derive(Debug, Clone)]
+pub struct SameRelayLookup {
+    relay: RelayUrl,
+}
+
+impl AddressLookup for SameRelayLookup {
+    fn resolve(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Option<BoxStream<Result<Item, address_lookup::Error>>> {
+        let info = EndpointInfo::new(endpoint_id).with_relay_url(self.relay.clone());
+        let item = Item::new(info, "same relay", None);
+        Some(stream::iter(Some(Ok(item))).boxed())
+    }
+}
+
+/// The builder for an endpoint that lives on one relay and nowhere else: no n0 relays,
+/// no pkarr publishing, no DNS lookups. `presets::Minimal` only picks the crypto provider.
+///
+/// Exposed as a builder so tests can trust a local relay's self-signed certificate.
+pub fn relay_builder(identity: Option<SecretKey>, relay: &RelayUrl) -> Builder {
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .alpns(alpns())
+        .relay_mode(RelayMode::Custom(relay.clone().into()))
+        .address_lookup(SameRelayLookup {
+            relay: relay.clone(),
+        });
+    if let Some(identity) = identity {
+        builder = builder.secret_key(identity);
+    }
+    builder
+}
+
+/// Opens an endpoint on the given relay and waits until the relay has it.
+///
+/// A relay that is down or is not a relay would leave `online()` waiting forever, so the
+/// wait is bounded and the endpoint is closed again when it runs out.
+pub async fn bind_on_relay(identity: Option<SecretKey>, relay: &RelayUrl) -> Result<Endpoint> {
+    let endpoint = relay_builder(identity, relay)
+        .bind()
+        .await
+        .context("could not open the network interface")?;
+    if tokio::time::timeout(RELAY_PATIENCE, endpoint.online())
+        .await
+        .is_err()
+    {
+        endpoint.close().await;
+        anyhow::bail!("could not reach the relay at {relay}");
+    }
+    Ok(endpoint)
+}
+
+/// Whether an endpoint homed on these relays is one that n0's preset publishes for.
+///
+/// A room on its own relay never published anything to n0, and must not reach out to n0
+/// on the way out either; an offline endpoint has no relay at all.
+pub fn publishes_to_n0<'a>(relays: impl IntoIterator<Item = &'a RelayUrl>) -> bool {
+    let prod = iroh::defaults::prod::default_relay_map();
+    let staging = iroh::defaults::staging::default_relay_map();
+    relays
+        .into_iter()
+        .any(|relay| prod.contains(relay) || staging.contains(relay))
 }
 
 /// Closes the endpoint and takes its address record down with it.
@@ -54,7 +144,8 @@ pub async fn bind(identity: Option<SecretKey>) -> Result<Endpoint> {
 pub async fn close_and_retract(endpoint: &Endpoint) {
     const RETRACT_TIMEOUT: Duration = Duration::from_secs(2);
 
-    let publishes = endpoint.addr().relay_urls().next().is_some();
+    let addr = endpoint.addr();
+    let publishes = publishes_to_n0(addr.relay_urls());
     let client = match (endpoint.dns_resolver(), N0_DNS_PKARR_RELAY_PROD.parse()) {
         (Ok(resolver), Ok(relay)) if publishes => Some(PkarrRelayClient::new(
             relay,
@@ -98,7 +189,7 @@ pub async fn bind_offline() -> Result<Endpoint> {
 pub async fn bind_offline_as(identity: SecretKey) -> Result<Endpoint> {
     Endpoint::builder(presets::Minimal)
         .secret_key(identity)
-        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .alpns(alpns())
         .relay_mode(RelayMode::Disabled)
         .bind()
         .await
@@ -113,7 +204,7 @@ pub async fn bind_offline_as(identity: SecretKey) -> Result<Endpoint> {
 pub async fn bind_offline_with_lookup() -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::default();
     let endpoint = Endpoint::builder(presets::Minimal)
-        .alpns(vec![proto::ALPN.to_vec(), proto::VOICE_ALPN.to_vec()])
+        .alpns(alpns())
         .relay_mode(RelayMode::Disabled)
         .address_lookup(lookup.clone())
         .bind()
@@ -159,5 +250,15 @@ mod tests {
             invalid_count > 0,
             "no byte string was rejected — validation may not be happening"
         );
+    }
+
+    #[test]
+    fn only_rooms_on_n0_relays_are_retracted_from_n0() {
+        let own: iroh::RelayUrl = "https://relay.example.com".parse().unwrap();
+        assert!(!publishes_to_n0([&own]));
+        assert!(!publishes_to_n0(std::iter::empty::<&iroh::RelayUrl>()));
+        let map = iroh::defaults::prod::default_relay_map();
+        let n0 = map.urls::<Vec<_>>();
+        assert!(publishes_to_n0(n0.iter().take(1)));
     }
 }

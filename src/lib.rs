@@ -17,6 +17,7 @@ pub mod passphrase;
 pub mod proto;
 pub mod room;
 pub mod stderr;
+pub mod upgrade;
 
 pub mod audio;
 pub mod net;

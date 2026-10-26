@@ -14,6 +14,21 @@ use serde::{Deserialize, Serialize};
 /// would fail the handshake with a misleading "wrong password", so the two do not meet.
 pub const ALPN: &[u8] = b"tincan/control/1";
 
+/// Control-plane versions this one has replaced. A peer arriving on one is not let in,
+/// but it is told why: the room answers with `ToPeer::Rejected` and an update notice
+/// instead of leaving it with a handshake that fails for no reason it can see.
+///
+/// To retire a version: give `ALPN` a new number, add the old one here, and keep the
+/// encoding of `ToPeer::Rejected` exactly as it is, since the old peer is the one reading it.
+pub const RETIRED_CONTROL_ALPNS: &[&[u8]] = &[];
+
+/// The update notice for a peer that arrived on `alpn`, if that version is retired.
+pub fn retired_notice(alpn: &[u8], retired: &[&[u8]]) -> Option<String> {
+    retired.contains(&alpn).then(|| {
+        crate::upgrade::needs_newer("this room", Some(env!("CARGO_PKG_VERSION"))).to_string()
+    })
+}
+
 /// The ALPN used in the voice mesh. Separate from the control plane: voice links are
 /// established directly between peers and never pass through the coordinator.
 pub const VOICE_ALPN: &[u8] = b"tincan/voice/0";
@@ -172,6 +187,8 @@ pub enum ToPeer {
         you: PeerId,
         room: RoomSnapshot,
     },
+    /// Its encoding must never change: peers on a retired version read it too
+    /// (see `RETIRED_CONTROL_ALPNS`).
     Rejected {
         reason: String,
     },
@@ -346,5 +363,16 @@ mod tests {
         ]);
         assert_eq!(id.short(), "abcdef0123");
         assert_eq!(id.to_string().len(), 64);
+    }
+
+    #[test]
+    fn a_retired_alpn_gets_an_update_notice() {
+        let retired: &[&[u8]] = &[b"tincan/control/0"];
+        let text = retired_notice(b"tincan/control/0", retired).expect("retired");
+        assert!(
+            text.contains("newer tincan") || text.contains("or newer"),
+            "{text}"
+        );
+        assert_eq!(retired_notice(ALPN, retired), None);
     }
 }

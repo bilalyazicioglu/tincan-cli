@@ -316,10 +316,15 @@ impl App {
 
     /// Puts the full invite code back on screen.
     pub fn show_invite_code(&mut self, copied: bool) {
-        let text = if copied {
-            format!("invite code (copied to clipboard): {}", self.invite_code)
+        let what = if crate::ui::view::is_relay_invite(&self.invite_code) {
+            "invite"
         } else {
-            format!("invite code: {}", self.invite_code)
+            "invite code"
+        };
+        let text = if copied {
+            format!("{what} (copied to clipboard): {}", self.invite_code)
+        } else {
+            format!("{what}: {}", self.invite_code)
         };
         let at = crate::net::now();
         self.push(Line::Notice { text, at });
@@ -1805,6 +1810,16 @@ mod tests {
         let app = welcomed();
         assert_eq!(app.name_of(PeerId([2; 32])), "user2");
         assert_eq!(app.name_of(PeerId([9; 32])), PeerId([9; 32]).short());
+    }
+
+    #[test]
+    fn a_relay_invite_is_not_called_a_code() {
+        let mut app = App::new(PeerId([1; 32]), "lobby@relay.example.com".into());
+        app.channels = vec!["general".into()];
+        app.show_invite_code(false);
+        let shown = last_notice(&app);
+        assert!(shown.contains("invite: lobby@relay.example.com"), "{shown}");
+        assert!(!shown.contains("invite code"), "{shown}");
     }
 
     #[test]

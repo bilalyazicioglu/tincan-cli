@@ -69,3 +69,33 @@ Voice packets are sent as QUIC unreliable datagrams directly between peers.
 - `sequence`: 8-byte `u64` sequence number for jitter buffer ordering.
 - `payload`: Variable-length Opus mono 48 kHz frame (20ms length).
 
+
+---
+
+## 4.4 Versions and What Older Peers Are Told
+
+The control plane is versioned by its ALPN, `tincan/control/1` (`proto::ALPN`); voice uses
+`tincan/voice/0`. Two versions that cannot talk must not meet, and the older one should be
+told why rather than fail with a misleading error.
+
+**Retiring a control version.** Give `ALPN` a new number and add the old one to
+`RETIRED_CONTROL_ALPNS`. Endpoints keep answering the retired ALPN, but a peer arriving on
+it is not let in: the room opens the control stream, sends `Rejected` with an update
+notice (the version needed and the command that updates the copy the person installed),
+and closes. The encoding of `Rejected` must therefore never change. Clients from 0.4.0 on
+show a `Rejected` received in place of the `Challenge`; older ones report an unexpected
+greeting.
+
+**Invite forms.** What `tincan join` accepts:
+
+| Form | Meaning |
+|------|---------|
+| 52 base32 characters (dashes, spaces, case ignored) | Invite code: the coordinator's public key |
+| `name` | A room on n0's network, found from name and passphrase |
+| `name@host`, `name@http(s)://host[:port]` | A named room on that relay |
+| `host` with a dot, `host:port`, or an `http(s)://` URL | The relay's default room |
+| `tincan:…` | Reserved for future forms; this version says it needs a newer tincan |
+
+A bare host means HTTPS. A room on a relay derives its key from name and passphrase
+exactly as a room on n0's network does (the default room's name is `tincan`), and every
+endpoint in it resolves every other through the relay, so no address is ever published.

@@ -270,6 +270,13 @@ pub(crate) async fn accept_loop(
                 debug!("a control connection arrived but we are not the coordinator");
                 return;
             };
+            if let Some(notice) = proto::retired_notice(&alpn, proto::RETIRED_CONTROL_ALPNS) {
+                // An older peer waits for the greeting on the stream the room opens.
+                if let Ok((send, _recv)) = conn.open_bi().await {
+                    let _ = reject(send, &notice).await;
+                }
+                return;
+            }
             let peer = to_peer_id(conn.remote_id());
             if let Err(err) = serve_peer(shared.clone(), conn, peer).await {
                 debug!("{} ile oturum bitti: {err:#}", peer.short());
@@ -277,6 +284,16 @@ pub(crate) async fn accept_loop(
             // However the connection ends (gracefully or not), the roster is cleaned.
             let _ = shared.apply(peer, ToCoordinator::Leave).await;
         });
+    }
+}
+
+/// The nonce from the room's greeting. A room can also refuse straight away, as one on a
+/// newer protocol does with an update notice; its reason is what the user needs to see.
+fn challenge_nonce(greeting: ToPeer) -> Result<auth::Nonce> {
+    match greeting {
+        ToPeer::Challenge { nonce } => Ok(nonce),
+        ToPeer::Rejected { reason } => bail!("you were not let into the room: {reason}"),
+        _ => bail!("unexpected greeting message"),
     }
 }
 
@@ -463,10 +480,7 @@ impl Client {
             .await
             .context("could not establish the control stream")?;
 
-        let challenge: ToPeer = read_msg(&mut recv).await?;
-        let ToPeer::Challenge { nonce } = challenge else {
-            bail!("unexpected greeting message");
-        };
+        let nonce = challenge_nonce(read_msg(&mut recv).await?)?;
 
         let proof = auth::proof(key, &nonce);
         write_msg(
@@ -601,5 +615,25 @@ async fn pump_broadcast_to_ui(
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A room that has moved on to a newer protocol turns an older peer away at the
+    /// greeting; the peer must show why rather than call the greeting unexpected.
+    #[test]
+    fn a_refusal_in_place_of_the_challenge_is_shown() {
+        let notice = "this room needs tincan 0.5.0 or newer. update with: brew upgrade tincan";
+        let err = challenge_nonce(ToPeer::Rejected {
+            reason: notice.into(),
+        })
+        .unwrap_err();
+        assert!(format!("{err:#}").contains(notice), "{err:#}");
+
+        let nonce = auth::random_nonce();
+        assert_eq!(challenge_nonce(ToPeer::Challenge { nonce }).unwrap(), nonce);
     }
 }
