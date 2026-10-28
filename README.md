@@ -390,7 +390,7 @@ brings in three services operated by [Number Zero](https://n0.computer), the com
 behind iroh:
 
 - **Finding each other.** Addresses are published to and looked up from n0's pkarr relay
-  (`dns.iroh.link`) and its DNS. This is what makes a public key enough on its own —
+  (`dns.iroh.link`), over HTTPS. This is what makes a public key enough on its own —
   whether it arrived as an invite code or was derived from a room name and passphrase.
   Without it, neither resolves to anywhere you could connect to.
 - **Getting through the router.** n0's relay servers — `use1-1`, `usw1-1`, `euc1-1` and
@@ -558,10 +558,11 @@ decisions and are not used in the product.
   wrong.
 - **A room that has just closed can take a moment to say so.** Leaving a room you host
   takes its address record down, and someone who joins after that is told the room is
-  gone in about 3 s. Not always: n0's lookups need a moment to catch up, so a join in
-  the same instant still reaches for the old address and waits out iroh's 30 s
-  connection timeout, and in our measurements so did about one in ten a few seconds
-  later. A host that stops any other way — killed, crashed, cut off — leaves the record
+  gone in about a second. tincan asks n0 directly rather than through your DNS resolver,
+  because public resolvers keep the old record for its 30 s lifetime and send a joiner
+  to the old address, where they would wait out iroh's 30 s connection timeout. A join
+  in the very instant the host leaves can still meet the old record. A host that stops
+  any other way — killed, crashed, cut off — leaves the record
   up, with the same 30 s wait. A host restarted under the same name and passphrase is
   reached as soon as it is up, since its new record replaces the old one; `--retry`
   covers the gap before that.
