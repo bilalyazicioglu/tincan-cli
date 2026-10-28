@@ -1,5 +1,6 @@
 //! The terminal interface.
 
+pub mod mention;
 pub mod state;
 pub mod theme;
 mod view;
@@ -242,10 +243,11 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
                         // else's; it already made its sound when it was sent.
                         let someone_wrote =
                             matches!(&event, Event::Chat(line) if line.from != app.me);
+                        let called = matches!(&event, Event::Chat(line) if app.mentions_me(line));
                         let prev_voice = app.voice;
                         app.apply(event);
                         if someone_wrote && let Some(v) = voice.as_ref() {
-                            v.play(Blip::Message);
+                            v.play(if called { Blip::Mention } else { Blip::Message });
                         }
                         if membership_changed {
                             sync_voice(&app, voice.as_ref()).await;

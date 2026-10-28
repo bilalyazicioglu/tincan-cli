@@ -25,6 +25,8 @@ pub enum Blip {
     Chime,
     /// A message was sent or arrived.
     Message,
+    /// Someone called you by name.
+    Mention,
     /// A key on the way down. Carries the key itself, so the same one always sounds
     /// the same, and how loud the user asked for it to be.
     Click { key: char, volume: f32 },
@@ -39,6 +41,9 @@ pub enum Blip {
 }
 
 const C5: f32 = 523.25;
+/// The mention pair: a fourth, above everything else.
+const G5: f32 = 783.99;
+const C6: f32 = 1046.50;
 const E5: f32 = 659.25;
 /// The microphone pair: a perfect fifth in the middle of the register.
 const G4: f32 = 392.00;
@@ -84,6 +89,17 @@ impl Blip {
                 long: 0.0,
                 harmonic: 0.10,
                 amplitude: 0.22,
+            },
+            // Above everything else and rising: the one sound that is about you. Two
+            // notes a fourth apart, high enough to cut through a room's voices, and
+            // short, because it only comes when someone means it.
+            Blip::Mention => Gesture {
+                first: G5,
+                second: Some(C6),
+                short: 0.035,
+                long: 0.070,
+                harmonic: 0.12,
+                amplitude: 0.36,
             },
             Blip::MicOn => Gesture {
                 first: G4,
@@ -233,9 +249,10 @@ fn tone(out: &mut Vec<f32>, freq: f32, seconds: f32, gesture: &Gesture, lift: f3
 mod tests {
     use super::*;
 
-    const EVERY: [Blip; 6] = [
+    const EVERY: [Blip; 7] = [
         Blip::Chime,
         Blip::Message,
+        Blip::Mention,
         Blip::MicOn,
         Blip::MicOff,
         Blip::EarsOn,

@@ -96,6 +96,10 @@ pub enum SettingsSection {
     Typing,
 }
 
+/// Long enough for a mention to run down the tallest string, or to be held still under
+/// reduced motion, and then for the screen to stop redrawing for it.
+const MENTION_ANIMATES_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct App {
     pub me: PeerId,
     pub room_name: String,
@@ -116,6 +120,10 @@ pub struct App {
     pub viewing: ChannelId,
     /// Channels somebody has written in since you last looked at them.
     pub unread: HashSet<ChannelId>,
+    /// The channels not in front of you where someone called you by name.
+    pub mentioned: HashSet<ChannelId>,
+    /// When you were last called by name: the string carries it for a moment.
+    pub mention_at: Option<std::time::Instant>,
     /// The channel we are connected to by voice. Independent of the one being viewed:
     /// you can be talking in "gaming" while reading the chat in "general".
     pub voice: Option<ChannelId>,
@@ -221,6 +229,8 @@ impl App {
             history_limit: crate::config::DEFAULT_HISTORY_LIMIT,
             viewing: ChannelId(0),
             unread: HashSet::new(),
+            mentioned: HashSet::new(),
+            mention_at: None,
             voice: None,
             muted: false,
             deafened: false,
@@ -303,6 +313,12 @@ impl App {
                 // both already accounted for.
                 if line.channel != self.viewing && line.from != self.me {
                     self.unread.insert(line.channel);
+                }
+                if self.mentions_me(&line) {
+                    self.mention_at = Some(std::time::Instant::now());
+                    if line.channel != self.viewing {
+                        self.mentioned.insert(line.channel);
+                    }
                 }
                 self.push(Line::Chat(line));
             }
@@ -422,6 +438,11 @@ impl App {
             .collect()
     }
 
+    /// Whether someone else called you by name in this line.
+    pub fn mentions_me(&self, line: &crate::proto::ChatLine) -> bool {
+        line.from != self.me && crate::ui::mention::mentions(&line.text, &self.name_of(self.me))
+    }
+
     pub fn name_of(&self, id: PeerId) -> String {
         self.names.get(&id).cloned().unwrap_or_else(|| id.short())
     }
@@ -446,6 +467,7 @@ impl App {
         });
         // Looking at a channel is what reading it means.
         self.unread.remove(&self.viewing);
+        self.mentioned.remove(&self.viewing);
         self.scroll_to_bottom();
     }
 
@@ -656,6 +678,9 @@ impl App {
             || self.calibrating.is_some()
             || self.mic_test_until.is_some()
             || (self.motion && !self.speaking.is_empty())
+            || self
+                .mention_at
+                .is_some_and(|at| at.elapsed() < MENTION_ANIMATES_FOR)
     }
 
     /// Records for a few seconds and then plays it back, or stops a test already
@@ -1357,6 +1382,66 @@ mod tests {
         assert!(
             app.unread.is_empty(),
             "looking at a channel is what reading it means"
+        );
+    }
+
+    fn chat_line(channel: u8, from: u8, text: &str) -> ChatLine {
+        ChatLine {
+            channel: ChannelId(channel),
+            from: PeerId([from; 32]),
+            text: text.into(),
+            at: 1,
+        }
+    }
+
+    fn chat(channel: u8, from: u8, text: &str) -> Event {
+        Event::Chat(ChatLine {
+            channel: ChannelId(channel),
+            from: PeerId([from; 32]),
+            text: text.into(),
+            at: 1,
+        })
+    }
+
+    #[test]
+    fn a_mention_elsewhere_marks_its_channel_until_you_look() {
+        let mut app = welcomed();
+        assert!(app.mentions_me(&chat_line(1, 2, "@user1 gel")));
+        app.apply(chat(1, 2, "@user1 gel"));
+        assert!(app.mentioned.contains(&ChannelId(1)));
+
+        app.view_next(true);
+        assert!(
+            app.mentioned.is_empty(),
+            "reading the channel answers the mention"
+        );
+    }
+
+    #[test]
+    fn a_mention_tugs_the_string_and_your_own_words_do_not() {
+        let mut app = welcomed();
+        app.apply(chat(0, 1, "note to self @user1"));
+        assert!(
+            app.mention_at.is_none(),
+            "naming yourself is not being called"
+        );
+        assert!(app.mentioned.is_empty());
+
+        app.apply(chat(0, 2, "selam"));
+        assert!(
+            app.mention_at.is_none(),
+            "an ordinary message is not a mention"
+        );
+
+        app.apply(chat(0, 2, "@user1 bak"));
+        assert!(app.mention_at.is_some());
+        assert!(
+            app.mentioned.is_empty(),
+            "the channel in front of you needs no mark"
+        );
+        assert!(
+            app.needs_animation(),
+            "the string has to be drawn while it moves"
         );
     }
 
