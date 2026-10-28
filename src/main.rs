@@ -305,7 +305,16 @@ async fn host(
     if let Some(relay) = &relay {
         let shown = room_name.as_deref().filter(|_| named).map(str::trim);
         session.invite_code = invite::relay_invite(shown, relay);
+    } else if let Some(room) = &room_name {
+        // A room opened by name is joined by its name; that is what F1 should give back.
+        session.invite_code = room.trim().to_string();
     }
+    session.passphrase = (!password.is_empty()).then(|| password.clone());
+    let copied = room_name.is_some()
+        && clipboard::copy(&invite::to_copy(
+            &session.invite_code,
+            session.passphrase.as_deref(),
+        ));
 
     match &room_name {
         Some(room) if relay.is_some() => {
@@ -327,13 +336,14 @@ async fn host(
                 "{}",
                 tincan::logo::heading(&format!(
                     "  they run:  tincan join {}",
-                    shell_word(&session.invite_code)
+                    invite::shell_word(&session.invite_code)
                 ))
             );
             println!(
                 "{}",
                 tincan::logo::heading(&format!("  they need tincan {RELAY_MIN_VERSION} or newer."))
             );
+            on_the_clipboard(copied);
         }
         Some(room) => {
             println!(
@@ -346,9 +356,10 @@ async fn host(
                 "{}",
                 tincan::logo::heading(&format!(
                     "  they run:  tincan join {}",
-                    shell_word(room.trim())
+                    invite::shell_word(room.trim())
                 ))
             );
+            on_the_clipboard(copied);
         }
         None => {
             let copied = clipboard::copy(&session.invite_code);
@@ -407,28 +418,35 @@ async fn join(
 ) -> Result<()> {
     tincan::logo::print_banner();
     let target = invite::parse_target(&room)?;
-    let mut relay = None;
-    let (coordinator, key) = match target {
-        Target::Code(code) => {
-            let coordinator = PeerId(code);
-            let key = Key::for_invite(&password.unwrap_or_default(), &coordinator)?;
-            (coordinator, key)
+    // A relay is reached before the passphrase is asked for: a mistyped relay should say
+    // so straight away, not after the passphrase has been typed and ten seconds waited.
+    let mut endpoint = match &target {
+        Target::RelayRoom { relay, .. } => {
+            println!("{}", tincan::logo::heading("  connecting to the relay…"));
+            // The joiner's own identity is always fresh: only the coordinator's is derived.
+            Some(endpoint::bind_on_relay(None, relay).await?)
         }
-        Target::Room(name) => named_room(&name, &name, password)?,
-        Target::RelayRoom {
-            room: name,
-            relay: on,
-        } => {
-            let name = name.unwrap_or_else(|| UNNAMED_ROOM.to_string());
-            relay = Some(on);
-            named_room(&name, &room, password)?
+        _ => None,
+    };
+    let (coordinator, key, passphrase) = match &target {
+        Target::Code(code) => {
+            let coordinator = PeerId(*code);
+            let password = password.unwrap_or_default();
+            let key = Key::for_invite(&password, &coordinator)?;
+            (coordinator, key, password)
+        }
+        Target::Room(name) => named_room(name, name, password)?,
+        Target::RelayRoom { room: name, .. } => {
+            named_room(name.as_deref().unwrap_or(UNNAMED_ROOM), &room, password)?
         }
     };
+    // What F1 gives back on this screen: the invite as typed, and its passphrase.
+    let target_for_f1 = target;
+    let passphrase_for_f1 = (!passphrase.is_empty()).then_some(passphrase);
 
     println!("{}", tincan::logo::heading("  connecting to the room…"));
-    // The joiner's own identity is always fresh: only the coordinator's is derived.
-    let endpoint = match &relay {
-        Some(relay) => endpoint::bind_on_relay(None, relay).await?,
+    let endpoint = match endpoint.take() {
+        Some(on_relay) => on_relay,
         None => endpoint::bind(None).await?,
     };
     let me = endpoint::to_peer_id(endpoint.id());
@@ -445,7 +463,7 @@ async fn join(
             ))
         );
     };
-    let session = Client::connect_patiently(
+    let mut session = Client::connect_patiently(
         endpoint,
         target,
         &key,
@@ -455,19 +473,21 @@ async fn join(
         waiting,
     )
     .await?;
+    session.invite_code = invite::invite_for(&target_for_f1);
+    session.passphrase = passphrase_for_f1;
 
     ui::run(session, control, audio.ptt).await
 }
 
-/// The coordinator and key of a room found by name and passphrase.
+/// The coordinator and key of a room found by name and passphrase, and the passphrase.
 /// `typed` is what the prompt calls it: the room for a name, the relay for a bare relay.
-fn named_room(name: &str, typed: &str, password: Option<String>) -> Result<(PeerId, Key)> {
+fn named_room(name: &str, typed: &str, password: Option<String>) -> Result<(PeerId, Key, String)> {
     let passphrase = match password {
         Some(typed_passphrase) => typed_passphrase,
         None => ask_passphrase(typed)?,
     };
     let secret = RoomSecret::derive(name, &passphrase)?;
-    Ok((secret.coordinator(), secret.key().clone()))
+    Ok((secret.coordinator(), secret.key().clone(), passphrase))
 }
 
 /// Reads the passphrase from the terminal, or from stdin when it is piped.
@@ -493,15 +513,13 @@ fn ask_passphrase(room: &str) -> Result<String> {
     Ok(passphrase)
 }
 
-/// Quotes a room name for the "they run" line when the shell would split it.
-fn shell_word(word: &str) -> String {
-    if word
-        .chars()
-        .all(|c| c.is_alphanumeric() || "-_.".contains(c))
-    {
-        word.to_string()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
+/// Says so when the join command and passphrase went onto the clipboard.
+fn on_the_clipboard(copied: bool) {
+    if copied {
+        println!(
+            "{}",
+            tincan::logo::heading("  the command and the passphrase are on your clipboard.")
+        );
     }
 }
 
@@ -634,10 +652,15 @@ mod tests {
 
     #[test]
     fn room_names_are_quoted_only_when_the_shell_needs_it() {
-        assert_eq!(shell_word("lobby"), "lobby");
-        assert_eq!(shell_word("game-night_2"), "game-night_2");
-        assert_eq!(shell_word("game night"), "'game night'");
-        assert_eq!(shell_word("bob's"), "'bob'\\''s'");
+        assert_eq!(invite::shell_word("lobby"), "lobby");
+        assert_eq!(invite::shell_word("game-night_2"), "game-night_2");
+        assert_eq!(invite::shell_word("game night"), "'game night'");
+        assert_eq!(invite::shell_word("bob's"), "'bob'\\''s'");
+        assert_eq!(
+            invite::shell_word("lobby@http://localhost:3340"),
+            "lobby@http://localhost:3340",
+            "an invite is one word to the shell and needs no quotes"
+        );
     }
 
     #[test]
