@@ -1254,7 +1254,10 @@ mod pictures {
             zoom: 1.30,
         };
 
-        let prompt_text = "loud and clear! tincan is fast";
+        // Alice calls bob back: `@` brings up who can be called, Tab puts bob in, Enter
+        // takes him, and the rest is typed after him.
+        let reply = "loud and clear! tincan is fast";
+        let prompt_text = "@bob loud and clear! tincan is fast";
 
         println!("Rendering {TOTAL_FRAMES} SVG frames...");
         for f in 0..TOTAL_FRAMES {
@@ -1319,19 +1322,30 @@ mod pictures {
                 }));
             }
 
+            // Bob calls alice by name: a knot by his name, hers lit, and brass running
+            // down the string once, on the clock the rest of the film keeps.
             if f == 65 {
                 app.apply(Event::Chat(ChatLine {
                     channel: ChannelId(0),
                     from: bob,
-                    text: "hey, can you hear me alright?".into(),
+                    text: "@alice can you hear me alright?".into(),
                     at: 1_757_000_100,
                 }));
             }
+            if f >= 65 {
+                app.mention_at = Some(now - std::time::Duration::from_millis((f - 65) as u64 * 50));
+            }
 
             // Typing simulation (Alice types)
-            if (110..155).contains(&f) {
-                let count = ((f - 110) * prompt_text.len() / 40).min(prompt_text.len());
-                app.input = prompt_text[..count].to_string();
+            if (110..116).contains(&f) {
+                app.input = "@".into();
+            } else if f == 116 {
+                app.cycle_suggestion(true);
+            } else if f == 124 {
+                app.accept_suggestion();
+            } else if (125..155).contains(&f) {
+                let count = ((f - 125) * reply.len() / 26).min(reply.len());
+                app.input = format!("@bob {}", &reply[..count]);
             } else if (155..165).contains(&f) {
                 app.input = prompt_text.to_string();
             } else if f == 165 {
