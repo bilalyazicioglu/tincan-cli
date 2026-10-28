@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use iroh::address_lookup::{
     self, AddressLookup, DEFAULT_PKARR_TTL, EndpointInfo, Item, MemoryLookup,
-    N0_DNS_PKARR_RELAY_PROD, PkarrRelayClient,
+    N0_DNS_PKARR_RELAY_PROD, PkarrPublisher, PkarrRelayClient, PkarrResolver,
 };
 use iroh::endpoint::Builder;
 use iroh::{Endpoint, EndpointId, RelayMode, RelayUrl, SecretKey, endpoint::presets};
@@ -30,15 +30,25 @@ fn alpns() -> Vec<Vec<u8>> {
 
 /// Opens the endpoint for the control plane and waits until it is ready.
 ///
-/// `presets::N0` brings in n0's public relays for hole punching plus DNS discovery,
-/// which is what makes the invite code sufficient on its own — no address list needed.
+/// n0's public relays for hole punching, plus n0's pkarr service for publishing and
+/// finding addresses, are what make the invite code sufficient on its own — no address
+/// list needed.
+///
+/// This is `presets::N0` without its plain DNS lookup. That lookup goes through the
+/// system's resolver, and public resolvers (1.1.1.1, 8.8.8.8) keep a record for its
+/// whole 30 s TTL: after a host leaves and takes its record down, they go on handing
+/// out the old address, and a joiner waits out iroh's 30 s connection timeout instead
+/// of hearing in a second that the room is gone. Asking n0's pkarr service over HTTPS
+/// gets the current record every time.
 ///
 /// `identity` is `None` for a fresh key, which is what joiners and rooms reached by invite
 /// code use. A room opened by name passes its derived key instead: the preset's pkarr
 /// publisher then announces this endpoint's addresses under it, and a joiner who derives
 /// the same key finds them through the same lookup an invite code goes through.
 pub async fn bind(identity: Option<SecretKey>) -> Result<Endpoint> {
-    let mut builder = Endpoint::builder(presets::N0)
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .address_lookup(PkarrPublisher::n0_dns())
+        .address_lookup(PkarrResolver::n0_dns())
         .alpns(alpns())
         .relay_mode(RelayMode::Default);
     if let Some(identity) = identity {
@@ -132,11 +142,10 @@ pub fn publishes_to_n0<'a>(relays: impl IntoIterator<Item = &'a RelayUrl>) -> bo
 /// so a joiner who looks the room up afterwards is sent to an address nobody answers
 /// and waits out iroh's 30 s connection timeout before hearing the room is gone.
 /// Measured against n0's servers: with an empty record published on the way out the
-/// same joiner is told in about 3 s, and a host restarted under the same name and
-/// passphrase is reached as quickly as before, because its fresh record replaces this one.
-/// The empty record takes a moment to reach n0's lookups: a joiner who asks the instant
-/// the host leaves still gets the old one, and in about one run in ten so did one who
-/// asked a few seconds later.
+/// same joiner is told in about a second (as long as it asks n0's pkarr service rather
+/// than a caching DNS resolver, see `bind`), and a host restarted under the same name
+/// and passphrase is reached as quickly as before, because its fresh record replaces
+/// this one.
 ///
 /// An endpoint with no relay publishes nothing to take down (the offline test
 /// endpoints), and one that cannot reach n0 quickly is left as it is: leaving a room
