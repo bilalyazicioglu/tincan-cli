@@ -100,6 +100,9 @@ pub struct App {
     pub me: PeerId,
     pub room_name: String,
     pub invite_code: String,
+    /// Shown and copied by F1 beside the invite, never drawn in the footer: the footer is
+    /// on screen for anyone watching a shared screen.
+    pub passphrase: Option<String>,
     pub channels: Vec<String>,
     pub peers: Vec<PeerInfo>,
     /// The name of every identity we have ever seen. This does not shrink when the
@@ -212,6 +215,7 @@ impl App {
             me,
             room_name: String::new(),
             invite_code,
+            passphrase: None,
             channels: Vec::new(),
             peers: Vec::new(),
             names: HashMap::new(),
@@ -314,17 +318,26 @@ impl App {
         }
     }
 
-    /// Puts the full invite code back on screen.
+    /// What F1 puts on the clipboard: the bare code when that is all it takes, and
+    /// otherwise the command to run with the passphrase under it.
+    pub fn invite_to_copy(&self) -> String {
+        crate::invite::to_copy(&self.invite_code, self.passphrase.as_deref())
+    }
+
+    /// Puts the full invite back on screen, with its passphrase.
     pub fn show_invite_code(&mut self, copied: bool) {
-        let what = if crate::ui::view::is_relay_invite(&self.invite_code) {
-            "invite"
-        } else {
+        let what = if crate::invite::looks_like_code(&self.invite_code) {
             "invite code"
-        };
-        let text = if copied {
-            format!("{what} (copied to clipboard): {}", self.invite_code)
         } else {
-            format!("{what}: {}", self.invite_code)
+            "invite"
+        };
+        let copied = if copied { " (copied to clipboard)" } else { "" };
+        let text = match &self.passphrase {
+            Some(passphrase) => format!(
+                "{what}{copied}: {}   passphrase: {passphrase}",
+                self.invite_code
+            ),
+            None => format!("{what}{copied}: {}", self.invite_code),
         };
         let at = crate::net::now();
         self.push(Line::Notice { text, at });
@@ -1834,6 +1847,30 @@ mod tests {
 
         app.show_invite_code(true);
         assert!(last_notice(&app).contains("clipboard"));
+    }
+
+    #[test]
+    fn f1_brings_back_the_passphrase_with_the_invite() {
+        for invite in ["http://localhost:3340", "lobby@relay.example.com", "lobby"] {
+            let mut app = App::new(PeerId([1; 32]), invite.into());
+            app.channels = vec!["general".into()];
+            app.passphrase = Some("chestnut-ferry-lens-moss".into());
+
+            app.show_invite_code(false);
+            let shown = last_notice(&app);
+            assert!(shown.contains(invite), "{shown}");
+            assert!(shown.contains("chestnut-ferry-lens-moss"), "{shown}");
+            assert_eq!(
+                app.invite_to_copy(),
+                format!("tincan join {invite}\npassphrase: chestnut-ferry-lens-moss")
+            );
+        }
+    }
+
+    #[test]
+    fn a_code_without_a_passphrase_copies_as_before() {
+        let app = App::new(PeerId([1; 32]), "n73w-kuqc-uog2-abcd".into());
+        assert_eq!(app.invite_to_copy(), "n73w-kuqc-uog2-abcd");
     }
 
     fn last_notice(app: &App) -> String {

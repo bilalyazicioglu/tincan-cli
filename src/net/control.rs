@@ -184,6 +184,7 @@ impl Coordinator {
         Ok(Session {
             me,
             invite_code,
+            passphrase: None,
             commands: command_tx,
             events: event_rx,
         })
@@ -516,6 +517,7 @@ impl Client {
         Ok(Session {
             me,
             invite_code: invite::encode(&coordinator.0),
+            passphrase: None,
             commands: command_tx,
             events: event_rx,
         })

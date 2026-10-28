@@ -159,7 +159,14 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Block::default().style(theme.panel()), area);
 
     let right = vec![
-        Span::styled("f1 code ", theme.dim()),
+        Span::styled(
+            if crate::invite::looks_like_code(&app.invite_code) {
+                "f1 code "
+            } else {
+                "f1 invite "
+            },
+            theme.dim(),
+        ),
         Span::styled(
             short_invite(&app.invite_code, area.width as usize, theme),
             theme.brass(),
@@ -270,14 +277,14 @@ fn clip(text: &str, width: usize, theme: &Theme) -> String {
     format!("{kept}{}", theme.glyphs.cut)
 }
 
-/// An invite code is cut to its head; a relay invite (`room@relay`) is shown whole when
+/// An invite code is cut to its head; a room name or relay invite is shown whole when
 /// the footer can spare half its width for it, and cut to its room otherwise, since the
 /// relay is the part the person already knows.
 fn short_invite(invite: &str, width: usize, theme: &Theme) -> String {
-    if !is_relay_invite(invite) {
+    if crate::invite::looks_like_code(invite) {
         return short_code(invite, theme);
     }
-    if invite.chars().count() + "f1 code ".len() <= width / 2 {
+    if invite.chars().count() + "f1 invite ".len() <= width / 2 {
         return invite.to_string();
     }
     let room = invite.split('@').next().unwrap_or(invite);
@@ -287,10 +294,6 @@ fn short_invite(invite: &str, width: usize, theme: &Theme) -> String {
 
 /// How much of a relay invite a crowded footer keeps.
 const RELAY_HEAD: usize = 16;
-
-pub(crate) fn is_relay_invite(invite: &str) -> bool {
-    invite.contains('@') || invite.contains('.') || invite.contains(':')
-}
 
 fn short_code(code: &str, theme: &Theme) -> String {
     let head: String = code.chars().take(9).collect();
@@ -306,7 +309,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn room() -> App {
-        let mut app = App::new(PeerId([1; 32]), "n73w-kuqc-uog2".into());
+        let mut app = App::new(PeerId([1; 32]), crate::invite::encode(&[7; 32]));
         app.room_name = "lobby".into();
         app.channels = vec!["general".into(), "gaming".into(), "music".into()];
         app
@@ -510,6 +513,26 @@ mod tests {
             footer.contains("a-long-room-name") && !footer.contains("relay.example.com"),
             "a narrow footer keeps the room and cuts the relay: {footer}"
         );
+    }
+
+    #[test]
+    fn the_footer_names_an_invite_and_keeps_the_passphrase_off_screen() {
+        let mut app = room();
+        app.invite_code = "lobby@relay.example.com".into();
+        app.passphrase = Some("chestnut-ferry-lens-moss".into());
+        let screen = rendered(120, 24, &app);
+        let footer = screen.lines().last().unwrap();
+        assert!(
+            footer.contains("f1 invite lobby@relay.example.com"),
+            "{footer}"
+        );
+        assert!(
+            !screen.contains("chestnut"),
+            "the passphrase stays off the screen"
+        );
+
+        let code = rendered(120, 24, &room());
+        assert!(code.lines().last().unwrap().contains("f1 code"));
     }
 
     #[test]
@@ -936,7 +959,7 @@ mod pictures {
         let me = PeerId([1; 32]);
         let mut app = App::new(
             me,
-            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4zq7".into(),
         );
         app.apply(Event::Welcome {
             me,
@@ -1201,7 +1224,7 @@ mod pictures {
         // Start with clean room and cans diagram clearly visible
         let mut app = App::new(
             me,
-            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4zq7".into(),
         );
         app.apply(Event::Welcome {
             me,
@@ -1490,7 +1513,7 @@ mod pictures {
 
         let mut app = App::new(
             me,
-            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4zq7".into(),
         );
         app.apply(Event::Welcome {
             me,

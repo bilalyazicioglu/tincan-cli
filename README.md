@@ -205,7 +205,10 @@ security does not rest on the passphrase.
 
 Once the interface is up the footer only has room for the first group of the code. Press
 `F1` to print the whole thing into the chat pane and copy it again, so you can invite
-someone without restarting the room.
+someone without restarting the room. For a room opened by name or on a relay, `F1` gives
+the join command with the passphrase under it, and that is what goes on the clipboard
+when the room opens; the passphrase is never drawn in the footer, which stays on screen
+for anyone watching a shared one.
 
 **Open a room on your own relay:**
 

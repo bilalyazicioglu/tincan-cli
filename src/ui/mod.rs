@@ -182,6 +182,7 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
     let theme = Theme::from_env();
     let config = Config::load();
     let mut app = App::new(session.me, session.invite_code.clone());
+    app.passphrase = session.passphrase.clone();
     app.history_limit = config.history_limit();
     app.voice_available = voice.is_some();
     app.ptt_mode = ptt_mode && app.voice_available;
@@ -663,7 +664,7 @@ async fn handle_key(
     let toggle_deafen = key.code == KeyCode::F(5);
 
     if show_code {
-        let copied = crate::clipboard::copy(&app.invite_code);
+        let copied = crate::clipboard::copy(&app.invite_to_copy());
         app.show_invite_code(copied);
         return Ok(false);
     }

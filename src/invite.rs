@@ -175,6 +175,41 @@ pub fn check_room_name(name: &str, relay: Option<&RelayUrl>) -> Result<()> {
     }
 }
 
+/// Quotes a room name or invite for a `tincan join` line when the shell would split it.
+/// `@`, `:` and `/` are plain characters to sh, zsh and fish in a word like these.
+pub fn shell_word(word: &str) -> String {
+    if word
+        .chars()
+        .all(|c| c.is_alphanumeric() || "-_.@:/".contains(c))
+    {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+/// What goes on the clipboard: the bare code when that is all it takes, and otherwise
+/// the command to run with the passphrase under it.
+pub fn to_copy(invite: &str, passphrase: Option<&str>) -> String {
+    match passphrase {
+        Some(passphrase) => format!(
+            "tincan join {}\npassphrase: {passphrase}",
+            shell_word(invite)
+        ),
+        None => invite.to_string(),
+    }
+}
+
+/// The invite for a room someone joined, as they would hand it on: the same `join`
+/// argument, so that F1 on a joiner's screen gives something that works.
+pub fn invite_for(target: &Target) -> String {
+    match target {
+        Target::Code(key) => encode(key),
+        Target::Room(name) => name.clone(),
+        Target::RelayRoom { room, relay } => relay_invite(room.as_deref(), relay),
+    }
+}
+
 /// Reads a relay address: a bare host means HTTPS, as every public relay is served.
 pub fn parse_relay(input: &str) -> Result<RelayUrl> {
     let input = input.trim();
@@ -392,5 +427,24 @@ mod tests {
         assert!(check_room_name("lobby", Some(&relay)).is_ok());
         assert!(check_room_name("http://x", Some(&relay)).is_err());
         assert!(check_room_name("tincan:x", Some(&relay)).is_err());
+    }
+
+    #[test]
+    fn the_invite_a_joiner_hands_on_is_what_they_typed() {
+        let relay: RelayUrl = "http://localhost:3340".parse().unwrap();
+        for target in [
+            Target::Room("lobby".into()),
+            Target::RelayRoom {
+                room: None,
+                relay: relay.clone(),
+            },
+            Target::RelayRoom {
+                room: Some("lobby".into()),
+                relay,
+            },
+            Target::Code(key(2)),
+        ] {
+            assert_eq!(parse_target(&invite_for(&target)).unwrap(), target);
+        }
     }
 }

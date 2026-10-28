@@ -46,6 +46,8 @@ pub struct Session {
     pub me: PeerId,
     /// The invite code — our own when hosting, the room we joined otherwise.
     pub invite_code: String,
+    /// The passphrase that goes with the invite, when it takes one; F1 brings it back.
+    pub passphrase: Option<String>,
     pub commands: mpsc::Sender<Command>,
     pub events: mpsc::Receiver<Event>,
 }
