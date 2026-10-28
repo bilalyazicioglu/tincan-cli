@@ -159,8 +159,18 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Block::default().style(theme.panel()), area);
 
     let right = vec![
-        Span::styled("f1 code ", theme.dim()),
-        Span::styled(short_code(&app.invite_code, theme), theme.brass()),
+        Span::styled(
+            if crate::invite::looks_like_code(&app.invite_code) {
+                "f1 code "
+            } else {
+                "f1 invite "
+            },
+            theme.dim(),
+        ),
+        Span::styled(
+            short_invite(&app.invite_code, area.width as usize, theme),
+            theme.brass(),
+        ),
         Span::raw(" "),
     ];
     // One column for the indent, one so the two halves never touch.
@@ -267,6 +277,24 @@ fn clip(text: &str, width: usize, theme: &Theme) -> String {
     format!("{kept}{}", theme.glyphs.cut)
 }
 
+/// An invite code is cut to its head; a room name or relay invite is shown whole when
+/// the footer can spare half its width for it, and cut to its room otherwise, since the
+/// relay is the part the person already knows.
+fn short_invite(invite: &str, width: usize, theme: &Theme) -> String {
+    if crate::invite::looks_like_code(invite) {
+        return short_code(invite, theme);
+    }
+    if invite.chars().count() + "f1 invite ".len() <= width / 2 {
+        return invite.to_string();
+    }
+    let room = invite.split('@').next().unwrap_or(invite);
+    let head: String = room.chars().take(RELAY_HEAD).collect();
+    format!("{head}{}", theme.glyphs.cut)
+}
+
+/// How much of a relay invite a crowded footer keeps.
+const RELAY_HEAD: usize = 16;
+
 fn short_code(code: &str, theme: &Theme) -> String {
     let head: String = code.chars().take(9).collect();
     format!("{head}{}", theme.glyphs.cut)
@@ -281,7 +309,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn room() -> App {
-        let mut app = App::new(PeerId([1; 32]), "n73w-kuqc-uog2".into());
+        let mut app = App::new(PeerId([1; 32]), crate::invite::encode(&[7; 32]));
         app.room_name = "lobby".into();
         app.channels = vec!["general".into(), "gaming".into(), "music".into()];
         app
@@ -465,6 +493,46 @@ mod tests {
                 "lost the code at {width}: {footer}"
             );
         }
+    }
+
+    #[test]
+    fn a_relay_invite_fits_a_narrow_footer() {
+        let mut app = room();
+        app.invite_code = "a-long-room-name@relay.example.com".into();
+
+        let wide = rendered(120, 24, &app);
+        let footer = wide.lines().last().unwrap();
+        assert!(
+            footer.contains("a-long-room-name@relay.example.com"),
+            "a wide footer has room for the whole invite: {footer}"
+        );
+
+        let narrow = rendered(40, 24, &app);
+        let footer = narrow.lines().last().unwrap();
+        assert!(
+            footer.contains("a-long-room-name") && !footer.contains("relay.example.com"),
+            "a narrow footer keeps the room and cuts the relay: {footer}"
+        );
+    }
+
+    #[test]
+    fn the_footer_names_an_invite_and_keeps_the_passphrase_off_screen() {
+        let mut app = room();
+        app.invite_code = "lobby@relay.example.com".into();
+        app.passphrase = Some("chestnut-ferry-lens-moss".into());
+        let screen = rendered(120, 24, &app);
+        let footer = screen.lines().last().unwrap();
+        assert!(
+            footer.contains("f1 invite lobby@relay.example.com"),
+            "{footer}"
+        );
+        assert!(
+            !screen.contains("chestnut"),
+            "the passphrase stays off the screen"
+        );
+
+        let code = rendered(120, 24, &room());
+        assert!(code.lines().last().unwrap().contains("f1 code"));
     }
 
     #[test]
@@ -891,7 +959,7 @@ mod pictures {
         let me = PeerId([1; 32]);
         let mut app = App::new(
             me,
-            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4zq7".into(),
         );
         app.apply(Event::Welcome {
             me,
@@ -1156,7 +1224,7 @@ mod pictures {
         // Start with clean room and cans diagram clearly visible
         let mut app = App::new(
             me,
-            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4zq7".into(),
         );
         app.apply(Event::Welcome {
             me,
@@ -1209,7 +1277,10 @@ mod pictures {
             zoom: 1.30,
         };
 
-        let prompt_text = "loud and clear! tincan is fast";
+        // Alice calls bob back: `@` brings up who can be called, Tab puts bob in, Enter
+        // takes him, and the rest is typed after him.
+        let reply = "loud and clear! tincan is fast";
+        let prompt_text = "@bob loud and clear! tincan is fast";
 
         println!("Rendering {TOTAL_FRAMES} SVG frames...");
         for f in 0..TOTAL_FRAMES {
@@ -1274,19 +1345,30 @@ mod pictures {
                 }));
             }
 
+            // Bob calls alice by name: a knot by his name, hers lit, and brass running
+            // down the string once, on the clock the rest of the film keeps.
             if f == 65 {
                 app.apply(Event::Chat(ChatLine {
                     channel: ChannelId(0),
                     from: bob,
-                    text: "hey, can you hear me alright?".into(),
+                    text: "@alice can you hear me alright?".into(),
                     at: 1_757_000_100,
                 }));
             }
+            if f >= 65 {
+                app.mention_at = Some(now - std::time::Duration::from_millis((f - 65) as u64 * 50));
+            }
 
             // Typing simulation (Alice types)
-            if (110..155).contains(&f) {
-                let count = ((f - 110) * prompt_text.len() / 40).min(prompt_text.len());
-                app.input = prompt_text[..count].to_string();
+            if (110..116).contains(&f) {
+                app.input = "@".into();
+            } else if f == 116 {
+                app.cycle_suggestion(true);
+            } else if f == 124 {
+                app.accept_suggestion();
+            } else if (125..155).contains(&f) {
+                let count = ((f - 125) * reply.len() / 26).min(reply.len());
+                app.input = format!("@bob {}", &reply[..count]);
             } else if (155..165).contains(&f) {
                 app.input = prompt_text.to_string();
             } else if f == 165 {
@@ -1445,7 +1527,7 @@ mod pictures {
 
         let mut app = App::new(
             me,
-            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4z".into(),
+            "n73w-kuqc-uog2-4mfx-a7bp-9dlt-2ksv-wq3e-hj5n-x8cr-vy6a-2ptm-4zq7".into(),
         );
         app.apply(Event::Welcome {
             me,

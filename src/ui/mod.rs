@@ -1,5 +1,6 @@
 //! The terminal interface.
 
+pub mod mention;
 pub mod state;
 pub mod theme;
 mod view;
@@ -182,6 +183,7 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
     let theme = Theme::from_env();
     let config = Config::load();
     let mut app = App::new(session.me, session.invite_code.clone());
+    app.passphrase = session.passphrase.clone();
     app.history_limit = config.history_limit();
     app.voice_available = voice.is_some();
     app.ptt_mode = ptt_mode && app.voice_available;
@@ -242,10 +244,11 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
                         // else's; it already made its sound when it was sent.
                         let someone_wrote =
                             matches!(&event, Event::Chat(line) if line.from != app.me);
+                        let called = matches!(&event, Event::Chat(line) if app.mentions_me(line));
                         let prev_voice = app.voice;
                         app.apply(event);
                         if someone_wrote && let Some(v) = voice.as_ref() {
-                            v.play(Blip::Message);
+                            v.play(if called { Blip::Mention } else { Blip::Message });
                         }
                         if membership_changed {
                             sync_voice(&app, voice.as_ref()).await;
@@ -663,7 +666,7 @@ async fn handle_key(
     let toggle_deafen = key.code == KeyCode::F(5);
 
     if show_code {
-        let copied = crate::clipboard::copy(&app.invite_code);
+        let copied = crate::clipboard::copy(&app.invite_to_copy());
         app.show_invite_code(copied);
         return Ok(false);
     }
@@ -739,8 +742,18 @@ async fn handle_key(
         KeyCode::Down if shift || alt || ctrl => app.scroll_down(2),
         KeyCode::End => app.scroll_to_bottom(),
 
-        KeyCode::Tab => app.view_next(true),
-        KeyCode::BackTab => app.view_next(false),
+        // While an `@` is being typed Tab walks the names it could be; otherwise it
+        // moves between channels, as it always has.
+        KeyCode::Tab => {
+            if !app.cycle_suggestion(true) {
+                app.view_next(true);
+            }
+        }
+        KeyCode::BackTab => {
+            if !app.cycle_suggestion(false) {
+                app.view_next(false);
+            }
+        }
 
         // The roster cursor. Arrows are free here — letters go to the message being
         // typed, so this is the one kind of key that can steer the rail without
@@ -758,6 +771,7 @@ async fn handle_key(
                 v.set_peer_gains(&app.peer_gains);
             }
         }
+        KeyCode::Esc if app.dismiss_suggestions() => {}
         KeyCode::Esc => {
             if app.scroll_offset > 0 {
                 app.scroll_to_bottom();
@@ -766,6 +780,7 @@ async fn handle_key(
             }
         }
 
+        KeyCode::Enter if app.accept_suggestion() => {}
         KeyCode::Enter => {
             app.scroll_to_bottom();
             if let Some(text) = app.take_input() {
@@ -800,6 +815,7 @@ async fn handle_key(
         }
 
         KeyCode::Backspace => {
+            app.edited();
             if app.input.pop().is_some()
                 && let (Some(v), Some(click)) = (voice, app.click_for(BACKSPACE))
             {
@@ -808,6 +824,7 @@ async fn handle_key(
         }
 
         KeyCode::Char(c) if !ctrl => {
+            app.edited();
             app.input.push(c);
             if let (Some(v), Some(click)) = (voice, app.click_for(c)) {
                 v.play(click);

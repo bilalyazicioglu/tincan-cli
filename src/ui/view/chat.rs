@@ -51,7 +51,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let [talk, field] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    // While an `@` is being typed the names it could be take rows of their own above
+    // the field, so the newest message is never covered by them.
+    let strip = suggestion_height(app, area.height);
+    let [talk, names, field] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(strip),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    draw_suggestions(frame, names, app, theme);
 
     let height = talk.height as usize;
 
@@ -129,6 +138,69 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     draw_field(frame, field, app, theme);
 }
 
+/// The most names the `@` list shows at once. Past this it scrolls with Tab.
+const SUGGESTION_ROWS: usize = 5;
+
+/// How many rows the `@` list needs, given the room on screen.
+fn suggestion_height(app: &App, height: u16) -> u16 {
+    let names = app.suggestions().len();
+    if names == 0 || height <= 3 {
+        return 0;
+    }
+    // Always leave the field and at least one line of talk.
+    names.min(SUGGESTION_ROWS).min(height as usize - 2) as u16
+}
+
+/// The names an `@` could be, one per row right above where you type, lined up with
+/// the text in the field. The one Tab has put in the input is lit; a list longer than
+/// the room keeps that one in view and says how many it is not showing.
+fn draw_suggestions(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let names = app.suggestions();
+    let rows = area.height as usize;
+    if names.is_empty() || rows == 0 || area.width < 4 {
+        return;
+    }
+    frame.render_widget(Block::default().style(theme.panel()), area);
+
+    let picked = app.suggestion_picked();
+    let overflow = names.len() > rows;
+    let shown = if overflow { rows - 1 } else { rows };
+    let first = picked
+        .map_or(0, |picked| picked.saturating_sub(shown.saturating_sub(1)))
+        .min(names.len().saturating_sub(shown));
+    let indent = format!(" #{} ", app.channel_name(app.viewing))
+        .chars()
+        .count();
+    let room = (area.width as usize).saturating_sub(indent);
+
+    let mut lines: Vec<TextLine> = names
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(shown)
+        .map(|(index, name)| {
+            TextLine::from(vec![
+                Span::raw(" ".repeat(indent)),
+                Span::styled(
+                    clip(&format!("@{name} "), room, theme),
+                    if picked == Some(index) {
+                        theme.chip_on()
+                    } else {
+                        theme.brass()
+                    },
+                ),
+            ])
+        })
+        .collect();
+    if overflow {
+        lines.push(TextLine::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(format!("+{} more", names.len() - shown), theme.dim()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 /// The message field. No box: its own ground is enough to say "type here".
 fn draw_field(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 {
@@ -174,7 +246,10 @@ fn name_column(visible: &[&Line], app: &App, ceiling: usize) -> usize {
     visible
         .iter()
         .filter_map(|line| match line {
-            Line::Chat(chat) => Some(app.name_of(chat.from).chars().count()),
+            // A line that calls you carries a knot and a space before the name.
+            Line::Chat(chat) => Some(
+                app.name_of(chat.from).chars().count() + if app.mentions_me(chat) { 2 } else { 0 },
+            ),
             Line::Notice { .. } => None,
         })
         .max()
@@ -198,19 +273,50 @@ fn transcript(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
                     who == chat.from && chat.at.saturating_sub(when) < GROUPING_WINDOW
                 });
                 let mine = chat.from == app.me;
-                let heading = if grouped {
+                let called = app.mentions_me(chat);
+                let heading = if grouped && !called {
                     vec![Span::raw(" ".repeat(gutter))]
                 } else {
-                    vec![
-                        Span::styled(pad(&clock(chat.at), time_column), theme.dim()),
-                        // Flush right: the name belongs to the message, not to the
-                        // margin.
-                        Span::styled(
-                            pad_left(&clip(&app.name_of(chat.from), names, theme), names),
-                            if mine { theme.accent() } else { theme.strong() },
-                        ),
-                        Span::raw(" ".repeat(AFTER_NAME)),
-                    ]
+                    let shown = if grouped {
+                        String::new()
+                    } else {
+                        clip(&app.name_of(chat.from), names, theme)
+                    };
+                    let mut heading = vec![Span::styled(
+                        if grouped {
+                            " ".repeat(time_column)
+                        } else {
+                            pad(&clock(chat.at), time_column)
+                        },
+                        theme.dim(),
+                    )];
+                    // Flush right: the name belongs to the message, not to the margin.
+                    // A line that calls you gets a knot before the name, tied in brass:
+                    // somebody pulled on your end of the string.
+                    let width = shown.chars().count();
+                    let room_left = names.saturating_sub(width);
+                    if called {
+                        let knot = format!("{} ", theme.glyphs.can.knot);
+                        let lead = room_left.saturating_sub(2);
+                        heading.push(Span::raw(" ".repeat(lead)));
+                        heading.push(Span::styled(
+                            knot.chars().take(room_left.clamp(1, 2)).collect::<String>(),
+                            theme.brass(),
+                        ));
+                    } else {
+                        heading.push(Span::raw(" ".repeat(room_left)));
+                    }
+                    heading.push(Span::styled(
+                        shown,
+                        if mine { theme.accent() } else { theme.strong() },
+                    ));
+                    heading.push(Span::raw(" ".repeat(AFTER_NAME)));
+                    heading
+                };
+                let marks = if called {
+                    crate::ui::mention::ranges(&chat.text, &app.name_of(app.me))
+                } else {
+                    Vec::new()
                 };
 
                 for (index, part) in fold(&chat.text, room).into_iter().enumerate() {
@@ -219,7 +325,7 @@ fn transcript(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
                     } else {
                         vec![Span::raw(" ".repeat(gutter))]
                     };
-                    spans.push(Span::styled(part, theme.text()));
+                    spans.extend(lit(&part, &marks, &chat.text, theme));
                     lines.push(TextLine::from(spans));
                 }
                 previous = Some((chat.from, chat.at));
@@ -511,14 +617,39 @@ fn fold(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// One folded piece of a message, with your name lit in brass wherever it calls you.
+///
+/// The marks are found in the whole message, so a piece is matched back to them by
+/// looking for each marked word in it; folding never splits a word it can keep whole.
+fn lit(
+    part: &str,
+    marks: &[std::ops::Range<usize>],
+    text: &str,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    if marks.is_empty() {
+        return vec![Span::styled(part.to_string(), theme.text())];
+    }
+    let mut spans = Vec::new();
+    let mut rest = part;
+    for mark in marks {
+        let word = &text[mark.clone()];
+        let Some(at) = rest.find(word) else { continue };
+        if at > 0 {
+            spans.push(Span::styled(rest[..at].to_string(), theme.text()));
+        }
+        spans.push(Span::styled(word.to_string(), theme.mention()));
+        rest = &rest[at + word.len()..];
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_string(), theme.text()));
+    }
+    spans
+}
+
 fn pad(text: &str, width: usize) -> String {
     let short = width.saturating_sub(text.chars().count());
     format!("{text}{}", " ".repeat(short))
-}
-
-fn pad_left(text: &str, width: usize) -> String {
-    let short = width.saturating_sub(text.chars().count());
-    format!("{}{text}", " ".repeat(short))
 }
 
 fn centre(text: &str, width: usize, theme: &Theme) -> String {
@@ -606,6 +737,87 @@ mod tests {
             },
         });
         app
+    }
+
+    /// The room with `extra` more people in it, named so they sort after bob.
+    fn crowded(extra: u8) -> App {
+        let mut app = room();
+        let mut peers = app.peers.clone();
+        for seed in 0..extra {
+            peers.push(PeerInfo {
+                id: PeerId([10 + seed; 32]),
+                name: format!("c{seed}"),
+                channel: None,
+                muted: false,
+                deafened: false,
+                afk: false,
+            });
+        }
+        app.apply(crate::net::Event::Roster(peers));
+        app
+    }
+
+    #[test]
+    fn an_at_lists_who_can_be_called_one_above_the_other() {
+        let mut app = crowded(2);
+        app.input = "@".into();
+        let shown = screen(60, 14, &app);
+        let lines: Vec<&str> = shown.lines().collect();
+        let n = lines.len();
+        assert!(lines[n - 4].trim().ends_with("@bob"), "{shown}");
+        assert!(lines[n - 3].trim().ends_with("@c0"), "{shown}");
+        assert!(lines[n - 2].trim().ends_with("@c1"), "{shown}");
+        assert!(!shown.contains("@alice"), "not yourself: {shown}");
+
+        app.input = "selam".into();
+        assert!(
+            !screen(60, 14, &app).contains("@bob"),
+            "only while an @ is being typed"
+        );
+        // A terminal too small for the list still draws without panicking.
+        app.input = "@".into();
+        let _ = screen(8, 4, &app);
+        let _ = screen(30, 3, &app);
+    }
+
+    #[test]
+    fn a_long_list_shows_five_rows_and_follows_tab() {
+        let mut app = crowded(7);
+        app.input = "@".into();
+        let shown = screen(60, 20, &app);
+        let rows: Vec<&str> = shown
+            .lines()
+            .filter(|l| l.contains('@') || l.contains("+4 more"))
+            .collect();
+        assert_eq!(rows.len(), 1 + 5, "the field and five rows: {shown}");
+        assert!(shown.contains("+4 more"), "{shown}");
+
+        for _ in 0..7 {
+            app.cycle_suggestion(true);
+        }
+        assert_eq!(app.input, "@c5");
+        let shown = screen(60, 20, &app);
+        assert!(
+            shown.lines().any(|l| l.trim().ends_with("@c5")),
+            "the picked name stays in view: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_mention_puts_a_knot_beside_who_called() {
+        let mut app = room();
+        said(&mut app, 2, 60, "@alice gel");
+        said(&mut app, 2, 61, "nerdesin");
+        let shown = screen(60, 12, &app);
+        let knot = Theme::from_env().glyphs.can.knot;
+        let lines: Vec<&str> = shown.lines().collect();
+        let first = lines.iter().find(|l| l.contains("@alice gel")).unwrap();
+        let second = lines.iter().find(|l| l.contains("nerdesin")).unwrap();
+        assert!(first.contains(&format!("{knot} bob")), "{first}");
+        assert!(
+            !second.contains(knot),
+            "only the line that calls you: {second}"
+        );
     }
 
     #[test]
