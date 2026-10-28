@@ -308,6 +308,20 @@ impl Theme {
         }
     }
 
+    /// Your name where someone called you. Brass and bold; without colour, bold and
+    /// underlined, so it still stands apart from the bold of a sender's name.
+    pub fn mention(&self) -> Style {
+        if self.mono {
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(self.palette.brass)
+                .add_modifier(Modifier::BOLD)
+        }
+    }
+
     pub fn ok(&self) -> Style {
         Style::default().fg(self.palette.verdigris)
     }

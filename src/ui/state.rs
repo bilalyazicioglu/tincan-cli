@@ -96,6 +96,19 @@ pub enum SettingsSection {
     Typing,
 }
 
+/// Tab walking the names offered for an `@`: where the `@` is, what had been typed
+/// after it, and which name is in the input now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Completing {
+    start: usize,
+    typed: String,
+    index: usize,
+}
+
+/// Long enough for a mention to run down the tallest string, or to be held still under
+/// reduced motion, and then for the screen to stop redrawing for it.
+const MENTION_ANIMATES_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct App {
     pub me: PeerId,
     pub room_name: String,
@@ -119,6 +132,14 @@ pub struct App {
     pub viewing: ChannelId,
     /// Channels somebody has written in since you last looked at them.
     pub unread: HashSet<ChannelId>,
+    /// The channels not in front of you where someone called you by name.
+    pub mentioned: HashSet<ChannelId>,
+    /// When you were last called by name: the string carries it for a moment.
+    pub mention_at: Option<std::time::Instant>,
+    /// Tab is walking the names offered for an `@`.
+    completing: Option<Completing>,
+    /// The input as it stood when Esc closed the list; it stays closed until you type.
+    dismissed: Option<String>,
     /// The channel we are connected to by voice. Independent of the one being viewed:
     /// you can be talking in "gaming" while reading the chat in "general".
     pub voice: Option<ChannelId>,
@@ -225,6 +246,10 @@ impl App {
             history_limit: crate::config::DEFAULT_HISTORY_LIMIT,
             viewing: ChannelId(0),
             unread: HashSet::new(),
+            mentioned: HashSet::new(),
+            mention_at: None,
+            completing: None,
+            dismissed: None,
             voice: None,
             muted: false,
             deafened: false,
@@ -307,6 +332,12 @@ impl App {
                 // both already accounted for.
                 if line.channel != self.viewing && line.from != self.me {
                     self.unread.insert(line.channel);
+                }
+                if self.mentions_me(&line) {
+                    self.mention_at = Some(std::time::Instant::now());
+                    if line.channel != self.viewing {
+                        self.mentioned.insert(line.channel);
+                    }
                 }
                 self.push(Line::Chat(line));
             }
@@ -435,6 +466,11 @@ impl App {
             .collect()
     }
 
+    /// Whether someone else called you by name in this line.
+    pub fn mentions_me(&self, line: &crate::proto::ChatLine) -> bool {
+        line.from != self.me && crate::ui::mention::mentions(&line.text, &self.name_of(self.me))
+    }
+
     pub fn name_of(&self, id: PeerId) -> String {
         self.names.get(&id).cloned().unwrap_or_else(|| id.short())
     }
@@ -459,6 +495,7 @@ impl App {
         });
         // Looking at a channel is what reading it means.
         self.unread.remove(&self.viewing);
+        self.mentioned.remove(&self.viewing);
         self.scroll_to_bottom();
     }
 
@@ -669,6 +706,9 @@ impl App {
             || self.calibrating.is_some()
             || self.mic_test_until.is_some()
             || (self.motion && !self.speaking.is_empty())
+            || self
+                .mention_at
+                .is_some_and(|at| at.elapsed() < MENTION_ANIMATES_FOR)
     }
 
     /// Records for a few seconds and then plays it back, or stops a test already
@@ -968,7 +1008,119 @@ impl App {
     }
 
     /// Takes the typed message and clears the input field.
+    /// The names an `@` at the end of the input could be, in order: everyone else in the
+    /// room whose name starts with what follows it. Empty when no `@` is being typed.
+    pub fn suggestions(&self) -> Vec<String> {
+        if self.dismissed.as_deref() == Some(self.input.as_str()) {
+            return Vec::new();
+        }
+        let typed = match &self.completing {
+            Some(completing) => completing.typed.clone(),
+            None => match self.at_being_typed() {
+                Some(start) => self.input[start + 1..].to_string(),
+                None => return Vec::new(),
+            },
+        };
+        let typed = typed.to_lowercase();
+        let mut names: Vec<String> = self
+            .peers
+            .iter()
+            .filter(|peer| peer.id != self.me)
+            .map(|peer| peer.name.clone())
+            .filter(|name| name.to_lowercase().starts_with(&typed))
+            .collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+        names
+    }
+
+    /// Which suggestion Tab has put in the input, if any.
+    pub fn suggestion_picked(&self) -> Option<usize> {
+        self.completing.as_ref().map(|completing| completing.index)
+    }
+
+    /// Puts the next (or previous) suggestion in place of the `@` being typed. `false`
+    /// when there is nothing to suggest, so Tab can go back to moving between channels.
+    pub fn cycle_suggestion(&mut self, forward: bool) -> bool {
+        let names = self.suggestions();
+        if names.is_empty() {
+            return false;
+        }
+        let (start, typed, index) = match self.completing.take() {
+            Some(c) => {
+                let index = if forward {
+                    (c.index + 1) % names.len()
+                } else {
+                    (c.index + names.len() - 1) % names.len()
+                };
+                (c.start, c.typed, index)
+            }
+            None => {
+                let start = self.at_being_typed().expect("suggestions imply an @");
+                let typed = self.input[start + 1..].to_string();
+                (start, typed, if forward { 0 } else { names.len() - 1 })
+            }
+        };
+        self.input.truncate(start);
+        self.input.push('@');
+        self.input.push_str(&names[index]);
+        self.completing = Some(Completing {
+            start,
+            typed,
+            index,
+        });
+        true
+    }
+
+    /// Enter with the list open takes the suggestion on show, or the first one, and
+    /// leaves a space after it. `false` when there is no list, and Enter sends.
+    pub fn accept_suggestion(&mut self) -> bool {
+        if self.suggestions().is_empty() {
+            return false;
+        }
+        if self.completing.is_none() {
+            self.cycle_suggestion(true);
+        }
+        self.completing = None;
+        self.input.push(' ');
+        true
+    }
+
+    /// Esc with the list open closes it and puts back what you had typed. `false`
+    /// when there is no list, so Esc keeps its other jobs.
+    pub fn dismiss_suggestions(&mut self) -> bool {
+        if self.suggestions().is_empty() {
+            return false;
+        }
+        if let Some(c) = self.completing.take() {
+            self.input.truncate(c.start);
+            self.input.push('@');
+            self.input.push_str(&c.typed);
+        }
+        self.dismissed = Some(self.input.clone());
+        true
+    }
+
+    /// The input changed by hand: whatever Tab had picked is now just text.
+    pub fn edited(&mut self) {
+        self.completing = None;
+    }
+
+    /// Where the `@` of the word at the end of the input is, when that word is one.
+    fn at_being_typed(&self) -> Option<usize> {
+        // Past the whole whitespace character: some are wider than a byte.
+        let start = self
+            .input
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(0, |(at, space)| at + space.len_utf8());
+        self.input[start..].starts_with('@').then_some(start)
+    }
+
     pub fn take_input(&mut self) -> Option<String> {
+        self.completing = None;
+        self.dismissed = None;
         let text = self.input.trim().to_string();
         self.input.clear();
         (!text.is_empty()).then_some(text)
@@ -1370,6 +1522,158 @@ mod tests {
         assert!(
             app.unread.is_empty(),
             "looking at a channel is what reading it means"
+        );
+    }
+
+    fn chat_line(channel: u8, from: u8, text: &str) -> ChatLine {
+        ChatLine {
+            channel: ChannelId(channel),
+            from: PeerId([from; 32]),
+            text: text.into(),
+            at: 1,
+        }
+    }
+
+    fn chat(channel: u8, from: u8, text: &str) -> Event {
+        Event::Chat(ChatLine {
+            channel: ChannelId(channel),
+            from: PeerId([from; 32]),
+            text: text.into(),
+            at: 1,
+        })
+    }
+
+    /// A room of three: you (`user1`), `user2` and `user3`.
+    fn three() -> App {
+        let mut app = welcomed();
+        let mut peers = app.peers.clone();
+        peers.push(peer(3, None));
+        app.apply(Event::Roster(peers));
+        app
+    }
+
+    #[test]
+    fn an_at_offers_everyone_else_and_narrows_as_you_type() {
+        let mut app = three();
+        app.input = "@".into();
+        assert_eq!(app.suggestions(), ["user2", "user3"], "never yourself");
+        app.input = "selam @USER3".into();
+        assert_eq!(app.suggestions(), ["user3"]);
+        for nothing in ["user", "a@u", "@user2 ", "@zz"] {
+            app.input = nothing.into();
+            assert!(app.suggestions().is_empty(), "{nothing:?}");
+        }
+    }
+
+    #[test]
+    fn a_wide_space_before_the_at_does_not_split_a_character() {
+        let mut app = three();
+        for space in ['\u{3000}', '\u{00A0}', '\u{2003}'] {
+            app.input = format!("selam{space}@us");
+            assert_eq!(app.suggestions(), ["user2", "user3"], "{space:?}");
+        }
+    }
+
+    #[test]
+    fn tab_walks_the_suggestions_and_fills_them_in() {
+        let mut app = three();
+        app.input = "hey @u".into();
+        assert!(app.cycle_suggestion(true));
+        assert_eq!(app.input, "hey @user2");
+        assert_eq!(
+            app.suggestions(),
+            ["user2", "user3"],
+            "the list stays while you walk it"
+        );
+        assert_eq!(app.suggestion_picked(), Some(0));
+        assert!(app.cycle_suggestion(true));
+        assert_eq!(app.input, "hey @user3");
+        assert!(app.cycle_suggestion(true));
+        assert_eq!(app.input, "hey @user2", "it wraps around");
+        assert!(app.cycle_suggestion(false));
+        assert_eq!(app.input, "hey @user3");
+    }
+
+    #[test]
+    fn enter_takes_the_suggestion_instead_of_sending() {
+        let mut app = three();
+        app.input = "@user".into();
+        assert!(
+            app.accept_suggestion(),
+            "with a list open, enter picks from it"
+        );
+        assert_eq!(app.input, "@user2 ");
+        assert!(app.suggestions().is_empty());
+        assert!(
+            !app.accept_suggestion(),
+            "with nothing open, enter sends as before"
+        );
+    }
+
+    #[test]
+    fn escape_puts_back_what_you_typed_and_closes_the_list() {
+        let mut app = three();
+        app.input = "@u".into();
+        app.cycle_suggestion(true);
+        assert!(app.dismiss_suggestions());
+        assert_eq!(app.input, "@u");
+        assert!(app.suggestions().is_empty());
+        app.input.push('s');
+        app.edited();
+        assert_eq!(
+            app.suggestions(),
+            ["user2", "user3"],
+            "typing opens it again"
+        );
+    }
+
+    #[test]
+    fn without_suggestions_tab_is_left_to_the_channels() {
+        let mut app = three();
+        app.input = "selam".into();
+        assert!(!app.cycle_suggestion(true));
+        assert_eq!(app.input, "selam");
+    }
+
+    #[test]
+    fn a_mention_elsewhere_marks_its_channel_until_you_look() {
+        let mut app = welcomed();
+        assert!(app.mentions_me(&chat_line(1, 2, "@user1 gel")));
+        app.apply(chat(1, 2, "@user1 gel"));
+        assert!(app.mentioned.contains(&ChannelId(1)));
+
+        app.view_next(true);
+        assert!(
+            app.mentioned.is_empty(),
+            "reading the channel answers the mention"
+        );
+    }
+
+    #[test]
+    fn a_mention_tugs_the_string_and_your_own_words_do_not() {
+        let mut app = welcomed();
+        app.apply(chat(0, 1, "note to self @user1"));
+        assert!(
+            app.mention_at.is_none(),
+            "naming yourself is not being called"
+        );
+        assert!(app.mentioned.is_empty());
+
+        app.apply(chat(0, 2, "selam"));
+        assert!(
+            app.mention_at.is_none(),
+            "an ordinary message is not a mention"
+        );
+
+        app.apply(chat(0, 2, "@user1 bak"));
+        assert!(app.mention_at.is_some());
+        assert!(
+            app.mentioned.is_empty(),
+            "the channel in front of you needs no mark"
+        );
+        assert!(
+            app.needs_animation(),
+            "the string has to be drawn while it moves"
         );
     }
 

@@ -49,6 +49,22 @@ the list tells you where to go without a count or a badge. Every message makes a
 — one short note, the same whether you sent it or it arrived, deliberately the only
 single note in a set of two-note gestures.
 
+Someone writing `@` and your name, in any case and as a word of its own, is calling you,
+and that is told three ways. A knot is tied in brass before their name, the knot the
+string already uses, because somebody pulled on your end of it; your name in their line
+is set in brass. Brass runs down the string once, from top to bottom, quicker than a
+voice pulse and gone when it reaches the end; with reduced motion it holds still in the
+middle for a moment instead. And it sounds a rising fourth above every other sound in
+place of the message note. If it was said in a channel you are not reading, that channel
+carries an `@` in the rail until you look. Your own words never call you.
+
+Calling someone is helped along: type `@` and the names it could be appear on a row just
+above the field, narrowing as you type. `Tab` puts the next one in the message and
+`Shift+Tab` the one before, `Enter` takes the one on show and leaves a space after it,
+and `Esc` puts back what you had typed. The list takes a row of its own rather than
+covering the last line said. With no `@` being typed, `Tab` moves between channels as
+before.
+
 `space` records three seconds and plays them back. It records and plays in separate
 stages rather than monitoring live, because on a laptop the microphone can hear the
 speakers, and anything that opens both at once closes a loop between them that grows

@@ -45,6 +45,12 @@ pub fn label(app: &App) -> &'static str {
     }
 }
 
+/// How long a mention rests on each row on its one run down the string. Quicker than a
+/// voice pulse: it is news arriving, not a link being measured.
+const MENTION_ROW_MS: u128 = 40;
+/// How long a mention holds still on the string when motion is turned down.
+const MENTION_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
+
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -52,10 +58,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let strand = of(app);
     let (glyph, style) = theme.strand(strand);
     let pulse = pulse_row(app, area.height);
+    let mention = mention_row(app, area.height, std::time::Instant::now());
 
     let lines: Vec<TextLine> = (0..area.height)
         .map(|row| {
-            let (symbol, style) = if pulse == Some(row) {
+            // Someone calling you outranks the voice on its way past: it is brass,
+            // the colour that asks for a look, and it only ever passes once.
+            let (symbol, style) = if mention == Some(row) {
+                (theme.glyphs.pulse, theme.brass())
+            } else if pulse == Some(row) {
                 (theme.glyphs.pulse, theme.accent())
             } else if unbroken(strand, row) {
                 (glyph, style)
@@ -80,6 +91,20 @@ fn unbroken(strand: Strand, row: u16) -> bool {
         Strand::Frayed => row % 4 != 2,
         Strand::Taut | Strand::Slack => true,
     }
+}
+
+/// Where a mention is on its single run down the string, or `None` once it has passed.
+/// Under reduced motion it waits in the middle for a moment instead of travelling.
+fn mention_row(app: &App, height: u16, now: std::time::Instant) -> Option<u16> {
+    let since = now.checked_duration_since(app.mention_at?)?;
+    if height == 0 {
+        return None;
+    }
+    if !app.motion {
+        return (since <= MENTION_HOLD).then_some(height / 2);
+    }
+    let row = since.as_millis() / MENTION_ROW_MS;
+    (row < u128::from(height)).then_some(row as u16)
 }
 
 /// Which row the pulse is on, or `None` when no voice is travelling.
@@ -215,5 +240,47 @@ mod tests {
             slow_step > quick_step,
             "latency has to be visible in the travel"
         );
+    }
+
+    #[test]
+    fn a_mention_runs_down_the_string_once() {
+        let mut app = connected(1, 0);
+        let now = std::time::Instant::now();
+        assert_eq!(mention_row(&app, 20, now), None, "nothing to show yet");
+
+        app.mention_at = Some(now);
+        assert_eq!(mention_row(&app, 20, now), Some(0), "it starts at the top");
+        let later = now + Duration::from_millis(MENTION_ROW_MS as u64 * 10);
+        assert_eq!(mention_row(&app, 20, later), Some(10));
+        let gone = now + Duration::from_millis(MENTION_ROW_MS as u64 * 21);
+        assert_eq!(
+            mention_row(&app, 20, gone),
+            None,
+            "it runs once and is gone"
+        );
+    }
+
+    #[test]
+    fn under_reduced_motion_a_mention_holds_still_for_a_moment() {
+        let mut app = connected(1, 0);
+        app.motion = false;
+        let now = std::time::Instant::now();
+        app.mention_at = Some(now);
+        assert_eq!(
+            mention_row(&app, 20, now + Duration::from_millis(500)),
+            Some(10)
+        );
+        assert_eq!(
+            mention_row(&app, 20, now + MENTION_HOLD + Duration::from_millis(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_mention_is_drawn_even_when_nobody_is_talking_or_there_is_no_voice() {
+        let mut app = connected(1, 0);
+        app.voice_available = false;
+        app.mention_at = Some(std::time::Instant::now());
+        assert!(mention_row(&app, 20, std::time::Instant::now()).is_some());
     }
 }

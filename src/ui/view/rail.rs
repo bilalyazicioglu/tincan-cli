@@ -157,8 +157,15 @@ fn channel_rows_of(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static
                 )
             };
 
+            let called = app.mentioned.contains(&id);
             let left = vec![
-                Span::raw("  "),
+                // `@` where someone called you: an unread channel is brass already, and
+                // this is the one thing in it that was said to you.
+                if called {
+                    Span::styled(" @", theme.brass())
+                } else {
+                    Span::raw("  ")
+                },
                 mark(reading, theme.glyphs.cursor),
                 Span::raw(" "),
                 mark(talking, theme.glyphs.on_air),
@@ -341,6 +348,19 @@ mod tests {
             },
         ];
         app
+    }
+
+    #[test]
+    fn a_channel_that_called_you_wears_an_at() {
+        let mut app = room();
+        app.unread.insert(ChannelId(1));
+        app.mentioned.insert(ChannelId(1));
+        let rows: Vec<String> = channel_rows_of(30, &app, &Theme::from_env())
+            .iter()
+            .map(|row| row.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(rows[1].trim_start().starts_with('@'), "{rows:?}");
+        assert!(!rows[0].contains('@'), "{rows:?}");
     }
 
     #[test]
