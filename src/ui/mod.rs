@@ -741,8 +741,18 @@ async fn handle_key(
         KeyCode::Down if shift || alt || ctrl => app.scroll_down(2),
         KeyCode::End => app.scroll_to_bottom(),
 
-        KeyCode::Tab => app.view_next(true),
-        KeyCode::BackTab => app.view_next(false),
+        // While an `@` is being typed Tab walks the names it could be; otherwise it
+        // moves between channels, as it always has.
+        KeyCode::Tab => {
+            if !app.cycle_suggestion(true) {
+                app.view_next(true);
+            }
+        }
+        KeyCode::BackTab => {
+            if !app.cycle_suggestion(false) {
+                app.view_next(false);
+            }
+        }
 
         // The roster cursor. Arrows are free here — letters go to the message being
         // typed, so this is the one kind of key that can steer the rail without
@@ -760,6 +770,7 @@ async fn handle_key(
                 v.set_peer_gains(&app.peer_gains);
             }
         }
+        KeyCode::Esc if app.dismiss_suggestions() => {}
         KeyCode::Esc => {
             if app.scroll_offset > 0 {
                 app.scroll_to_bottom();
@@ -768,6 +779,7 @@ async fn handle_key(
             }
         }
 
+        KeyCode::Enter if app.accept_suggestion() => {}
         KeyCode::Enter => {
             app.scroll_to_bottom();
             if let Some(text) = app.take_input() {
@@ -802,6 +814,7 @@ async fn handle_key(
         }
 
         KeyCode::Backspace => {
+            app.edited();
             if app.input.pop().is_some()
                 && let (Some(v), Some(click)) = (voice, app.click_for(BACKSPACE))
             {
@@ -810,6 +823,7 @@ async fn handle_key(
         }
 
         KeyCode::Char(c) if !ctrl => {
+            app.edited();
             app.input.push(c);
             if let (Some(v), Some(click)) = (voice, app.click_for(c)) {
                 v.play(click);

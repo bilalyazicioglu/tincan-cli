@@ -96,6 +96,15 @@ pub enum SettingsSection {
     Typing,
 }
 
+/// Tab walking the names offered for an `@`: where the `@` is, what had been typed
+/// after it, and which name is in the input now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Completing {
+    start: usize,
+    typed: String,
+    index: usize,
+}
+
 /// Long enough for a mention to run down the tallest string, or to be held still under
 /// reduced motion, and then for the screen to stop redrawing for it.
 const MENTION_ANIMATES_FOR: std::time::Duration = std::time::Duration::from_secs(5);
@@ -124,6 +133,10 @@ pub struct App {
     pub mentioned: HashSet<ChannelId>,
     /// When you were last called by name: the string carries it for a moment.
     pub mention_at: Option<std::time::Instant>,
+    /// Tab is walking the names offered for an `@`.
+    completing: Option<Completing>,
+    /// The input as it stood when Esc closed the list; it stays closed until you type.
+    dismissed: Option<String>,
     /// The channel we are connected to by voice. Independent of the one being viewed:
     /// you can be talking in "gaming" while reading the chat in "general".
     pub voice: Option<ChannelId>,
@@ -231,6 +244,8 @@ impl App {
             unread: HashSet::new(),
             mentioned: HashSet::new(),
             mention_at: None,
+            completing: None,
+            dismissed: None,
             voice: None,
             muted: false,
             deafened: false,
@@ -980,7 +995,116 @@ impl App {
     }
 
     /// Takes the typed message and clears the input field.
+    /// The names an `@` at the end of the input could be, in order: everyone else in the
+    /// room whose name starts with what follows it. Empty when no `@` is being typed.
+    pub fn suggestions(&self) -> Vec<String> {
+        if self.dismissed.as_deref() == Some(self.input.as_str()) {
+            return Vec::new();
+        }
+        let typed = match &self.completing {
+            Some(completing) => completing.typed.clone(),
+            None => match self.at_being_typed() {
+                Some(start) => self.input[start + 1..].to_string(),
+                None => return Vec::new(),
+            },
+        };
+        let typed = typed.to_lowercase();
+        let mut names: Vec<String> = self
+            .peers
+            .iter()
+            .filter(|peer| peer.id != self.me)
+            .map(|peer| peer.name.clone())
+            .filter(|name| name.to_lowercase().starts_with(&typed))
+            .collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+        names
+    }
+
+    /// Which suggestion Tab has put in the input, if any.
+    pub fn suggestion_picked(&self) -> Option<usize> {
+        self.completing.as_ref().map(|completing| completing.index)
+    }
+
+    /// Puts the next (or previous) suggestion in place of the `@` being typed. `false`
+    /// when there is nothing to suggest, so Tab can go back to moving between channels.
+    pub fn cycle_suggestion(&mut self, forward: bool) -> bool {
+        let names = self.suggestions();
+        if names.is_empty() {
+            return false;
+        }
+        let (start, typed, index) = match self.completing.take() {
+            Some(c) => {
+                let index = if forward {
+                    (c.index + 1) % names.len()
+                } else {
+                    (c.index + names.len() - 1) % names.len()
+                };
+                (c.start, c.typed, index)
+            }
+            None => {
+                let start = self.at_being_typed().expect("suggestions imply an @");
+                let typed = self.input[start + 1..].to_string();
+                (start, typed, if forward { 0 } else { names.len() - 1 })
+            }
+        };
+        self.input.truncate(start);
+        self.input.push('@');
+        self.input.push_str(&names[index]);
+        self.completing = Some(Completing {
+            start,
+            typed,
+            index,
+        });
+        true
+    }
+
+    /// Enter with the list open takes the suggestion on show, or the first one, and
+    /// leaves a space after it. `false` when there is no list, and Enter sends.
+    pub fn accept_suggestion(&mut self) -> bool {
+        if self.suggestions().is_empty() {
+            return false;
+        }
+        if self.completing.is_none() {
+            self.cycle_suggestion(true);
+        }
+        self.completing = None;
+        self.input.push(' ');
+        true
+    }
+
+    /// Esc with the list open closes it and puts back what you had typed. `false`
+    /// when there is no list, so Esc keeps its other jobs.
+    pub fn dismiss_suggestions(&mut self) -> bool {
+        if self.suggestions().is_empty() {
+            return false;
+        }
+        if let Some(c) = self.completing.take() {
+            self.input.truncate(c.start);
+            self.input.push('@');
+            self.input.push_str(&c.typed);
+        }
+        self.dismissed = Some(self.input.clone());
+        true
+    }
+
+    /// The input changed by hand: whatever Tab had picked is now just text.
+    pub fn edited(&mut self) {
+        self.completing = None;
+    }
+
+    /// Where the `@` of the word at the end of the input is, when that word is one.
+    fn at_being_typed(&self) -> Option<usize> {
+        let start = self
+            .input
+            .rfind(char::is_whitespace)
+            .map_or(0, |space| space + 1);
+        self.input[start..].starts_with('@').then_some(start)
+    }
+
     pub fn take_input(&mut self) -> Option<String> {
+        self.completing = None;
+        self.dismissed = None;
         let text = self.input.trim().to_string();
         self.input.clear();
         (!text.is_empty()).then_some(text)
@@ -1401,6 +1525,89 @@ mod tests {
             text: text.into(),
             at: 1,
         })
+    }
+
+    /// A room of three: you (`user1`), `user2` and `user3`.
+    fn three() -> App {
+        let mut app = welcomed();
+        let mut peers = app.peers.clone();
+        peers.push(peer(3, None));
+        app.apply(Event::Roster(peers));
+        app
+    }
+
+    #[test]
+    fn an_at_offers_everyone_else_and_narrows_as_you_type() {
+        let mut app = three();
+        app.input = "@".into();
+        assert_eq!(app.suggestions(), ["user2", "user3"], "never yourself");
+        app.input = "selam @USER3".into();
+        assert_eq!(app.suggestions(), ["user3"]);
+        for nothing in ["user", "a@u", "@user2 ", "@zz"] {
+            app.input = nothing.into();
+            assert!(app.suggestions().is_empty(), "{nothing:?}");
+        }
+    }
+
+    #[test]
+    fn tab_walks_the_suggestions_and_fills_them_in() {
+        let mut app = three();
+        app.input = "hey @u".into();
+        assert!(app.cycle_suggestion(true));
+        assert_eq!(app.input, "hey @user2");
+        assert_eq!(
+            app.suggestions(),
+            ["user2", "user3"],
+            "the list stays while you walk it"
+        );
+        assert_eq!(app.suggestion_picked(), Some(0));
+        assert!(app.cycle_suggestion(true));
+        assert_eq!(app.input, "hey @user3");
+        assert!(app.cycle_suggestion(true));
+        assert_eq!(app.input, "hey @user2", "it wraps around");
+        assert!(app.cycle_suggestion(false));
+        assert_eq!(app.input, "hey @user3");
+    }
+
+    #[test]
+    fn enter_takes_the_suggestion_instead_of_sending() {
+        let mut app = three();
+        app.input = "@user".into();
+        assert!(
+            app.accept_suggestion(),
+            "with a list open, enter picks from it"
+        );
+        assert_eq!(app.input, "@user2 ");
+        assert!(app.suggestions().is_empty());
+        assert!(
+            !app.accept_suggestion(),
+            "with nothing open, enter sends as before"
+        );
+    }
+
+    #[test]
+    fn escape_puts_back_what_you_typed_and_closes_the_list() {
+        let mut app = three();
+        app.input = "@u".into();
+        app.cycle_suggestion(true);
+        assert!(app.dismiss_suggestions());
+        assert_eq!(app.input, "@u");
+        assert!(app.suggestions().is_empty());
+        app.input.push('s');
+        app.edited();
+        assert_eq!(
+            app.suggestions(),
+            ["user2", "user3"],
+            "typing opens it again"
+        );
+    }
+
+    #[test]
+    fn without_suggestions_tab_is_left_to_the_channels() {
+        let mut app = three();
+        app.input = "selam".into();
+        assert!(!app.cycle_suggestion(true));
+        assert_eq!(app.input, "selam");
     }
 
     #[test]

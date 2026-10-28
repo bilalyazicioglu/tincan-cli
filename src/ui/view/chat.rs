@@ -51,7 +51,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let [talk, field] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    // While an `@` is being typed the names it could be take a row of their own above
+    // the field, so the newest message is never covered by them.
+    let strip = u16::from(!app.suggestions().is_empty() && area.height > 2);
+    let [talk, names, field] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(strip),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+    draw_suggestions(frame, names, app, theme);
 
     let height = talk.height as usize;
 
@@ -130,6 +139,42 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 }
 
 /// The message field. No box: its own ground is enough to say "type here".
+/// The names an `@` could be, right above where you type: the one Tab has put in the
+/// input is lit, and the row ends where the terminal does.
+fn draw_suggestions(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let names = app.suggestions();
+    if names.is_empty() || area.height == 0 || area.width < 4 {
+        return;
+    }
+    frame.render_widget(Block::default().style(theme.panel()), area);
+
+    let picked = app.suggestion_picked();
+    let room = area.width as usize - 1;
+    let mut used = 1;
+    let mut spans = vec![Span::raw(" ")];
+    for (index, name) in names.iter().enumerate() {
+        let word = format!(" @{name} ");
+        let width = word.chars().count();
+        if used + width > room {
+            spans.push(Span::styled(theme.glyphs.cut.to_string(), theme.dim()));
+            break;
+        }
+        used += width;
+        spans.push(Span::styled(
+            word,
+            if picked == Some(index) {
+                theme.chip_on()
+            } else {
+                theme.brass()
+            },
+        ));
+    }
+    if used + 10 <= room && picked.is_none() {
+        spans.push(Span::styled("  tab picks", theme.dim()));
+    }
+    frame.render_widget(Paragraph::new(TextLine::from(spans)), area);
+}
+
 fn draw_field(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 {
         return;
@@ -665,6 +710,28 @@ mod tests {
             },
         });
         app
+    }
+
+    #[test]
+    fn an_at_shows_who_can_be_called_above_the_field() {
+        let mut app = room();
+        app.input = "@".into();
+        let shown = screen(60, 12, &app);
+        let lines: Vec<&str> = shown.lines().collect();
+        assert!(lines[lines.len() - 2].contains("@bob"), "{shown}");
+        assert!(
+            !lines[lines.len() - 2].contains("@alice"),
+            "not yourself: {shown}"
+        );
+
+        app.input = "selam".into();
+        assert!(
+            !screen(60, 12, &app).contains("@bob"),
+            "only while an @ is being typed"
+        );
+        // A terminal too narrow for the list still draws without panicking.
+        app.input = "@".into();
+        let _ = screen(8, 4, &app);
     }
 
     #[test]
