@@ -40,7 +40,7 @@
 
 <p align="center">
   <img src="assets/demo.gif" width="100%"
-       alt="tincan terminal demo: Screen Studio style animated overview showing real-time audio meters, travelling pulse latency, chat messaging, and audio settings transition.">
+       alt="tincan terminal demo: a voice pulse travelling down the string, bob calling alice by name and brass running down the string, alice picking @bob from the list of names, the audio settings, and a peer dropping to a relay and coming back.">
 </p>
 
 The palette is metal: a brown tin ground, brass for the string and the invite code,
@@ -50,8 +50,9 @@ verdigris for a link that is holding.
 The line down the middle is the connection. It runs taut when everyone is reached
 directly, sags into a dashed line when someone is coming through a relay, and frays
 when audio starts dropping. While anyone is talking a pulse travels down it, at the
-speed of the round trip — so a slow link is something you see rather than read. The
-meters beside each name move with that person's voice.
+speed of the round trip — so a slow link is something you see rather than read. When
+someone calls you with `@` and your name, brass runs down it once. The meters beside each
+name move with that person's voice.
 
 Before anyone has joined, the chat pane draws the same thing full size: your can, the
 string, their can, with the latency written on it and your invite code underneath. It
@@ -200,7 +201,7 @@ tincan host --name alice --password secret
 
 Without a room name tincan prints an invite code, puts it on your clipboard, and waits
 for you to press Enter before taking over the screen. Send it to your friends — copy and
-paste, 63 characters. The code is the host's public key, so this is the way in whose
+paste, 64 characters. The code is the host's public key, so this is the way in whose
 security does not rest on the passphrase.
 
 Once the interface is up the footer only has room for the first group of the code. Press
@@ -297,14 +298,14 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 
 | Key                        | Action                                        |
 | -------------------------- | --------------------------------------------- |
-| `Tab` / `Shift+Tab`        | Move between channels                         |
+| `Tab` / `Shift+Tab`        | Move between channels; after an `@`, walk the names it could be |
 | `F2` (or `Ctrl+G`)         | Join / leave the voice of the channel you see |
 | `F3` (or `Ctrl+T`)         | Mute / unmute your microphone                 |
 | `F4`                       | Push-to-talk (only in `--ptt` mode)           |
 | `F5`                       | Deafen: hear nobody (also closes your mic)    |
 | `F6` (or `Ctrl+,`)         | Open audio settings                           |
 | `n` (on that screen)       | Noise suppression on / off                    |
-| `F1`                       | Show the full invite code (and copy it)       |
+| `F1`                       | Show the invite and its passphrase (and copy them) |
 | `↑` / `↓`                  | Pick someone out of the roster                |
 | `←` / `→`                  | Turn that person down or up                   |
 | `Ctrl+K`                   | Silence selected person (or Vim scroll up)    |
@@ -313,8 +314,8 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | `Shift+↑` / `↓`            | Scroll chat history smoothly (also `Ctrl+↑/↓`)|
 | Scroll wheel / Trackpad    | Scroll chat history smoothly (3 lines)        |
 | `End`                      | Jump to latest message                        |
-| `Esc`                      | Let go of the roster, or jump to latest chat  |
-| `Enter`                    | Send the message                              |
+| `Esc`                      | Close the `@` list, let go of the roster, or jump to latest chat |
+| `Enter`                    | Send the message (with the `@` list open, take the name instead) |
 | `Ctrl+C`                   | Quit                                          |
 
 To pick a device, list them with `tincan devices` first, then pass part of a name:
@@ -338,16 +339,17 @@ when those sound servers are in use.
 
 The channel you are looking at and the channel you are connected to by voice are
 independent: you can read the chat in "general" while talking in "gaming". In the channel
-list, `>` marks the one you are viewing and `🔊` the one you are in.
+list, `▸` marks the one you are viewing and `●` the one you are in; a channel turns brass
+when something was said there, and carries an `@` when someone called you in it.
 
 The audio shortcuts are F-keys on purpose: in a terminal `Ctrl+M` (0x0D) and `Ctrl+J`
 (0x0A) _are_ Enter and cannot be told apart from it — had those been used, the "mute" key
 would have quietly sent a message.
 
-The footer shows link status: how many peers you reach directly, how many flow through a
-relay, the worst latency, and whether you have had audio dropouts. When everything is
-fine it shows shortcut hints instead — technical detail only surfaces when there is a
-problem.
+The header names the link in one word — `DIRECT`, `RELAY` when someone is coming through
+a relay, `CHOPPY` when audio is dropping — with the worst latency beside it, and who it is
+when it is one person's link that is the problem. The footer keeps the shortcuts and the
+start of your invite.
 
 ### Environment
 
@@ -477,14 +479,15 @@ the invite speakable, and it has costs, listed under [Known limits](#known-limit
 ## Development
 
 ```bash
-cargo test              # 93 tests: unit + control plane + voice mesh
+cargo test              # unit, control plane, voice mesh and own-relay tests
 cargo clippy --all-targets
 RUST_LOG=tincan=debug cargo run -- host 2>tincan.log   # logs to a file, so they don't scramble the UI
 ```
 
 The tests never touch the internet: the control-plane and voice-mesh tests use two real
 iroh endpoints over a real QUIC connection, but with relays and discovery disabled and
-addresses introduced by hand. The audio tests use no audio hardware either — they attach
+addresses introduced by hand, and the own-relay tests run a real iroh relay on localhost.
+The two that need n0's servers are `#[ignore]`d; `cargo test -- --ignored` runs them. The audio tests use no audio hardware either — they attach
 directly to the ends of the mesh.
 
 ### Source layout
@@ -497,9 +500,12 @@ src/
   auth.rs         Admission (Argon2id-stretched key, MAC over a nonce) and the
                   identity of a room opened by name
   passphrase.rs   Generated four-word passphrases, weak-password warning
-  invite.rs       The invite code: base32, grouped, tolerant of pasting
+  invite.rs       The invite code: base32, grouped, tolerant of pasting; reading what
+                  follows `join` (code, room name, relay address)
+  upgrade.rs      "This needs a newer tincan", with the update command for the install
+  config.rs       config.toml: remembered devices and settings
   net/
-    endpoint.rs   iroh endpoint setup, identity conversions
+    endpoint.rs   iroh endpoint setup (n0, or one relay of your own), identity conversions
     control.rs    Coordinator server + joining client
     voice.rs      Voice mesh: connection management, datagram transport, channel filter
   audio/
@@ -509,9 +515,13 @@ src/
     mixer.rs      Multi-source mixing + limiter
     vad.rs        Voice activity detection (indicator + DTX)
     denoise.rs    RNNoise noise suppression on the capture path
+    resample.rs   To and from Opus's 48 kHz
+    blip.rs       The interface's sounds
   ui/
     state.rs      Interface state (independent of network and terminal, tested)
-    view.rs       Screen layout
+    mention.rs    Telling whether a message calls you
+    theme.rs      Palette and glyphs, colour and plain
+    view/         Screen layout: the rail, the string, the chat, the settings
 examples/         Phase 0 probes — throwaway measurement tools
 ```
 
@@ -537,7 +547,7 @@ decisions and are not used in the product.
 - **Noise suppression costs 10 ms.** It is a fixed price on the capture path, paid
   whether or not there is any noise to remove, and it is the reason the switch exists.
   `n` on the settings screen gives the 10 ms back.
-- **The invite code is 63 characters.** It cannot be shortened, because it is the public
+- **The invite code is 64 characters.** It cannot be shortened, because it is the public
   key itself — fine for copy and paste, not for reading down the phone. Open the room by
   name for an invite you can say out loud.
 - **A room opened by name belongs to whoever knows the passphrase.** Its key no longer
