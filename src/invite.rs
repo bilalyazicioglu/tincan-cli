@@ -135,10 +135,12 @@ fn has_port(input: &str) -> bool {
 }
 
 /// The invite for a room on a relay, as `parse_target` reads it back: the relay's host
-/// when it is served over HTTPS, the full URL otherwise, after the room name and an `@`.
+/// when it is served over HTTPS at the root, the full URL otherwise, after the room name
+/// and an `@`.
 pub fn relay_invite(room: Option<&str>, relay: &RelayUrl) -> String {
+    let bare = relay.path() == "/" && relay.query().is_none();
     let address = match (relay.scheme(), relay.host_str()) {
-        ("https", Some(host)) => match relay.port() {
+        ("https", Some(host)) if bare => match relay.port() {
             Some(port) => format!("{host}:{port}"),
             None => host.to_string(),
         },
@@ -390,7 +392,11 @@ mod tests {
 
     #[test]
     fn relay_invite_is_what_join_reads_back() {
-        for relay in ["https://relay.example.com", "http://127.0.0.1:3340"] {
+        for relay in [
+            "https://relay.example.com",
+            "http://127.0.0.1:3340",
+            "https://example.com/relay",
+        ] {
             let relay: RelayUrl = relay.parse().unwrap();
             for room in [None, Some("lobby")] {
                 let invite = relay_invite(room, &relay);

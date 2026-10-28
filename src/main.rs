@@ -418,7 +418,16 @@ async fn join(
 ) -> Result<()> {
     tincan::logo::print_banner();
     let target = invite::parse_target(&room)?;
-    let mut relay = None;
+    // A relay is reached before the passphrase is asked for: a mistyped relay should say
+    // so straight away, not after the passphrase has been typed and ten seconds waited.
+    let mut endpoint = match &target {
+        Target::RelayRoom { relay, .. } => {
+            println!("{}", tincan::logo::heading("  connecting to the relay…"));
+            // The joiner's own identity is always fresh: only the coordinator's is derived.
+            Some(endpoint::bind_on_relay(None, relay).await?)
+        }
+        _ => None,
+    };
     let (coordinator, key, passphrase) = match &target {
         Target::Code(code) => {
             let coordinator = PeerId(*code);
@@ -427,13 +436,8 @@ async fn join(
             (coordinator, key, password)
         }
         Target::Room(name) => named_room(name, name, password)?,
-        Target::RelayRoom {
-            room: name,
-            relay: on,
-        } => {
-            let name = name.as_deref().unwrap_or(UNNAMED_ROOM);
-            relay = Some(on.clone());
-            named_room(name, &room, password)?
+        Target::RelayRoom { room: name, .. } => {
+            named_room(name.as_deref().unwrap_or(UNNAMED_ROOM), &room, password)?
         }
     };
     // What F1 gives back on this screen: the invite as typed, and its passphrase.
@@ -441,9 +445,8 @@ async fn join(
     let passphrase_for_f1 = (!passphrase.is_empty()).then_some(passphrase);
 
     println!("{}", tincan::logo::heading("  connecting to the room…"));
-    // The joiner's own identity is always fresh: only the coordinator's is derived.
-    let endpoint = match &relay {
-        Some(relay) => endpoint::bind_on_relay(None, relay).await?,
+    let endpoint = match endpoint.take() {
+        Some(on_relay) => on_relay,
         None => endpoint::bind(None).await?,
     };
     let me = endpoint::to_peer_id(endpoint.id());
