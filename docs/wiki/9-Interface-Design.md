@@ -58,10 +58,11 @@ middle for a moment instead. And it sounds a rising fourth above every other sou
 place of the message note. If it was said in a channel you are not reading, that channel
 carries an `@` in the rail until you look. Your own words never call you.
 
-Calling someone is helped along: type `@` and the names it could be appear on a row just
-above the field, narrowing as you type. `Tab` puts the next one in the message and
+Calling someone is helped along: type `@` and the names it could be appear just above the field,
+one to a row and lined up with what you are typing, narrowing as you type. Five show at
+once; past that the list follows Tab and says how many more there are. `Tab` puts the next one in the message and
 `Shift+Tab` the one before, `Enter` takes the one on show and leaves a space after it,
-and `Esc` puts back what you had typed. The list takes a row of its own rather than
+and `Esc` puts back what you had typed. The list takes rows of its own rather than
 covering the last line said. With no `@` being typed, `Tab` moves between channels as
 before.
 

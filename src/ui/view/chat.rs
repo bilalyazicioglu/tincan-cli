@@ -51,9 +51,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    // While an `@` is being typed the names it could be take a row of their own above
+    // While an `@` is being typed the names it could be take rows of their own above
     // the field, so the newest message is never covered by them.
-    let strip = u16::from(!app.suggestions().is_empty() && area.height > 2);
+    let strip = suggestion_height(app, area.height);
     let [talk, names, field] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(strip),
@@ -138,43 +138,70 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     draw_field(frame, field, app, theme);
 }
 
-/// The message field. No box: its own ground is enough to say "type here".
-/// The names an `@` could be, right above where you type: the one Tab has put in the
-/// input is lit, and the row ends where the terminal does.
+/// The most names the `@` list shows at once. Past this it scrolls with Tab.
+const SUGGESTION_ROWS: usize = 5;
+
+/// How many rows the `@` list needs, given the room on screen.
+fn suggestion_height(app: &App, height: u16) -> u16 {
+    let names = app.suggestions().len();
+    if names == 0 || height <= 3 {
+        return 0;
+    }
+    // Always leave the field and at least one line of talk.
+    names.min(SUGGESTION_ROWS).min(height as usize - 2) as u16
+}
+
+/// The names an `@` could be, one per row right above where you type, lined up with
+/// the text in the field. The one Tab has put in the input is lit; a list longer than
+/// the room keeps that one in view and says how many it is not showing.
 fn draw_suggestions(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let names = app.suggestions();
-    if names.is_empty() || area.height == 0 || area.width < 4 {
+    let rows = area.height as usize;
+    if names.is_empty() || rows == 0 || area.width < 4 {
         return;
     }
     frame.render_widget(Block::default().style(theme.panel()), area);
 
     let picked = app.suggestion_picked();
-    let room = area.width as usize - 1;
-    let mut used = 1;
-    let mut spans = vec![Span::raw(" ")];
-    for (index, name) in names.iter().enumerate() {
-        let word = format!(" @{name} ");
-        let width = word.chars().count();
-        if used + width > room {
-            spans.push(Span::styled(theme.glyphs.cut.to_string(), theme.dim()));
-            break;
-        }
-        used += width;
-        spans.push(Span::styled(
-            word,
-            if picked == Some(index) {
-                theme.chip_on()
-            } else {
-                theme.brass()
-            },
-        ));
+    let overflow = names.len() > rows;
+    let shown = if overflow { rows - 1 } else { rows };
+    let first = picked
+        .map_or(0, |picked| picked.saturating_sub(shown.saturating_sub(1)))
+        .min(names.len().saturating_sub(shown));
+    let indent = format!(" #{} ", app.channel_name(app.viewing))
+        .chars()
+        .count();
+    let room = (area.width as usize).saturating_sub(indent);
+
+    let mut lines: Vec<TextLine> = names
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(shown)
+        .map(|(index, name)| {
+            TextLine::from(vec![
+                Span::raw(" ".repeat(indent)),
+                Span::styled(
+                    clip(&format!("@{name} "), room, theme),
+                    if picked == Some(index) {
+                        theme.chip_on()
+                    } else {
+                        theme.brass()
+                    },
+                ),
+            ])
+        })
+        .collect();
+    if overflow {
+        lines.push(TextLine::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(format!("+{} more", names.len() - shown), theme.dim()),
+        ]));
     }
-    if used + 10 <= room && picked.is_none() {
-        spans.push(Span::styled("  tab picks", theme.dim()));
-    }
-    frame.render_widget(Paragraph::new(TextLine::from(spans)), area);
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// The message field. No box: its own ground is enough to say "type here".
 fn draw_field(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     if area.height == 0 {
         return;
@@ -712,26 +739,68 @@ mod tests {
         app
     }
 
-    #[test]
-    fn an_at_shows_who_can_be_called_above_the_field() {
+    /// The room with `extra` more people in it, named so they sort after bob.
+    fn crowded(extra: u8) -> App {
         let mut app = room();
+        let mut peers = app.peers.clone();
+        for seed in 0..extra {
+            peers.push(PeerInfo {
+                id: PeerId([10 + seed; 32]),
+                name: format!("c{seed}"),
+                channel: None,
+                muted: false,
+                deafened: false,
+                afk: false,
+            });
+        }
+        app.apply(crate::net::Event::Roster(peers));
+        app
+    }
+
+    #[test]
+    fn an_at_lists_who_can_be_called_one_above_the_other() {
+        let mut app = crowded(2);
         app.input = "@".into();
-        let shown = screen(60, 12, &app);
+        let shown = screen(60, 14, &app);
         let lines: Vec<&str> = shown.lines().collect();
-        assert!(lines[lines.len() - 2].contains("@bob"), "{shown}");
-        assert!(
-            !lines[lines.len() - 2].contains("@alice"),
-            "not yourself: {shown}"
-        );
+        let n = lines.len();
+        assert!(lines[n - 4].trim().ends_with("@bob"), "{shown}");
+        assert!(lines[n - 3].trim().ends_with("@c0"), "{shown}");
+        assert!(lines[n - 2].trim().ends_with("@c1"), "{shown}");
+        assert!(!shown.contains("@alice"), "not yourself: {shown}");
 
         app.input = "selam".into();
         assert!(
-            !screen(60, 12, &app).contains("@bob"),
+            !screen(60, 14, &app).contains("@bob"),
             "only while an @ is being typed"
         );
-        // A terminal too narrow for the list still draws without panicking.
+        // A terminal too small for the list still draws without panicking.
         app.input = "@".into();
         let _ = screen(8, 4, &app);
+        let _ = screen(30, 3, &app);
+    }
+
+    #[test]
+    fn a_long_list_shows_five_rows_and_follows_tab() {
+        let mut app = crowded(7);
+        app.input = "@".into();
+        let shown = screen(60, 20, &app);
+        let rows: Vec<&str> = shown
+            .lines()
+            .filter(|l| l.contains('@') || l.contains("+4 more"))
+            .collect();
+        assert_eq!(rows.len(), 1 + 5, "the field and five rows: {shown}");
+        assert!(shown.contains("+4 more"), "{shown}");
+
+        for _ in 0..7 {
+            app.cycle_suggestion(true);
+        }
+        assert_eq!(app.input, "@c5");
+        let shown = screen(60, 20, &app);
+        assert!(
+            shown.lines().any(|l| l.trim().ends_with("@c5")),
+            "the picked name stays in view: {shown}"
+        );
     }
 
     #[test]
