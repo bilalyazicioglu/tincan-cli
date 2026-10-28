@@ -1095,10 +1095,13 @@ impl App {
 
     /// Where the `@` of the word at the end of the input is, when that word is one.
     fn at_being_typed(&self) -> Option<usize> {
+        // Past the whole whitespace character: some are wider than a byte.
         let start = self
             .input
-            .rfind(char::is_whitespace)
-            .map_or(0, |space| space + 1);
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(0, |(at, space)| at + space.len_utf8());
         self.input[start..].starts_with('@').then_some(start)
     }
 
@@ -1546,6 +1549,15 @@ mod tests {
         for nothing in ["user", "a@u", "@user2 ", "@zz"] {
             app.input = nothing.into();
             assert!(app.suggestions().is_empty(), "{nothing:?}");
+        }
+    }
+
+    #[test]
+    fn a_wide_space_before_the_at_does_not_split_a_character() {
+        let mut app = three();
+        for space in ['\u{3000}', '\u{00A0}', '\u{2003}'] {
+            app.input = format!("selam{space}@us");
+            assert_eq!(app.suggestions(), ["user2", "user3"], "{space:?}");
         }
     }
 
