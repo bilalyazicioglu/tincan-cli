@@ -8,11 +8,12 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{clip, spread};
+use super::{ClickAction, clip, spread};
 use crate::audio::MicTest;
 use crate::audio::device::AudioDeviceInfo;
 use crate::ui::state::{App, METER_CELLS, SettingsSection};
 use crate::ui::theme::Theme;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// The key and the label in front of a control, so the state after it can be clipped
 /// to what is left rather than run off the edge.
@@ -21,15 +22,12 @@ const HEAD_ROOM: usize = 30;
 const HOT: usize = METER_CELLS * 17 / 20;
 const WARM: usize = METER_CELLS * 3 / 5;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
+fn sections(area: Rect, app: &App) -> [Rect; 7] {
     // Each list takes the room its own devices need and no more, so the sections sit
     // together instead of drifting apart down an empty screen.
     let problem = if app.settings_error.is_some() { 2 } else { 0 };
     let rows_for = |count: usize| (count.max(1) as u16).saturating_add(2);
-    let [sep_area, banner, input, output, test, typing, _rest] = Layout::vertical([
+    Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(problem),
         Constraint::Max(rows_for(app.input_devices.len() + 1)),
@@ -38,7 +36,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Constraint::Length(4),
         Constraint::Min(0),
     ])
-    .areas(area);
+    .areas(area)
+}
+
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let [sep_area, banner, input, output, test, typing, _rest] = sections(area, app);
 
     if sep_area.height > 0 && sep_area.width > 0 {
         let (title_chip_style, bar_style) = if app.is_transitioning() {
@@ -213,6 +218,255 @@ fn section(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// The same window is used for drawing and for identities under the pointer.
+fn device_window(max_rows: usize, selected: usize) -> (usize, usize) {
+    (
+        selected.saturating_sub(max_rows.saturating_sub(1)),
+        selected,
+    )
+}
+
+fn text(line: &TextLine<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+}
+
+/// Only text which actually fits on a visible row can offer an action.
+fn text_target(
+    area: Rect,
+    row: u16,
+    line: &TextLine<'_>,
+    label: &str,
+    action: ClickAction,
+    targets: &mut Vec<(Rect, ClickAction)>,
+) {
+    if row >= area.height || label.is_empty() {
+        return;
+    }
+    let content = text(line);
+    if let Some(at) = content.find(label) {
+        let x = Span::raw(&content[..at]).width() as u16;
+        let width = Span::raw(label).width() as u16;
+        if width > 0 && x as u32 + width as u32 <= area.width as u32 {
+            targets.push((Rect::new(area.x + x, area.y + row, width, 1), action));
+        }
+    }
+}
+
+pub(super) fn click_targets(
+    area: Rect,
+    app: &App,
+    theme: &Theme,
+    targets: &mut Vec<(Rect, ClickAction)>,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let [_, _, input, output, test, typing, _] = sections(area, app);
+    let setting = |section, code| ClickAction::Setting {
+        section,
+        key: KeyEvent::new(code, KeyModifiers::NONE),
+    };
+    for (rect, section, label) in [
+        (input, SettingsSection::InputDevice, "MICROPHONE"),
+        (output, SettingsSection::OutputDevice, "SPEAKER"),
+        (test, SettingsSection::MicTest, "INPUT"),
+        (typing, SettingsSection::Typing, "TYPING"),
+    ] {
+        text_target(
+            rect,
+            0,
+            &TextLine::from(format!("  {label} ")),
+            label,
+            ClickAction::Focus(section),
+            targets,
+        );
+    }
+    for (rect, section, list, selected, active, following, empty) in [
+        (
+            input,
+            SettingsSection::InputDevice,
+            &app.input_devices,
+            app.selected_input_idx,
+            &app.active_input_name,
+            app.follow_input,
+            "no microphone found. press r to look again.",
+        ),
+        (
+            output,
+            SettingsSection::OutputDevice,
+            &app.output_devices,
+            app.selected_output_idx,
+            &app.active_output_name,
+            app.follow_output,
+            "no speaker found. press r to look again.",
+        ),
+    ] {
+        let max_rows = rect.height.saturating_sub(1) as usize;
+        let focused = app.settings_section == section;
+        let (start, _) = device_window(max_rows, selected);
+        let rows = device_choices(
+            rect.width, max_rows, theme, list, selected, active, following, focused, empty,
+        );
+        for (offset, line) in rows.iter().enumerate() {
+            let index = start + offset;
+            if index > list.len() {
+                text_target(
+                    rect,
+                    offset as u16 + 1,
+                    line,
+                    empty,
+                    setting(section, KeyCode::Char('r')),
+                    targets,
+                );
+                continue;
+            }
+            let row = offset as u16 + 1;
+            // A device row is one choice, including its format and routing tag.
+            let label = text(line);
+            let action = ClickAction::Device {
+                section,
+                name: index.checked_sub(1).map(|i| list[i].name.clone()),
+            };
+            text_target(rect, row, line, label.trim(), action, targets);
+        }
+    }
+    let rows = test_rows(test.width, app, theme);
+    if let Some(floor) = rows.first() {
+        text_target(
+            test,
+            1,
+            floor,
+            "←",
+            setting(SettingsSection::MicTest, KeyCode::Left),
+            targets,
+        );
+        text_target(
+            test,
+            1,
+            floor,
+            "→",
+            setting(SettingsSection::MicTest, KeyCode::Right),
+            targets,
+        );
+        text_target(
+            test,
+            1,
+            floor,
+            "ignore quieter than",
+            ClickAction::Focus(SettingsSection::MicTest),
+            targets,
+        );
+        text_target(
+            test,
+            1,
+            floor,
+            "a  measure the room",
+            setting(SettingsSection::MicTest, KeyCode::Char('a')),
+            targets,
+        );
+    }
+    if let Some(clean) = rows.get(1) {
+        text_target(
+            test,
+            2,
+            clean,
+            text(clean).trim(),
+            setting(SettingsSection::MicTest, KeyCode::Char('n')),
+            targets,
+        );
+    }
+    if let Some(play) = rows.get(2) {
+        let content = text(play);
+        let extra = "m  listen live";
+        let split = content.find(extra).unwrap_or(content.len());
+        let code = if app.mic_test == MicTest::Monitoring {
+            KeyCode::Char('m')
+        } else {
+            KeyCode::Char(' ')
+        };
+        text_target(
+            test,
+            3,
+            play,
+            content[..split].trim(),
+            setting(SettingsSection::MicTest, code),
+            targets,
+        );
+        text_target(
+            test,
+            3,
+            play,
+            extra,
+            setting(SettingsSection::MicTest, KeyCode::Char('m')),
+            targets,
+        );
+    }
+    if let Some(extra) = rows.get(3) {
+        text_target(
+            test,
+            4,
+            extra,
+            "a measure",
+            setting(SettingsSection::MicTest, KeyCode::Char('a')),
+            targets,
+        );
+        text_target(
+            test,
+            4,
+            extra,
+            "m live",
+            setting(SettingsSection::MicTest, KeyCode::Char('m')),
+            targets,
+        );
+    }
+    if test.height > 5 {
+        let (verdict, _) = meter_reading(app, theme);
+        let cells = meter_cells(test.width, verdict) as u16;
+        for cell in 0..cells {
+            targets.push((
+                Rect::new(test.x + 2 + cell, test.y + 5, 1, 1),
+                ClickAction::Gate { cell, cells },
+            ));
+        }
+    }
+    let rows = typing_rows(typing.width, app, theme);
+    text_target(
+        typing,
+        1,
+        &rows[0],
+        text(&rows[0]).trim(),
+        setting(SettingsSection::Typing, KeyCode::Char(' ')),
+        targets,
+    );
+    text_target(
+        typing,
+        2,
+        &rows[1],
+        "←",
+        setting(SettingsSection::Typing, KeyCode::Left),
+        targets,
+    );
+    text_target(
+        typing,
+        2,
+        &rows[1],
+        "→",
+        setting(SettingsSection::Typing, KeyCode::Right),
+        targets,
+    );
+    text_target(
+        typing,
+        2,
+        &rows[1],
+        "how loud",
+        ClickAction::Focus(SettingsSection::Typing),
+        targets,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn device_choices(
     width: u16,
@@ -225,6 +479,7 @@ fn device_choices(
     focused: bool,
     empty: &'static str,
 ) -> Vec<TextLine<'static>> {
+    let (start, selected) = device_window(max_rows, selected);
     let highlighted = focused && selected == 0;
     let label = if cfg!(target_os = "macos") {
         "System default (follow changes)"
@@ -271,7 +526,6 @@ fn device_choices(
     ));
     // Keep the highlighted choice visible even when adding the default row or
     // plugging in more devices makes the list taller than its section.
-    let start = selected.saturating_sub(max_rows.saturating_sub(1));
     rows.into_iter().skip(start).take(max_rows).collect()
 }
 
@@ -440,7 +694,7 @@ fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
         ("off", theme.dim())
     };
 
-    vec![
+    let mut rows = vec![
         spread(width, floor, offer),
         TextLine::from(vec![
             Span::raw("  "),
@@ -468,7 +722,25 @@ fn test_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
         ),
         TextLine::from(""),
         TextLine::from(meter(width, app, theme)),
-    ]
+    ];
+    // Inline offers do not fit in narrow panes. Use the otherwise empty row so
+    // measurement and live monitoring remain reachable with the pointer as well.
+    let measure = app.calibrating.is_none() && !text(&rows[0]).contains("a  measure the room");
+    let monitor = app.mic_test == MicTest::Off && !text(&rows[2]).contains("m  listen live");
+    if measure || monitor {
+        let mut offers = vec![Span::raw("  ")];
+        if measure {
+            offers.push(Span::styled("a measure", theme.accent()));
+        }
+        if measure && monitor {
+            offers.push(Span::styled(theme.plainly(" · "), theme.dim()));
+        }
+        if monitor {
+            offers.push(Span::styled("m live", theme.accent()));
+        }
+        rows[3] = TextLine::from(offers);
+    }
+    rows
 }
 
 /// Which row of `test_rows` is which. The tests reach for them by position, so
@@ -489,16 +761,23 @@ mod rows {
 /// The bar shrinks to whatever the pane can hold. The gate keeps stepping by
 /// `1 / METER_CELLS` whatever the bar is drawn at, so a narrow terminal loses
 /// resolution on screen but never loses the setting.
-pub fn meter(width: u16, app: &App, theme: &Theme) -> Vec<Span<'static>> {
-    let (verdict, verdict_style) = if app.calibrating.is_some() {
+fn meter_reading(app: &App, theme: &Theme) -> (&'static str, ratatui::style::Style) {
+    if app.calibrating.is_some() {
         ("hold still", theme.brass())
     } else if app.gate_open() {
         ("sending", theme.ok())
     } else {
         ("too quiet to send", theme.dim())
-    };
+    }
+}
 
-    let cells = METER_CELLS.min((width as usize).saturating_sub(verdict.len() + 4));
+fn meter_cells(width: u16, verdict: &str) -> usize {
+    METER_CELLS.min((width as usize).saturating_sub(verdict.len() + 4))
+}
+
+pub fn meter(width: u16, app: &App, theme: &Theme) -> Vec<Span<'static>> {
+    let (verdict, verdict_style) = meter_reading(app, theme);
+    let cells = meter_cells(width, verdict);
     if cells == 0 {
         return vec![Span::styled(format!("  {verdict}"), verdict_style)];
     }

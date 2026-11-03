@@ -312,10 +312,23 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | `PageUp` / `PageDn`        | Scroll chat history up or down (15 lines)     |
 | `Shift+↑` / `↓`            | Scroll chat history smoothly (also `Ctrl+↑/↓`)|
 | Scroll wheel / Trackpad    | Scroll chat history smoothly (3 lines)        |
+| Left click a channel      | Read that channel; keep your voice call       |
+| Left click a person       | Select their volume / silence controls        |
+| Left click a footer hint  | Perform the displayed shortcut                |
 | `End`                      | Jump to latest message                        |
 | `Esc`                      | Let go of the roster, or jump to latest chat  |
 | `Enter`                    | Send the message                              |
 | `Ctrl+C`                   | Quit                                          |
+
+Channel and person clicks work in the room's left panel. In a narrow terminal the
+panel gives way to chat; keyboard navigation remains available. Footer shortcuts
+and the AUDIO heading are clickable too; click each arrow separately on two-way controls. In audio
+settings, click a device to apply it, a section heading to focus it, or a control to
+toggle noise suppression, microphone testing, live monitoring or key clicks. Click
+the level meter to set the microphone threshold; the arrow controls adjust the
+threshold and key-click volume by a step. The wheel and keyboard remain available.
+For terminal text selection while mouse capture is active, use your terminal's
+selection modifier (often Shift or Option; this depends on the terminal).
 
 To pick a device, list them with `tincan devices` first, then pass part of a name:
 
