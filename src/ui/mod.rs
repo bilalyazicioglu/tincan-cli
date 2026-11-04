@@ -1,5 +1,7 @@
 //! The terminal interface.
 
+#[cfg(test)]
+mod interaction_tests;
 pub mod mention;
 pub mod state;
 pub mod theme;
@@ -12,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use anyhow::Result;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -217,7 +219,8 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
     }));
     let diverted = crate::stderr::divert();
     let mut terminal = ratatui::init();
-    let mut events = spawn_event_reader();
+    let (clicks_tx, clicks_rx) = watch::channel(view::ClickMap::default());
+    let mut events = spawn_event_reader(clicks_rx);
     let mut chime = JoinChime::default();
     let mut own_state = SelfChime::default();
     let mut quality_tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -233,7 +236,14 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
     let mut quitting = false;
     let result = async {
         loop {
-            terminal.draw(|frame| view::draw(frame, &app, &theme))?;
+            let mut clicks = view::ClickMap::default();
+            terminal.draw(|frame| {
+                view::draw(frame, &app, &theme);
+                clicks = view::click_map(frame.area(), &app, &theme);
+            })?;
+            clicks_tx.send_if_modified(|previous| {
+                if *previous == clicks { false } else { *previous = clicks.clone(); true }
+            });
 
             tokio::select! {
                 event = session.events.recv() => match event {
@@ -346,6 +356,25 @@ pub async fn run(mut session: Session, voice: Option<VoiceControl>, ptt_mode: bo
                 }
 
                 event = events.recv() => match event {
+                    Some(UiEvent::Click { column, row, drawn }) => {
+                        let Ok(size) = crossterm::terminal::size() else { continue; };
+                        if let Some(action) = click_action(&app, column, row, &drawn, size, &theme) {
+                            if dispatch_click(&mut app, action, &session.commands, voice.as_ref()).await? {
+                                quitting = true;
+                                break;
+                            }
+                            apply_local_audio_state(&app, voice.as_ref());
+                            if app.afk {
+                                app.afk = false;
+                                if let Some(me) = app.peers.iter_mut().find(|p| p.id == app.me) {
+                                    me.afk = false;
+                                }
+                                let _ = session.commands.send(Command::SetAfk(false)).await;
+                            }
+                            app.touch_activity();
+                        }
+                    }
+                    Some(UiEvent::Resize) => {}, // Redraw before reading further input.
                     Some(UiEvent::Key(key)) => {
                         let was_afk = app.afk;
                         if handle_key(&mut app, key, &session.commands, voice.as_ref()).await? {
@@ -439,6 +468,131 @@ enum UiEvent {
     Key(KeyEvent),
     ScrollUp,
     ScrollDown,
+    Click {
+        column: u16,
+        row: u16,
+        drawn: view::ClickMap,
+    },
+    Resize,
+}
+
+fn click_action(
+    app: &App,
+    column: u16,
+    row: u16,
+    drawn: &view::ClickMap,
+    size: (u16, u16),
+    theme: &Theme,
+) -> Option<view::ClickAction> {
+    let current = view::click_map(ratatui::layout::Rect::new(0, 0, size.0, size.1), app, theme);
+    if *drawn != current {
+        return None;
+    }
+    drawn.action(column, row).cloned()
+}
+
+fn select_by_click(app: &mut App, action: view::ClickAction) -> bool {
+    match action {
+        view::ClickAction::Channel(channel) => app.view_channel(channel),
+        view::ClickAction::Peer(peer) => app.select_person(peer),
+        _ => return false,
+    }
+    true
+}
+
+async fn dispatch_click(
+    app: &mut App,
+    action: view::ClickAction,
+    commands: &mpsc::Sender<Command>,
+    voice: Option<&VoiceControl>,
+) -> Result<bool> {
+    match action {
+        view::ClickAction::Key(key) => handle_key(app, key, commands, voice).await,
+        view::ClickAction::Gate { cell, cells }
+            if app.view_mode == ViewMode::Settings && cells > 0 =>
+        {
+            app.settings_section = SettingsSection::MicTest;
+            app.settings_error = None;
+            app.nudge_gate(cell as f32 / cells as f32 - app.input_gate);
+            if let Some(v) = voice {
+                v.set_gate(app.input_gate);
+            }
+            Ok(false)
+        }
+        view::ClickAction::Focus(_)
+        | view::ClickAction::Device { .. }
+        | view::ClickAction::Setting { .. } => {
+            if let Some(key) = prepare_settings_click(app, &action) {
+                handle_key(app, key, commands, voice).await
+            } else {
+                Ok(false)
+            }
+        }
+        action => {
+            select_by_click(app, action);
+            Ok(false)
+        }
+    }
+}
+
+/// Resolve a displayed identity before focusing the section. A focus change can
+/// resize compact lists, so the old screen coordinate is never interpreted again.
+fn prepare_settings_click(app: &mut App, action: &view::ClickAction) -> Option<KeyEvent> {
+    if app.view_mode != ViewMode::Settings {
+        return None;
+    }
+    let (section, key) = match action {
+        view::ClickAction::Focus(section) => (*section, None),
+        view::ClickAction::Setting { section, key } => (*section, Some(*key)),
+        view::ClickAction::Device { section, name } => {
+            let (list, selected) = match section {
+                SettingsSection::InputDevice => (&app.input_devices, &mut app.selected_input_idx),
+                SettingsSection::OutputDevice => {
+                    (&app.output_devices, &mut app.selected_output_idx)
+                }
+                _ => return None,
+            };
+            *selected = match name {
+                None => 0,
+                Some(name) => list.iter().position(|device| &device.name == name)? + 1,
+            };
+            (
+                *section,
+                Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            )
+        }
+        _ => return None,
+    };
+    app.settings_section = section;
+    app.settings_error = None;
+    key
+}
+
+#[cfg(test)]
+fn handle_click(
+    app: &mut App,
+    column: u16,
+    row: u16,
+    drawn: &view::ClickMap,
+    size: (u16, u16),
+) -> bool {
+    click_action(app, column, row, drawn, size, &Theme::austere())
+        .is_some_and(|action| select_by_click(app, action))
+}
+
+fn mouse_event(mouse: MouseEvent, drawn: &view::ClickMap) -> Option<UiEvent> {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => Some(UiEvent::ScrollUp),
+        MouseEventKind::ScrollDown => Some(UiEvent::ScrollDown),
+        MouseEventKind::Down(MouseButton::Left) if mouse.modifiers.is_empty() => {
+            Some(UiEvent::Click {
+                column: mouse.column,
+                row: mouse.row,
+                drawn: drawn.clone(),
+            })
+        }
+        _ => None,
+    }
 }
 
 /// RAII guard ensuring terminal mouse capture is released when exiting or on panic.
@@ -451,7 +605,7 @@ impl Drop for MouseCaptureGuard {
 }
 
 /// Reading keys and mouse wheel blocks, so it runs on its own thread and is piped into a channel.
-fn spawn_event_reader() -> mpsc::Receiver<UiEvent> {
+fn spawn_event_reader(clicks: watch::Receiver<view::ClickMap>) -> mpsc::Receiver<UiEvent> {
     let (tx, rx) = mpsc::channel(64);
     std::thread::spawn(move || {
         loop {
@@ -462,12 +616,15 @@ fn spawn_event_reader() -> mpsc::Receiver<UiEvent> {
                     }
                 }
                 Ok(TermEvent::Mouse(mouse)) => {
-                    let ev = match mouse.kind {
-                        MouseEventKind::ScrollUp => UiEvent::ScrollUp,
-                        MouseEventKind::ScrollDown => UiEvent::ScrollDown,
-                        _ => continue,
+                    let Some(ev) = mouse_event(mouse, &clicks.borrow()) else {
+                        continue;
                     };
                     if tx.blocking_send(ev).is_err() {
+                        return;
+                    }
+                }
+                Ok(TermEvent::Resize(_, _)) => {
+                    if tx.blocking_send(UiEvent::Resize).is_err() {
                         return;
                     }
                 }
@@ -492,6 +649,12 @@ async fn handle_key(
     if ctrl && key.code == KeyCode::Char('c') {
         let _ = commands.send(Command::Quit).await;
         return Ok(true);
+    }
+    // The invite is advertised in the footer in settings as well as in chat.
+    if key.code == KeyCode::F(1) {
+        let copied = crate::clipboard::copy(&app.invite_to_copy());
+        app.show_invite_code(copied);
+        return Ok(false);
     }
 
     // Toggle Settings view (F6 or Ctrl+,)
@@ -639,6 +802,8 @@ async fn handle_key(
                                     ));
                                 }
                             }
+                        } else if index == 0 || choice.is_some() {
+                            app.settings_error=Some("audio is unavailable in this session; restart tincan after checking your audio devices".into());
                         }
                     }
                     SettingsSection::MicTest => {
@@ -662,14 +827,7 @@ async fn handle_key(
     let toggle_voice = key.code == KeyCode::F(2) || (ctrl && key.code == KeyCode::Char('g'));
     let toggle_mute = key.code == KeyCode::F(3) || (ctrl && key.code == KeyCode::Char('t'));
     let push_to_talk = key.code == KeyCode::F(4);
-    let show_code = key.code == KeyCode::F(1);
     let toggle_deafen = key.code == KeyCode::F(5);
-
-    if show_code {
-        let copied = crate::clipboard::copy(&app.invite_to_copy());
-        app.show_invite_code(copied);
-        return Ok(false);
-    }
 
     if push_to_talk && app.ptt_mode {
         app.ptt_active = !app.ptt_active;

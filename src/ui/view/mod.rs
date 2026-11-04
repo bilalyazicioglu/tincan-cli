@@ -17,8 +17,10 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::state::{App, ViewMode};
+use super::state::{App, SettingsSection, ViewMode};
 use super::theme::Theme;
+use crate::proto::{ChannelId, PeerId};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Wide enough for a three-cell meter, a name and the channel someone is in.
 const RAIL_WIDTH: u16 = 28;
@@ -27,6 +29,97 @@ const STRAND_WIDTH: u16 = 3;
 /// Under this the rail is dropped altogether: on a narrow terminal the talk wins.
 const RAIL_NEEDS: u16 = 62;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ClickAction {
+    Channel(ChannelId),
+    Peer(PeerId),
+    Key(KeyEvent),
+    Focus(SettingsSection),
+    Device {
+        section: SettingsSection,
+        name: Option<String>,
+    },
+    Setting {
+        section: SettingsSection,
+        key: KeyEvent,
+    },
+    Gate {
+        cell: u16,
+        cells: u16,
+    },
+}
+
+/// A snapshot of what was actually offered on screen. Queued input keeps this
+/// snapshot, so a resize or roster update cannot turn it into a different action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ClickMap {
+    pub area: Rect,
+    pub targets: Vec<(Rect, ClickAction)>,
+}
+
+impl ClickMap {
+    pub fn action(&self, column: u16, row: u16) -> Option<&ClickAction> {
+        self.targets
+            .iter()
+            .find(|(rect, _)| rect.contains((column, row).into()))
+            .map(|(_, action)| action)
+    }
+}
+
+struct ScreenLayout {
+    header: Rect,
+    footer: Rect,
+    rail: Rect,
+    strand: Rect,
+    main: Rect,
+}
+
+impl ScreenLayout {
+    fn new(area: Rect) -> Self {
+        let [header, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        let (rail, strand, main) = if area.width >= RAIL_NEEDS && body.height >= 4 {
+            let width = RAIL_WIDTH;
+            let [rail, strand, main] = Layout::horizontal([
+                Constraint::Length(width),
+                Constraint::Length(STRAND_WIDTH),
+                Constraint::Min(20),
+            ])
+            .areas(body);
+            (rail, strand, main)
+        } else {
+            (Rect::default(), Rect::default(), body)
+        };
+        Self {
+            header,
+            footer,
+            rail,
+            strand,
+            main,
+        }
+    }
+}
+
+pub(super) fn click_map(area: Rect, app: &App, theme: &Theme) -> ClickMap {
+    let mut map = ClickMap {
+        area,
+        targets: Vec::new(),
+    };
+    let layout = ScreenLayout::new(area);
+    if app.view_mode == ViewMode::Chat {
+        rail::click_targets(layout.rail, app, &mut map.targets);
+    } else {
+        settings::click_targets(layout.main, app, theme, &mut map.targets);
+    }
+    map.targets
+        .extend(footer_content(layout.footer, app, theme).1);
+    map
+}
+
 pub fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
     frame.render_widget(Block::default().style(theme.surface()), area);
@@ -34,29 +127,14 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         return;
     }
 
-    let [header, body, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-
-    draw_header(frame, header, app, theme);
-    draw_footer(frame, footer, app, theme);
-
-    let main = if area.width >= RAIL_NEEDS && body.height >= 4 {
-        let [rail_area, strand_area, main] = Layout::horizontal([
-            Constraint::Length(RAIL_WIDTH),
-            Constraint::Length(STRAND_WIDTH),
-            Constraint::Min(20),
-        ])
-        .areas(body);
-        rail::draw(frame, rail_area, app, theme);
-        strand::draw(frame, strand_area, app, theme);
-        main
-    } else {
-        body
-    };
+    let layout = ScreenLayout::new(area);
+    draw_header(frame, layout.header, app, theme);
+    draw_footer(frame, layout.footer, app, theme);
+    if layout.rail.width > 0 {
+        rail::draw(frame, layout.rail, app, theme);
+        strand::draw(frame, layout.strand, app, theme);
+    }
+    let main = layout.main;
 
     match app.view_mode {
         ViewMode::Chat => chat::draw(frame, main, app, theme),
@@ -157,7 +235,15 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 /// The shortcuts, always. They are what a newcomer needs most and they cost one row.
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Block::default().style(theme.panel()), area);
+    frame.render_widget(Paragraph::new(footer_content(area, app, theme).0), area);
+}
 
+/// Drawing and pointer targets are derived from the same shortened hint line.
+fn footer_content(
+    area: Rect,
+    app: &App,
+    theme: &Theme,
+) -> (TextLine<'static>, Vec<(Rect, ClickAction)>) {
     let right = vec![
         Span::styled(
             if crate::invite::looks_like_code(&app.invite_code) {
@@ -181,9 +267,79 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Some(status) => clip(status, room, theme),
         None => fit(app, room, theme),
     };
+    let mut targets = Vec::new();
+    if area.height > 0 && area.width > 0 {
+        if app.status.is_none() {
+            let separator = theme.plainly(" · ");
+            let mut x = area.x + 1;
+            for hint in hints.split(&separator) {
+                let width = Span::raw(hint).width() as u16;
+                let code = match hint.split_whitespace().next().unwrap_or("") {
+                    "tab" => Some((KeyCode::Tab, KeyModifiers::NONE)),
+                    "f2" => Some((KeyCode::F(2), KeyModifiers::NONE)),
+                    "f3" => Some((KeyCode::F(3), KeyModifiers::NONE)),
+                    "f5" => Some((KeyCode::F(5), KeyModifiers::NONE)),
+                    "f6" => Some((KeyCode::F(6), KeyModifiers::NONE)),
+                    key if key.starts_with("ctrl+") && key.chars().count() == 6 => Some((
+                        KeyCode::Char(key.chars().last().unwrap()),
+                        KeyModifiers::CONTROL,
+                    )),
+                    "esc" => Some((KeyCode::Esc, KeyModifiers::NONE)),
+                    "enter" => Some((KeyCode::Enter, KeyModifiers::NONE)),
+                    "a" => Some((KeyCode::Char('a'), KeyModifiers::NONE)),
+                    "space" => Some((KeyCode::Char(' '), KeyModifiers::NONE)),
+                    "m" => Some((KeyCode::Char('m'), KeyModifiers::NONE)),
+                    _ => None,
+                };
+                if let Some((code, modifiers)) = code {
+                    targets.push((
+                        Rect::new(x, area.y, width, 1),
+                        ClickAction::Key(KeyEvent::new(code, modifiers)),
+                    ));
+                } else {
+                    // A two-way control has two targets; its label cannot choose a
+                    // direction for the user. ASCII terminals name the directions.
+                    for (prefix, first, second) in [
+                        ("↑↓", KeyCode::Up, KeyCode::Down),
+                        ("←→", KeyCode::Left, KeyCode::Right),
+                        ("up/down", KeyCode::Up, KeyCode::Down),
+                        ("left/right", KeyCode::Left, KeyCode::Right),
+                    ] {
+                        if hint.starts_with(prefix) {
+                            let (first_width, second_offset, second_width) =
+                                if let Some((a, b)) = prefix.split_once('/') {
+                                    (a.len() as u16, a.len() as u16 + 1, b.len() as u16)
+                                } else {
+                                    (1, 1, 1)
+                                };
+                            for (offset, width, code) in [
+                                (0, first_width, first),
+                                (second_offset, second_width, second),
+                            ] {
+                                targets.push((
+                                    Rect::new(x + offset, area.y, width, 1),
+                                    ClickAction::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                                ));
+                            }
+                            break;
+                        }
+                    }
+                }
+                x += width + Span::raw(&separator).width() as u16;
+            }
+        }
+        if used > 0 && used < area.width as usize {
+            targets.push((
+                Rect::new(area.right() - used as u16, area.y, used as u16 - 1, 1),
+                ClickAction::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            ));
+        }
+        targets
+            .retain(|(rect, _)| rect.width > 0 && rect.x >= area.x && rect.right() <= area.right());
+    }
     let left = vec![Span::raw(" "), Span::styled(hints, theme.dim())];
 
-    frame.render_widget(Paragraph::new(spread(area.width, left, right)), area);
+    (spread(area.width, left, right), targets)
 }
 
 /// The shortcut line, shortened a step at a time rather than cut mid-word.
@@ -232,6 +388,8 @@ fn spread(width: u16, left: Vec<Span<'static>>, right: Vec<Span<'static>>) -> Te
     let mut spans = left;
     if gap > 0 {
         spans.push(Span::raw(" ".repeat(gap)));
+    }
+    if used <= width as usize {
         spans.extend(right);
     }
     TextLine::from(spans)
@@ -267,14 +425,24 @@ fn millis(rtt: std::time::Duration) -> String {
 
 /// Cuts to width, with an ellipsis when something was lost.
 fn clip(text: &str, width: usize, theme: &Theme) -> String {
-    if text.chars().count() <= width {
+    if Span::raw(text).width() <= width {
         return text.to_string();
     }
-    if width <= 1 {
-        return text.chars().take(width).collect();
+    let cut = theme.glyphs.cut.to_string();
+    let suffix = Span::raw(&cut).width();
+    if width < suffix {
+        return String::new();
     }
-    let kept: String = text.chars().take(width - 1).collect();
-    format!("{kept}{}", theme.glyphs.cut)
+    let mut kept = String::new();
+    for ch in text.chars() {
+        let mut next = kept.clone();
+        next.push(ch);
+        if Span::raw(&next).width() > width - suffix {
+            break;
+        }
+        kept = next;
+    }
+    format!("{kept}{cut}")
 }
 
 /// An invite code is cut to its head; a room name or relay invite is shown whole when
@@ -1057,6 +1225,28 @@ mod pictures {
             std::fs::write(&path, &picture)
                 .unwrap_or_else(|e| panic!("could not write {path}: {e}"));
             println!("{path} — {} bytes", picture.len());
+        }
+        // Review the breakpoints with real room/settings state as well as the
+        // normal README size. These artifacts stay out of the shipped assets.
+        let review = std::path::Path::new("target/ui-review");
+        std::fs::create_dir_all(review).unwrap();
+        for (cols, rows) in [(44, 12), (56, 16), (70, 20), (80, 24)] {
+            let mut room = hero();
+            room.muted = true;
+            room.deafened = true;
+            let mut mic = settings();
+            mic.settings_section = SettingsSection::MicTest;
+            for (name, app) in [
+                ("room", room),
+                ("settings", settings()),
+                ("settings-mic", mic),
+            ] {
+                std::fs::write(
+                    review.join(format!("{name}-{cols}x{rows}.svg")),
+                    svg(&app, cols, rows),
+                )
+                .unwrap();
+            }
         }
     }
 

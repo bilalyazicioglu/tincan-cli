@@ -9,7 +9,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{clip, millis, spread};
+use super::{ClickAction, clip, millis, spread};
 use crate::proto::ChannelId;
 use crate::ui::state::{App, Trouble, ViewMode};
 use crate::ui::theme::Theme;
@@ -25,24 +25,72 @@ pub(super) const NAME_ROOM: usize = 12;
 /// column the cursor needs had to come from somewhere.
 const TAG_ROOM: usize = 8;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    frame.render_widget(Block::default().style(theme.panel()), area);
-    if area.height < 2 || area.width < 8 {
-        return;
-    }
-
+fn sections(area: Rect, app: &App) -> [Rect; 3] {
     let audio_rows = if area.height >= AUDIO_NEEDS && app.voice_available {
         4
     } else {
         0
     };
     let channel_rows = (app.channels.len() as u16).saturating_add(CHROME_ROWS);
-    let [channels, people, audio] = Layout::vertical([
+    Layout::vertical([
         Constraint::Max(channel_rows),
         Constraint::Min(2),
         Constraint::Length(audio_rows),
     ])
-    .areas(area);
+    .areas(area)
+}
+
+/// The final row is an overflow label only when at least two rows fit.
+fn visible_rows(area: Rect, count: usize) -> usize {
+    let available = area.height.saturating_sub(1) as usize;
+    if count > available && available > 1 {
+        available - 1
+    } else {
+        count.min(available)
+    }
+}
+
+pub(super) fn click_targets(area: Rect, app: &App, targets: &mut Vec<(Rect, ClickAction)>) {
+    if area.height < 2 || area.width < 8 {
+        return;
+    }
+    let [channels, people, audio] = sections(area, app);
+    for index in 0..visible_rows(channels, app.channels.len()) {
+        targets.push((
+            Rect::new(channels.x, channels.y + 1 + index as u16, channels.width, 1),
+            ClickAction::Channel(crate::proto::ChannelId(index as u8)),
+        ));
+    }
+    for (index, peer) in app
+        .peers
+        .iter()
+        .take(visible_rows(people, app.peers.len()))
+        .enumerate()
+    {
+        if peer.id != app.me {
+            targets.push((
+                Rect::new(people.x, people.y + 1 + index as u16, people.width, 1),
+                ClickAction::Peer(peer.id),
+            ));
+        }
+    }
+    if audio.height > 0 {
+        targets.push((
+            Rect::new(audio.x, audio.y, audio.width, 1),
+            ClickAction::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::F(6),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        ));
+    }
+}
+
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    frame.render_widget(Block::default().style(theme.panel()), area);
+    if area.height < 2 || area.width < 8 {
+        return;
+    }
+    let [channels, people, audio] = sections(area, app);
 
     section(
         frame,
@@ -120,7 +168,7 @@ fn section(
     if rows.len() <= available {
         lines.extend(rows);
     } else if available > 1 {
-        let shown = available - 1;
+        let shown = visible_rows(area, rows.len());
         let hidden = rows.len() - shown;
         lines.extend(rows.into_iter().take(shown));
         lines.push(TextLine::from(vec![
