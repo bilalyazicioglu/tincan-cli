@@ -321,8 +321,9 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | `Ctrl+C`                   | Quit                                          |
 
 Channel and person clicks work in the room's left panel. In a narrow terminal the
-panel gives way to chat; keyboard navigation remains available. Footer shortcuts
-and the AUDIO heading are clickable too; click each arrow separately on two-way controls. In audio
+panel gives way to chat; the header keeps your call count and mute/deafen state,
+and keyboard navigation remains available. Footer shortcuts and the AUDIO heading
+are clickable too; click each arrow separately on two-way controls. In audio
 settings, click a device to apply it, a section heading to focus it, or a control to
 toggle noise suppression, microphone testing, live monitoring or key clicks. Click
 the level meter to set the microphone threshold; the arrow controls adjust the

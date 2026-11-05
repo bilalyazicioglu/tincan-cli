@@ -265,7 +265,10 @@ fn long_unicode_names_and_tiny_settings_degrade_without_overflow_or_panics() {
             (120, 30),
         ] {
             app.view_mode = ViewMode::Chat;
-            let (_, map) = screen(&app, size, &theme);
+            let (text, map) = screen(&app, size, &theme);
+            if size.0 >= 44 {
+                assert!(text.lines().next().unwrap().contains("ALONE"), "{text}");
+            }
             for (rect, _) in map.targets {
                 assert!(rect.right() <= size.0 && rect.bottom() <= size.1);
             }
@@ -367,6 +370,100 @@ fn only_visible_actionable_rows_have_targets_in_crowded_and_compact_layouts() {
                 view::ClickAction::Channel(_) | view::ClickAction::Peer(_)
             ))
     );
+}
+
+#[test]
+fn compact_status_counts_the_call_and_keeps_both_local_audio_flags() {
+    let mut app = room();
+    for theme in [Theme::austere(), Theme::dark_true()] {
+        for size in [(44, 12), (56, 16)] {
+            let (text, _) = screen(&app, size, &theme);
+            let header = text.lines().next().unwrap();
+            assert!(
+                header.contains("call 3")
+                    && header.contains("muted")
+                    && header.contains("deafened"),
+                "{text}"
+            );
+            let footer = text.lines().last().unwrap();
+            assert!(
+                footer.contains("tab") && footer.contains("f2 talk"),
+                "{text}"
+            );
+            assert!(!footer.contains("f1 code"));
+        }
+    }
+    app.voice = None;
+    assert!(
+        screen(&app, (44, 12), &Theme::austere())
+            .0
+            .lines()
+            .next()
+            .unwrap()
+            .contains("not in voice")
+    );
+}
+
+#[test]
+fn compact_settings_keep_devices_and_the_focused_choice_visible() {
+    use crate::audio::device::AudioDeviceInfo;
+    let mut app = room();
+    app.view_mode = ViewMode::Settings;
+    app.input_devices = (0..8)
+        .map(|i| AudioDeviceInfo {
+            name: format!("Microphone{i}"),
+            sample_rate: 48000,
+            channels: 1,
+            is_default: i == 0,
+            is_supported: true,
+        })
+        .collect();
+    app.output_devices = (0..8)
+        .map(|i| AudioDeviceInfo {
+            name: format!("Speaker{i}"),
+            sample_rate: 48000,
+            channels: 2,
+            is_default: i == 0,
+            is_supported: true,
+        })
+        .collect();
+    app.active_input_name = Some("Microphone7".into());
+    app.active_output_name = Some("Speaker7".into());
+    for size in [(44, 12), (56, 16), (70, 20), (80, 24)] {
+        for section in [SettingsSection::InputDevice, SettingsSection::OutputDevice] {
+            app.settings_section = section;
+            for index in 1..=8 {
+                app.selected_input_idx = index;
+                app.selected_output_idx = index;
+                let (text, _) = screen(&app, size, &Theme::austere());
+                assert!(
+                    text.contains("MICROPHONE") && text.contains("SPEAKER"),
+                    "{size:?}:\n{text}"
+                );
+                if size.0 <= 56 {
+                    let active = if section == SettingsSection::InputDevice {
+                        "Speaker7"
+                    } else {
+                        "Microphone7"
+                    };
+                    assert!(
+                        text.contains(active),
+                        "a collapsed unfocused list must show active hardware: {text}"
+                    );
+                }
+                let name = if section == SettingsSection::InputDevice {
+                    format!("Microphone{}", index - 1)
+                } else {
+                    format!("Speaker{}", index - 1)
+                };
+                assert!(
+                    text.lines()
+                        .any(|line| line.contains(&name) && line.contains('>')),
+                    "the focused choice must be marked: {text}"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -474,7 +571,15 @@ async fn mixed_navigation_resize_and_roster_sequences_preserve_session_state() {
             assert!((app.gain_of(PeerId([2; 32])) - expected_gain).abs() < 0.00001);
             assert_eq!(app.gain_of(PeerId([3; 32])), 1.0);
             let (after, _) = screen(&app, size, &Theme::austere());
-            assert!(!after.is_empty());
+            if size.0 == 44 {
+                let header = after.lines().next().unwrap();
+                assert!(
+                    header.contains("call 3")
+                        && header.contains("muted")
+                        && header.contains("deafened"),
+                    "{after}"
+                );
+            }
         }
     }
 }
@@ -539,19 +644,21 @@ fn footer_targets_track_visible_hints_status_and_settings_in_both_terminal_modes
                         .all(|c| c == ' ')
                 );
             }
-
-            let at = ratatui::text::Span::raw(&footer[..footer.find("f1").unwrap()]).width();
-            assert!(
-                matches!(map.action(at as u16,size.1-1),Some(view::ClickAction::Key(key)) if key.code==KeyCode::F(1))
-            );
-
+            if size.0 < 72 {
+                assert!(!map.targets.iter().any(|(_,action)|matches!(action,view::ClickAction::Key(key) if key.code==KeyCode::F(1))));
+            } else {
+                let at = footer.find("f1").unwrap();
+                assert!(
+                    matches!(map.action(at as u16,size.1-1),Some(view::ClickAction::Key(key)) if key.code==KeyCode::F(1))
+                );
+            }
             app.status = Some("f3 mute is temporarily covered".into());
             let (_, status) = screen(&app, size, &theme);
             assert!(
                 !status
                     .targets
                     .iter()
-                    .any(|(rect, action)| rect.y == size.1 - 1 && !matches!(action, view::ClickAction::Key(key) if key.code == KeyCode::F(1))),
+                    .any(|(rect, _)| rect.y == size.1 - 1 && rect.x < 30),
                 "status text is not a button"
             );
             assert!(
@@ -666,7 +773,7 @@ fn device_clicks_resolve_visible_names_across_focus_resize_and_list_windows() {
 #[test]
 fn settings_clicks_never_retarget_after_hotplug_or_focus_changes() {
     let theme = Theme::austere();
-    let size = (80, 24);
+    let size = (56, 16);
     let mut app = settings_room();
     let (_, drawn) = screen(&app, size, &theme);
     let (rect,action)=drawn.targets.iter().find(|(_,action)|matches!(action,view::ClickAction::Device {name:Some(name),..} if name=="mic00")).unwrap();
@@ -758,6 +865,20 @@ async fn settings_clicks_drive_recording_monitoring_calibration_and_gate_results
         Some(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE))
     );
     assert_eq!(app.settings_section, SettingsSection::MicTest);
+    let (text, map) = screen(&app, (44, 12), &theme);
+    assert!(
+        text.contains("play yourself back"),
+        "focused controls must remain reachable: {text}"
+    );
+    assert!(
+        text.contains("a measure") && text.contains("m live"),
+        "compact mouse controls must remain discoverable: {text}"
+    );
+    assert!(
+        map.targets
+            .iter()
+            .any(|(_, action)| matches!(action, view::ClickAction::Gate { .. }))
+    );
 }
 
 #[tokio::test]
