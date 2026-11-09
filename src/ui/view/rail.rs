@@ -222,7 +222,11 @@ fn channel_rows_of(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static
                 // not the turquoise that marks where you already are: being here and
                 // having something waiting are different questions.
                 Span::styled(
-                    clip(name, NAME_ROOM, theme),
+                    clip(
+                        name,
+                        NAME_ROOM.min((width as usize).saturating_sub(10)),
+                        theme,
+                    ),
                     match (reading, unread) {
                         (true, _) => theme.strong(),
                         (false, true) => theme.brass(),
@@ -264,6 +268,10 @@ fn people_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
             };
 
             let selected = app.selected_peer == Some(peer.id);
+            let name_room = NAME_ROOM.min(
+                (width as usize)
+                    .saturating_sub(9 + TAG_ROOM + if peer.id == app.me { 4 } else { 0 }),
+            );
             let mut left = vec![
                 Span::raw("  "),
                 // The same cursor the channel list uses, in the same column, because
@@ -279,7 +287,7 @@ fn people_rows(width: u16, app: &App, theme: &Theme) -> Vec<TextLine<'static>> {
                 Span::styled(meter, meter_style),
                 Span::raw(" "),
                 Span::styled(
-                    clip(&peer.name, NAME_ROOM, theme),
+                    clip(&peer.name, name_room, theme),
                     if talking {
                         theme.strong()
                     } else if peer.afk {

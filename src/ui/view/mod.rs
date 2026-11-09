@@ -83,7 +83,12 @@ impl ScreenLayout {
         ])
         .areas(area);
         let (rail, strand, main) = if area.width >= RAIL_NEEDS && body.height >= 4 {
-            let width = RAIL_WIDTH;
+            // Leave the conversation some room at medium widths.
+            let width = if area.width >= 80 {
+                RAIL_WIDTH
+            } else {
+                area.width / 3
+            };
             let [rail, strand, main] = Layout::horizontal([
                 Constraint::Length(width),
                 Constraint::Length(STRAND_WIDTH),
@@ -128,7 +133,7 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     }
 
     let layout = ScreenLayout::new(area);
-    draw_header(frame, layout.header, app, theme);
+    draw_header(frame, layout.header, app, theme, layout.rail.width == 0);
     draw_footer(frame, layout.footer, app, theme);
     if layout.rail.width > 0 {
         rail::draw(frame, layout.rail, app, theme);
@@ -144,7 +149,7 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
 
 /// Who you are with, and how well you are reaching them. The link chip is the same
 /// reading as the string, in words.
-fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, compact: bool) {
     frame.render_widget(Block::default().style(theme.panel()), area);
 
     let mut left = vec![
@@ -153,7 +158,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Span::raw(" "),
     ];
     if !app.room_name.is_empty() {
-        left.push(Span::styled(app.room_name.clone(), theme.strong()));
+        left.push(Span::styled(
+            clip(&app.room_name, (area.width as usize / 4).min(24), theme),
+            theme.strong(),
+        ));
         left.push(Span::raw(" "));
     }
     match app.view_mode {
@@ -173,10 +181,36 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     theme.accent()
                 };
                 left.push(Span::styled(
-                    format!("#{}", app.channel_name(app.viewing)),
+                    format!(
+                        "#{}",
+                        clip(
+                            app.channel_name(app.viewing),
+                            (area.width as usize / 4).min(24),
+                            theme
+                        )
+                    ),
                     channel_style,
                 ));
             }
+        }
+    }
+
+    if compact {
+        // The rail's absence must not hide the state of our own call. Count only
+        // the voice channel, not everyone reading other channels in the room.
+        let call = app
+            .voice
+            .map(|channel| format!("call {}", app.peers_in(channel).len()))
+            .unwrap_or_else(|| "not in voice".into());
+        left = vec![
+            Span::styled(" TINCAN ", theme.chip_on()),
+            Span::styled(format!(" {call} "), theme.text()),
+        ];
+        if app.muted {
+            left.push(Span::styled("muted ", theme.brass()));
+        }
+        if app.deafened {
+            left.push(Span::styled("deafened ", theme.brass()));
         }
     }
 
@@ -199,13 +233,17 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let rtt = who.as_ref().map(|(_, rtt)| *rtt).or(app.link.worst_rtt);
 
     let mut base = Vec::new();
-    if app.recently_dropped() {
+    if app.recently_dropped() && !compact {
         base.push(Span::styled("audio dropping ", theme.error()));
     }
     base.push(Span::styled(
         format!(" {} ", strand::label(app)),
         theme.chip_link(strand),
     ));
+    let essential: usize = left.iter().chain(base.iter()).map(Span::width).sum();
+    if essential + 1 > area.width as usize && compact {
+        left.remove(0); // State matters more than the brand in a very small window.
+    }
     let name = who.map(|(name, _)| {
         Span::styled(
             format!("  {}", clip(&name, rail::NAME_ROOM, theme)),
@@ -244,21 +282,25 @@ fn footer_content(
     app: &App,
     theme: &Theme,
 ) -> (TextLine<'static>, Vec<(Rect, ClickAction)>) {
-    let right = vec![
-        Span::styled(
-            if crate::invite::looks_like_code(&app.invite_code) {
-                "f1 code "
-            } else {
-                "f1 invite "
-            },
-            theme.dim(),
-        ),
-        Span::styled(
-            short_invite(&app.invite_code, area.width as usize, theme),
-            theme.brass(),
-        ),
-        Span::raw(" "),
-    ];
+    let right = if area.width >= 72 {
+        vec![
+            Span::styled(
+                if crate::invite::looks_like_code(&app.invite_code) {
+                    "f1 code "
+                } else {
+                    "f1 invite "
+                },
+                theme.dim(),
+            ),
+            Span::styled(
+                short_invite(&app.invite_code, area.width as usize, theme),
+                theme.brass(),
+            ),
+            Span::raw(" "),
+        ]
+    } else {
+        Vec::new()
+    };
     // One column for the indent, one so the two halves never touch.
     let used: usize = right.iter().map(Span::width).sum();
     let room = (area.width as usize).saturating_sub(used + 2);
@@ -349,7 +391,7 @@ fn fit(app: &App, width: usize, theme: &Theme) -> String {
             "tab section · ↑↓ move · ←→ adjust · a measure · space toggle · m live · esc back",
             "tab section · ↑↓ move · ←→ adjust · enter apply · esc back",
             "tab section · ↑↓ move · ←→ adjust · esc back",
-            "↑↓ move · ←→ adjust · esc back",
+            "↑↓ move · enter apply · esc back",
             "esc back",
         ]
     } else if app.selected_peer.is_some() {
@@ -664,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relay_invite_fits_a_narrow_footer() {
+    fn a_narrow_footer_gives_shortcuts_priority_over_the_invite() {
         let mut app = room();
         app.invite_code = "a-long-room-name@relay.example.com".into();
 
@@ -678,8 +720,8 @@ mod tests {
         let narrow = rendered(40, 24, &app);
         let footer = narrow.lines().last().unwrap();
         assert!(
-            footer.contains("a-long-room-name") && !footer.contains("relay.example.com"),
-            "a narrow footer keeps the room and cuts the relay: {footer}"
+            footer.contains("tab") && footer.contains("f2 talk") && !footer.contains("f1 invite"),
+            "a narrow footer keeps navigation and voice controls: {footer}"
         );
     }
 
@@ -877,7 +919,7 @@ mod tests {
 
     #[test]
     fn a_narrow_header_lets_the_name_go_before_the_number() {
-        let app = call(
+        let mut app = call(
             &["bob", "cem", "deniz", "emre"],
             &[
                 (2, false, 18),
@@ -886,8 +928,10 @@ mod tests {
                 (5, true, 340),
             ],
         );
+        app.muted = true;
         let top = header(40, &app);
         assert!(top.contains("RELAY") && top.contains("340ms"), "{top}");
+        assert!(top.contains("muted"), "{top}");
         assert!(!top.contains("emre"), "{top}");
     }
 
@@ -934,7 +978,7 @@ mod tests {
 
     #[test]
     fn when_only_the_chip_fits_the_number_goes_too() {
-        let app = call(
+        let mut app = call(
             &["bob", "cem", "deniz", "emre"],
             &[
                 (2, false, 18),
@@ -943,6 +987,8 @@ mod tests {
                 (5, true, 340),
             ],
         );
+        app.muted = true;
+        app.deafened = true;
         let top = header(34, &app);
         assert!(top.contains("RELAY"), "{top}");
         assert!(!top.contains("340ms") && !top.contains("emre"), "{top}");

@@ -57,8 +57,6 @@
 <text x="297.8" y="81.3" fill="#dcd5cb" font-weight="600" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">▸</text>
 <text x="332.2" y="81.3" fill="#dcd5cb" font-weight="600" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">System</text>
 <text x="392.4" y="81.3" fill="#dcd5cb" font-weight="600" textLength="60.2" lengthAdjust="spacing" xml:space="preserve">default</text>
-<text x="461.2" y="81.3" fill="#dcd5cb" font-weight="600" textLength="60.2" lengthAdjust="spacing" xml:space="preserve">(follow</text>
-<text x="530.0" y="81.3" fill="#dcd5cb" font-weight="600" textLength="68.8" lengthAdjust="spacing" xml:space="preserve">changes)</text>
 <text x="659.0" y="81.3" fill="#dcd5cb" textLength="68.8" lengthAdjust="spacing" xml:space="preserve">selected</text>
 <text x="65.6" y="99.3" fill="#dcd5cb" textLength="43.0" lengthAdjust="spacing" xml:space="preserve">music</text>
 <text x="263.4" y="99.3" fill="#dcd5cb" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
@@ -92,8 +90,6 @@
 <text x="263.4" y="153.3" fill="#dcd5cb" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">│</text>
 <text x="332.2" y="153.3" fill="#dcd5cb" textLength="51.6" lengthAdjust="spacing" xml:space="preserve">System</text>
 <text x="392.4" y="153.3" fill="#dcd5cb" textLength="60.2" lengthAdjust="spacing" xml:space="preserve">default</text>
-<text x="461.2" y="153.3" fill="#dcd5cb" textLength="60.2" lengthAdjust="spacing" xml:space="preserve">(follow</text>
-<text x="530.0" y="153.3" fill="#dcd5cb" textLength="68.8" lengthAdjust="spacing" xml:space="preserve">changes)</text>
 <text x="659.0" y="153.3" fill="#dcd5cb" textLength="68.8" lengthAdjust="spacing" xml:space="preserve">selected</text>
 <text x="39.8" y="171.3" fill="#dcd5cb" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">▁</text>
 <text x="48.4" y="171.3" fill="#dcd5cb" textLength="8.6" lengthAdjust="spacing" xml:space="preserve">▃</text>

@@ -27,16 +27,52 @@ fn sections(area: Rect, app: &App) -> [Rect; 7] {
     // together instead of drifting apart down an empty screen.
     let problem = if app.settings_error.is_some() { 2 } else { 0 };
     let rows_for = |count: usize| (count.max(1) as u16).saturating_add(2);
-    Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(problem),
-        Constraint::Max(rows_for(app.input_devices.len() + 1)),
-        Constraint::Max(rows_for(app.output_devices.len() + 1)),
-        Constraint::Length(7),
-        Constraint::Length(4),
-        Constraint::Min(0),
-    ])
-    .areas(area)
+    let constraints = if area.height < 20 {
+        // Each device list keeps a heading and a choice. Give spare rows to the
+        // section being used, instead of letting fixed test controls evict devices.
+        let mut rows = [2u16; 4];
+        let focused = match app.settings_section {
+            SettingsSection::InputDevice => 0,
+            SettingsSection::OutputDevice => 1,
+            SettingsSection::MicTest => 2,
+            SettingsSection::Typing => 3,
+        };
+        let problem = u16::from(app.settings_error.is_some());
+        rows[focused] += area.height.saturating_sub(9 + problem);
+        if focused == 2 && area.height < 13 + problem {
+            // The mic test has several independent controls. On a short screen,
+            // keep its controls together and leave other sections as focusable
+            // headings rather than making playback/monitoring unreachable.
+            rows = [1; 4];
+            rows[focused] = area.height.saturating_sub(4 + problem);
+        }
+        if area.height < 9 + problem {
+            // At tiny heights keep the focused section operable rather than
+            // presenting four headings with no controls beneath them.
+            rows = [0; 4];
+            rows[focused] = area.height.saturating_sub(1 + problem);
+        }
+        [
+            Constraint::Length(1),
+            Constraint::Length(problem),
+            Constraint::Length(rows[0]),
+            Constraint::Length(rows[1]),
+            Constraint::Length(rows[2]),
+            Constraint::Length(rows[3]),
+            Constraint::Min(0),
+        ]
+    } else {
+        [
+            Constraint::Length(1),
+            Constraint::Length(problem),
+            Constraint::Max(rows_for(app.input_devices.len() + 1)),
+            Constraint::Max(rows_for(app.output_devices.len() + 1)),
+            Constraint::Length(7),
+            Constraint::Length(4),
+            Constraint::Min(0),
+        ]
+    };
+    Layout::vertical(constraints).areas(area)
 }
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
@@ -219,7 +255,22 @@ fn section(
 }
 
 /// The same window is used for drawing and for identities under the pointer.
-fn device_window(max_rows: usize, selected: usize) -> (usize, usize) {
+fn device_window(
+    max_rows: usize,
+    list: &[AudioDeviceInfo],
+    selected: usize,
+    active: &Option<String>,
+    focused: bool,
+) -> (usize, usize) {
+    let selected = if max_rows == 1 && !focused {
+        active
+            .as_ref()
+            .and_then(|name| list.iter().position(|device| &device.name == name))
+            .map(|index| index + 1)
+            .unwrap_or(selected)
+    } else {
+        selected
+    };
     (
         selected.saturating_sub(max_rows.saturating_sub(1)),
         selected,
@@ -306,7 +357,7 @@ pub(super) fn click_targets(
     ] {
         let max_rows = rect.height.saturating_sub(1) as usize;
         let focused = app.settings_section == section;
-        let (start, _) = device_window(max_rows, selected);
+        let (start, _) = device_window(max_rows, list, selected, active, focused);
         let rows = device_choices(
             rect.width, max_rows, theme, list, selected, active, following, focused, empty,
         );
@@ -479,9 +530,11 @@ fn device_choices(
     focused: bool,
     empty: &'static str,
 ) -> Vec<TextLine<'static>> {
-    let (start, selected) = device_window(max_rows, selected);
+    // A collapsed, unfocused list names the hardware in use, rather than an
+    // unapplied choice the cursor happened to pass over earlier.
+    let (start, selected) = device_window(max_rows, list, selected, active, focused);
     let highlighted = focused && selected == 0;
-    let label = if cfg!(target_os = "macos") {
+    let label = if cfg!(target_os = "macos") && width >= 60 {
         "System default (follow changes)"
     } else {
         "System default"
@@ -500,7 +553,7 @@ fn device_choices(
             ),
             Span::raw("   "),
             Span::styled(
-                label,
+                clip(label, (width as usize).saturating_sub(16), theme),
                 if highlighted {
                     theme.accent()
                 } else if following {
@@ -585,7 +638,14 @@ fn devices(
                     theme.ok(),
                 ),
                 Span::raw(" "),
-                Span::styled(clip(&device.name, 34, theme), name_style),
+                Span::styled(
+                    clip(
+                        &device.name,
+                        34.min((width as usize).saturating_sub(24)),
+                        theme,
+                    ),
+                    name_style,
+                ),
             ];
 
             let (tag, tag_style) = if !device.is_supported {
