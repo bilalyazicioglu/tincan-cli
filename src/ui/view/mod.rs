@@ -872,7 +872,7 @@ mod tests {
         let theme = Theme::from_env();
         assert!(!fit(&app, 140, &theme).contains("ptt"));
         app.ptt_mode = true;
-        assert!(fit(&app, 140, &theme).contains(&theme.keys("f2 talk · f4 ptt")));
+        assert!(fit(&app, 140, &theme).contains(&theme.plainly(&theme.keys("f2 talk · f4 ptt"))));
         let mut mac = Theme::from_env();
         mac.ctrl_keys = true;
         assert!(
