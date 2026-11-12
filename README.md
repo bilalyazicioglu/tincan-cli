@@ -290,7 +290,7 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | `--no-voice`       | Skip audio entirely; text chat only                            |
 | `--input`          | Microphone to use (a distinctive part of the name is enough)   |
 | `--output`         | Speaker to use                                                 |
-| `--ptt`            | Push-to-talk: the microphone only opens with F4                |
+| `--ptt`            | Push-to-talk: the microphone only opens with F4 or Ctrl+P      |
 | `--retry`          | `join`: keep trying to reach the room for this many seconds    |
 
 ### Shortcuts
@@ -300,11 +300,11 @@ tincan completions fish > ~/.config/fish/completions/tincan.fish # fish
 | `Tab` / `Shift+Tab`        | Move between channels                         |
 | `F2` (or `Ctrl+G`)         | Join / leave the voice of the channel you see |
 | `F3` (or `Ctrl+T`)         | Mute / unmute your microphone                 |
-| `F4`                       | Push-to-talk (only in `--ptt` mode)           |
-| `F5`                       | Deafen: hear nobody (also closes your mic)    |
-| `F6` (or `Ctrl+,`)         | Open audio settings                           |
+| `F4` (or `Ctrl+P`)         | Push-to-talk (only in `--ptt` mode)           |
+| `F5` (or `Ctrl+E`)         | Deafen: hear nobody (also closes your mic)    |
+| `F6` (or `Ctrl+O`, `Ctrl+,`) | Open audio settings                           |
 | `n` (on that screen)       | Noise suppression on / off                    |
-| `F1`                       | Show the full invite code (and copy it)       |
+| `F1` (or `Ctrl+Y`)         | Show the full invite code (and copy it)       |
 | `↑` / `↓`                  | Pick someone out of the roster                |
 | `←` / `→`                  | Turn that person down or up                   |
 | `Ctrl+K`                   | Silence selected person (or Vim scroll up)    |
@@ -357,6 +357,10 @@ list, `>` marks the one you are viewing and `🔊` the one you are in.
 The audio shortcuts are F-keys on purpose: in a terminal `Ctrl+M` (0x0D) and `Ctrl+J`
 (0x0A) _are_ Enter and cannot be told apart from it — had those been used, the "mute" key
 would have quietly sent a message.
+
+On a Mac the F keys need `fn` held down, so each one also has a `Ctrl` key and the
+footer names that one instead. Terminal.app cannot send `Ctrl+,` at all (it has no
+control code), which is why audio settings also take `Ctrl+O`.
 
 The footer shows link status: how many peers you reach directly, how many flow through a
 relay, the worst latency, and whether you have had audio dropouts. When everything is
@@ -583,7 +587,7 @@ decisions and are not used in the product.
 - **Scale is 2–6 people.** In a mesh everyone sends to everyone; past 8 you would need
   the coordinator to mix the audio (an SFU).
 - **Push-to-talk is not hold-to-talk.** Terminals generally do not report key-release
-  events, so in `--ptt` mode F4 works as a toggle: press once to open the microphone,
+  events, so in `--ptt` mode F4 (or Ctrl+P) works as a toggle: press once to open the microphone,
   press again to close it.
 - **Finding each other depends on n0's public infrastructure,** unless the room is on a
   relay you run (`--relay`). Discovery and hole punching both go through servers run by

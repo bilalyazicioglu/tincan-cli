@@ -195,6 +195,9 @@ pub struct Theme {
     pub motion: bool,
     mono: bool,
     pub ascii: bool,
+    /// Whether shortcuts are named by their ctrl key rather than their F key. On a Mac
+    /// the top row is brightness and volume until fn is held down.
+    pub ctrl_keys: bool,
 }
 
 impl Theme {
@@ -228,6 +231,7 @@ impl Theme {
             motion: !(set("TINCAN_NO_MOTION") || set("NO_MOTION")),
             mono,
             ascii,
+            ctrl_keys: cfg!(target_os = "macos"),
         }
     }
 
@@ -239,6 +243,7 @@ impl Theme {
             motion: true,
             mono: false,
             ascii: false,
+            ctrl_keys: false,
         }
     }
 
@@ -251,6 +256,7 @@ impl Theme {
             motion: false,
             mono: true,
             ascii: true,
+            ctrl_keys: false,
         }
     }
 
@@ -263,6 +269,26 @@ impl Theme {
         } else {
             text.to_string()
         }
+    }
+
+    /// Names each F key by the ctrl key that does the same thing, where F keys are
+    /// out of easy reach.
+    pub fn keys(&self, text: &str) -> String {
+        if !self.ctrl_keys {
+            return text.to_string();
+        }
+        text.split(' ')
+            .map(|word| match word {
+                "f1" => "ctrl+y",
+                "f2" => "ctrl+g",
+                "f3" => "ctrl+t",
+                "f4" => "ctrl+p",
+                "f5" => "ctrl+e",
+                "f6" => "ctrl+o",
+                word => word,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// The ground the whole app sits on.
@@ -489,6 +515,7 @@ mod tests {
             motion: true,
             mono: false,
             ascii: false,
+            ctrl_keys: false,
         };
         assert_ne!(
             theme.accent().fg,
@@ -510,6 +537,7 @@ mod tests {
             motion: true,
             mono: false,
             ascii: false,
+            ctrl_keys: false,
         };
         let (quiet, _) = theme.meter(0);
         let (loud, _) = theme.meter(4);
@@ -542,6 +570,7 @@ mod tests {
             motion: true,
             mono: true,
             ascii: false,
+            ctrl_keys: false,
         };
         assert_ne!(theme.dim(), theme.text(), "dim must stay distinguishable");
         assert_ne!(
@@ -574,6 +603,7 @@ mod tests {
             motion: true,
             mono: false,
             ascii: false,
+            ctrl_keys: false,
         };
         assert_eq!(
             full.plainly("tab · f2"),
