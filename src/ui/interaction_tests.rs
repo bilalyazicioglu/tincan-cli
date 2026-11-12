@@ -586,7 +586,9 @@ async fn mixed_navigation_resize_and_roster_sequences_preserve_session_state() {
 
 #[tokio::test]
 async fn footer_clicks_use_the_keyboard_actions_and_send_the_expected_commands() {
-    for theme in [Theme::austere(), Theme::dark_true()] {
+    let mut mac = Theme::dark_true();
+    mac.ctrl_keys = true;
+    for theme in [Theme::austere(), Theme::dark_true(), mac] {
         for (label, expected, quits) in [
             ("tab channel", None, false),
             ("f2 talk", Some(Command::SwitchChannel(None)), false),
@@ -594,6 +596,7 @@ async fn footer_clicks_use_the_keyboard_actions_and_send_the_expected_commands()
             ("f5 deafen", Some(Command::SetDeafened(false)), false),
             ("ctrl+c quit", Some(Command::Quit), true),
         ] {
+            let label = &theme.keys(label);
             let mut app = room();
             let size = (160, 24);
             let (text, map) = screen(&app, size, &theme);

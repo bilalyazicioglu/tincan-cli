@@ -651,14 +651,16 @@ async fn handle_key(
         return Ok(true);
     }
     // The invite is advertised in the footer in settings as well as in chat.
-    if key.code == KeyCode::F(1) {
+    if key.code == KeyCode::F(1) || (ctrl && key.code == KeyCode::Char('y')) {
         let copied = crate::clipboard::copy(&app.invite_to_copy());
         app.show_invite_code(copied);
         return Ok(false);
     }
 
-    // Toggle Settings view (F6 or Ctrl+,)
-    let toggle_settings_key = key.code == KeyCode::F(6) || (ctrl && key.code == KeyCode::Char(','));
+    // Toggle Settings view (F6, Ctrl+O or Ctrl+,). Ctrl+, has no control code, so
+    // Terminal.app cannot send it; Ctrl+O is the one a Mac can always reach.
+    let toggle_settings_key = key.code == KeyCode::F(6)
+        || (ctrl && matches!(key.code, KeyCode::Char('o') | KeyCode::Char(',')));
     if toggle_settings_key {
         if app.view_mode == ViewMode::Settings {
             remember_settings(app);
@@ -826,8 +828,8 @@ async fn handle_key(
     // ── Chat Mode Keyboard Handling ─────────────────────────────────────────
     let toggle_voice = key.code == KeyCode::F(2) || (ctrl && key.code == KeyCode::Char('g'));
     let toggle_mute = key.code == KeyCode::F(3) || (ctrl && key.code == KeyCode::Char('t'));
-    let push_to_talk = key.code == KeyCode::F(4);
-    let toggle_deafen = key.code == KeyCode::F(5);
+    let push_to_talk = key.code == KeyCode::F(4) || (ctrl && key.code == KeyCode::Char('p'));
+    let toggle_deafen = key.code == KeyCode::F(5) || (ctrl && key.code == KeyCode::Char('e'));
 
     if push_to_talk && app.ptt_mode {
         app.ptt_active = !app.ptt_active;
@@ -1741,6 +1743,30 @@ mod tests {
             }));
         }
         app
+    }
+
+    // On a Mac the F keys need fn held down, so each has a ctrl key doing the same.
+    #[tokio::test]
+    async fn ctrl_keys_do_what_their_f_keys_do() {
+        for (f, letter) in [(4, 'p'), (5, 'e'), (6, 'o')] {
+            let mut outcomes = Vec::new();
+            for key in [
+                KeyEvent::new(KeyCode::F(f), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL),
+            ] {
+                let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+                let mut app = test_chat_app(0);
+                app.ptt_mode = true;
+                handle_key(&mut app, key, &cmd_tx, None).await.unwrap();
+                outcomes.push((app.ptt_active, app.view_mode, cmd_rx.try_recv().ok()));
+            }
+            assert_ne!(
+                outcomes[0],
+                (false, ViewMode::Chat, None),
+                "f{f} did nothing"
+            );
+            assert_eq!(outcomes[0], outcomes[1], "ctrl+{letter} must match f{f}");
+        }
     }
 
     #[tokio::test]
