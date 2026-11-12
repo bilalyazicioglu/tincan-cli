@@ -627,6 +627,31 @@ async fn footer_clicks_use_the_keyboard_actions_and_send_the_expected_commands()
     }
 }
 
+#[tokio::test]
+async fn the_push_to_talk_hint_toggles_the_microphone_when_clicked() {
+    let mut mac = Theme::dark_true();
+    mac.ctrl_keys = true;
+    for theme in [Theme::austere(), Theme::dark_true(), mac] {
+        let label = &theme.keys("f4 ptt");
+        let mut app = room();
+        app.ptt_mode = true;
+        let size = (160, 24);
+        let (text, map) = screen(&app, size, &theme);
+        let footer = text.lines().last().unwrap();
+        let at = footer.find(label).unwrap();
+        let x = ratatui::text::Span::raw(&footer[..at]).width() as u16;
+        let action = click_action(&app, x, 23, &map, size, &theme).unwrap();
+        let (commands, mut received) = mpsc::channel(16);
+        assert!(
+            !dispatch_click(&mut app, action, &commands, None)
+                .await
+                .unwrap()
+        );
+        assert!(app.ptt_active, "{label}");
+        assert!(received.try_recv().is_err());
+    }
+}
+
 #[test]
 fn footer_targets_track_visible_hints_status_and_settings_in_both_terminal_modes() {
     for theme in [Theme::austere(), Theme::dark_true()] {

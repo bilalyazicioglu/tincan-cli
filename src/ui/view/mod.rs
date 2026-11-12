@@ -320,6 +320,7 @@ fn footer_content(
                     "tab" => Some((KeyCode::Tab, KeyModifiers::NONE)),
                     "f2" => Some((KeyCode::F(2), KeyModifiers::NONE)),
                     "f3" => Some((KeyCode::F(3), KeyModifiers::NONE)),
+                    "f4" => Some((KeyCode::F(4), KeyModifiers::NONE)),
                     "f5" => Some((KeyCode::F(5), KeyModifiers::NONE)),
                     "f6" => Some((KeyCode::F(6), KeyModifiers::NONE)),
                     key if key.starts_with("ctrl+") && key.chars().count() == 6 => Some((
@@ -418,8 +419,15 @@ fn fit(app: &App, width: usize, theme: &Theme) -> String {
             "ctrl+c quit",
         ]
     };
+    // With --ptt the microphone only opens with F4, so it sits beside talk.
+    let ptt = app.ptt_mode && app.view_mode != ViewMode::Settings && app.selected_peer.is_none();
     for step in full {
-        let step = theme.plainly(&theme.keys(step));
+        let step = if ptt {
+            step.replacen("f2 talk", "f2 talk · f4 ptt", 1)
+        } else {
+            step.to_string()
+        };
+        let step = theme.plainly(&theme.keys(&step));
         if step.chars().count() <= width {
             return step;
         }
@@ -856,6 +864,24 @@ mod tests {
             "{footer}"
         );
         assert!(fit(&room(), 140, &mac).contains("ctrl+e deafen"));
+    }
+
+    #[test]
+    fn push_to_talk_names_its_key_beside_talk() {
+        let mut app = room();
+        let theme = Theme::from_env();
+        assert!(!fit(&app, 140, &theme).contains("ptt"));
+        app.ptt_mode = true;
+        assert!(fit(&app, 140, &theme).contains(&theme.keys("f2 talk · f4 ptt")));
+        let mut mac = Theme::from_env();
+        mac.ctrl_keys = true;
+        assert!(
+            fit(&app, 40, &mac).contains("ctrl+p ptt"),
+            "{}",
+            fit(&app, 40, &mac)
+        );
+        app.selected_peer = Some(PeerId([2; 32]));
+        assert!(!fit(&app, 140, &theme).contains("ptt"));
     }
 
     #[test]
