@@ -419,14 +419,12 @@ fn fit(app: &App, width: usize, theme: &Theme) -> String {
             "ctrl+c quit",
         ]
     };
-    // With --ptt the microphone only opens with F4, so it sits beside talk.
     let ptt = app.ptt_mode && app.view_mode != ViewMode::Settings && app.selected_peer.is_none();
-    for step in full {
-        let step = if ptt {
-            step.replacen("f2 talk", "f2 talk · f4 ptt", 1)
-        } else {
-            step.to_string()
-        };
+    let with_ptt = full
+        .iter()
+        .filter(|step| ptt && step.contains("f2 talk"))
+        .map(|step| step.replacen("f2 talk", "f2 talk · f4 ptt", 1));
+    for step in with_ptt.chain(full.iter().map(|step| step.to_string())) {
         let step = theme.plainly(&theme.keys(&step));
         if step.chars().count() <= width {
             return step;
@@ -880,6 +878,8 @@ mod tests {
             "{}",
             fit(&app, 40, &mac)
         );
+        assert!(fit(&app, 30, &mac).contains("ctrl+g talk"));
+        assert!(fit(&app, 30, &theme).contains(&theme.keys("f2 talk")));
         app.selected_peer = Some(PeerId([2; 32]));
         assert!(!fit(&app, 140, &theme).contains("ptt"));
     }
