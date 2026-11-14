@@ -52,13 +52,19 @@ To ensure code stability, seamless community contributions, and predictable rele
    git pull origin develop
    git checkout -b feature/my-new-feature
    ```
-2. **Commit & Test**: Ensure code compiles cleanly and passes all 94 unit/integration tests:
+2. **Commit & Test**: Ensure code compiles cleanly and passes the unit and integration suites:
    ```bash
-   cargo test
-   cargo clippy --all-targets
+   cargo fmt --all --check
+   cargo test --locked
+   cargo clippy --all-targets --locked -- -D warnings
    ```
 3. **Open Pull Request**: Target `develop` as the base branch.
 4. **CI Verification**: GitHub Actions automatically runs build & test suites on the PR.
 5. **Merge**: Once approved, squashed or rebased into `develop`.
 6. **Release Cut**: When preparing a release, `develop` is merged into `main`, tagged (e.g. `v0.2.0`), which automatically triggers GitHub Actions binary release builds!
 
+
+A tag builds the GitHub binaries and updates the Homebrew tap. npm and crates.io
+require separate publication. A release is complete only after the registry versions,
+installed binaries and website downloads have been verified. Use the
+[v0.4.1 release checklist](../releases/v0.4.1-checklist.md) for the next release.
