@@ -956,7 +956,8 @@ async fn handle_key(
                 }
                 if trimmed == "/help" {
                     app.notice("commands: /afk (toggle away) · /clear (clear chat) · /help".into());
-                    app.notice("shortcuts: F1 invite · F2 mute · F3 deafen · F4 voice · F5 chat · F6 audio · ↑↓ peer · ←→ vol · Ctrl+K silence".into());
+                    app.notice("shortcuts: F1/Ctrl+Y invite · F2/Ctrl+G talk · F3/Ctrl+T mute · F4/Ctrl+P push-to-talk · F5/Ctrl+E deafen · F6/Ctrl+O audio".into());
+                    app.notice("roster: ↑↓ select person · ←→ volume · Ctrl+K silence".into());
                     return Ok(false);
                 }
                 if trimmed == "/clear" {

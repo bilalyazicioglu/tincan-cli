@@ -108,7 +108,7 @@ struct AudioArgs {
     /// Speaker to use (a distinctive part of its name is enough).
     #[arg(long)]
     output: Option<String>,
-    /// Push-to-talk: the microphone only opens with F4.
+    /// Push-to-talk: toggle the microphone with F4 or Ctrl+P.
     #[arg(long)]
     ptt: bool,
 }
