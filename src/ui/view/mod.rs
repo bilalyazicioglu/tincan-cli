@@ -17,8 +17,10 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line as TextLine, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::state::{App, ViewMode};
+use super::state::{App, SettingsSection, ViewMode};
 use super::theme::Theme;
+use crate::proto::{ChannelId, PeerId};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Wide enough for a three-cell meter, a name and the channel someone is in.
 const RAIL_WIDTH: u16 = 28;
@@ -27,6 +29,102 @@ const STRAND_WIDTH: u16 = 3;
 /// Under this the rail is dropped altogether: on a narrow terminal the talk wins.
 const RAIL_NEEDS: u16 = 62;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ClickAction {
+    Channel(ChannelId),
+    Peer(PeerId),
+    Key(KeyEvent),
+    Focus(SettingsSection),
+    Device {
+        section: SettingsSection,
+        name: Option<String>,
+    },
+    Setting {
+        section: SettingsSection,
+        key: KeyEvent,
+    },
+    Gate {
+        cell: u16,
+        cells: u16,
+    },
+}
+
+/// A snapshot of what was actually offered on screen. Queued input keeps this
+/// snapshot, so a resize or roster update cannot turn it into a different action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ClickMap {
+    pub area: Rect,
+    pub targets: Vec<(Rect, ClickAction)>,
+}
+
+impl ClickMap {
+    pub fn action(&self, column: u16, row: u16) -> Option<&ClickAction> {
+        self.targets
+            .iter()
+            .find(|(rect, _)| rect.contains((column, row).into()))
+            .map(|(_, action)| action)
+    }
+}
+
+struct ScreenLayout {
+    header: Rect,
+    footer: Rect,
+    rail: Rect,
+    strand: Rect,
+    main: Rect,
+}
+
+impl ScreenLayout {
+    fn new(area: Rect) -> Self {
+        let [header, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        let (rail, strand, main) = if area.width >= RAIL_NEEDS && body.height >= 4 {
+            // Leave the conversation some room at medium widths.
+            let width = if area.width >= 80 {
+                RAIL_WIDTH
+            } else {
+                area.width / 3
+            };
+            let [rail, strand, main] = Layout::horizontal([
+                Constraint::Length(width),
+                Constraint::Length(STRAND_WIDTH),
+                Constraint::Min(20),
+            ])
+            .areas(body);
+            (rail, strand, main)
+        } else {
+            (Rect::default(), Rect::default(), body)
+        };
+        Self {
+            header,
+            footer,
+            rail,
+            strand,
+            main,
+        }
+    }
+}
+
+pub(super) fn click_map(area: Rect, app: &App, theme: &Theme) -> ClickMap {
+    let mut map = ClickMap {
+        area,
+        targets: Vec::new(),
+    };
+    let layout = ScreenLayout::new(area);
+    if app.view_mode == ViewMode::Chat {
+        rail::click_targets(layout.rail, app, &mut map.targets);
+    } else {
+        settings::click_targets(layout.main, app, theme, &mut map.targets);
+    }
+    map.targets
+        .extend(footer_content(layout.footer, app, theme).1);
+    map
+}
+
 pub fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
     frame.render_widget(Block::default().style(theme.surface()), area);
@@ -34,29 +132,14 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
         return;
     }
 
-    let [header, body, footer] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(0),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-
-    draw_header(frame, header, app, theme);
-    draw_footer(frame, footer, app, theme);
-
-    let main = if area.width >= RAIL_NEEDS && body.height >= 4 {
-        let [rail_area, strand_area, main] = Layout::horizontal([
-            Constraint::Length(RAIL_WIDTH),
-            Constraint::Length(STRAND_WIDTH),
-            Constraint::Min(20),
-        ])
-        .areas(body);
-        rail::draw(frame, rail_area, app, theme);
-        strand::draw(frame, strand_area, app, theme);
-        main
-    } else {
-        body
-    };
+    let layout = ScreenLayout::new(area);
+    draw_header(frame, layout.header, app, theme, layout.rail.width == 0);
+    draw_footer(frame, layout.footer, app, theme);
+    if layout.rail.width > 0 {
+        rail::draw(frame, layout.rail, app, theme);
+        strand::draw(frame, layout.strand, app, theme);
+    }
+    let main = layout.main;
 
     match app.view_mode {
         ViewMode::Chat => chat::draw(frame, main, app, theme),
@@ -66,7 +149,7 @@ pub fn draw(frame: &mut Frame, app: &App, theme: &Theme) {
 
 /// Who you are with, and how well you are reaching them. The link chip is the same
 /// reading as the string, in words.
-fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme, compact: bool) {
     frame.render_widget(Block::default().style(theme.panel()), area);
 
     let mut left = vec![
@@ -75,7 +158,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Span::raw(" "),
     ];
     if !app.room_name.is_empty() {
-        left.push(Span::styled(app.room_name.clone(), theme.strong()));
+        left.push(Span::styled(
+            clip(&app.room_name, (area.width as usize / 4).min(24), theme),
+            theme.strong(),
+        ));
         left.push(Span::raw(" "));
     }
     match app.view_mode {
@@ -95,10 +181,36 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
                     theme.accent()
                 };
                 left.push(Span::styled(
-                    format!("#{}", app.channel_name(app.viewing)),
+                    format!(
+                        "#{}",
+                        clip(
+                            app.channel_name(app.viewing),
+                            (area.width as usize / 4).min(24),
+                            theme
+                        )
+                    ),
                     channel_style,
                 ));
             }
+        }
+    }
+
+    if compact {
+        // The rail's absence must not hide the state of our own call. Count only
+        // the voice channel, not everyone reading other channels in the room.
+        let call = app
+            .voice
+            .map(|channel| format!("call {}", app.peers_in(channel).len()))
+            .unwrap_or_else(|| "not in voice".into());
+        left = vec![
+            Span::styled(" TINCAN ", theme.chip_on()),
+            Span::styled(format!(" {call} "), theme.text()),
+        ];
+        if app.muted {
+            left.push(Span::styled("muted ", theme.brass()));
+        }
+        if app.deafened {
+            left.push(Span::styled("deafened ", theme.brass()));
         }
     }
 
@@ -121,13 +233,17 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let rtt = who.as_ref().map(|(_, rtt)| *rtt).or(app.link.worst_rtt);
 
     let mut base = Vec::new();
-    if app.recently_dropped() {
+    if app.recently_dropped() && !compact {
         base.push(Span::styled("audio dropping ", theme.error()));
     }
     base.push(Span::styled(
         format!(" {} ", strand::label(app)),
         theme.chip_link(strand),
     ));
+    let essential: usize = left.iter().chain(base.iter()).map(Span::width).sum();
+    if essential + 1 > area.width as usize && compact {
+        left.remove(0); // State matters more than the brand in a very small window.
+    }
     let name = who.map(|(name, _)| {
         Span::styled(
             format!("  {}", clip(&name, rail::NAME_ROOM, theme)),
@@ -157,22 +273,34 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 /// The shortcuts, always. They are what a newcomer needs most and they cost one row.
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     frame.render_widget(Block::default().style(theme.panel()), area);
+    frame.render_widget(Paragraph::new(footer_content(area, app, theme).0), area);
+}
 
-    let right = vec![
-        Span::styled(
-            if crate::invite::looks_like_code(&app.invite_code) {
-                "f1 code "
-            } else {
-                "f1 invite "
-            },
-            theme.dim(),
-        ),
-        Span::styled(
-            short_invite(&app.invite_code, area.width as usize, theme),
-            theme.brass(),
-        ),
-        Span::raw(" "),
-    ];
+/// Drawing and pointer targets are derived from the same shortened hint line.
+fn footer_content(
+    area: Rect,
+    app: &App,
+    theme: &Theme,
+) -> (TextLine<'static>, Vec<(Rect, ClickAction)>) {
+    let right = if area.width >= 72 {
+        vec![
+            Span::styled(
+                theme.keys(if crate::invite::looks_like_code(&app.invite_code) {
+                    "f1 code "
+                } else {
+                    "f1 invite "
+                }),
+                theme.dim(),
+            ),
+            Span::styled(
+                short_invite(&app.invite_code, area.width as usize, theme),
+                theme.brass(),
+            ),
+            Span::raw(" "),
+        ]
+    } else {
+        Vec::new()
+    };
     // One column for the indent, one so the two halves never touch.
     let used: usize = right.iter().map(Span::width).sum();
     let room = (area.width as usize).saturating_sub(used + 2);
@@ -181,26 +309,97 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         Some(status) => clip(status, room, theme),
         None => fit(app, room, theme),
     };
+    let mut targets = Vec::new();
+    if area.height > 0 && area.width > 0 {
+        if app.status.is_none() {
+            let separator = theme.plainly(" · ");
+            let mut x = area.x + 1;
+            for hint in hints.split(&separator) {
+                let width = Span::raw(hint).width() as u16;
+                let code = match hint.split_whitespace().next().unwrap_or("") {
+                    "tab" => Some((KeyCode::Tab, KeyModifiers::NONE)),
+                    "f2" => Some((KeyCode::F(2), KeyModifiers::NONE)),
+                    "f3" => Some((KeyCode::F(3), KeyModifiers::NONE)),
+                    "f4" => Some((KeyCode::F(4), KeyModifiers::NONE)),
+                    "f5" => Some((KeyCode::F(5), KeyModifiers::NONE)),
+                    "f6" => Some((KeyCode::F(6), KeyModifiers::NONE)),
+                    key if key.starts_with("ctrl+") && key.chars().count() == 6 => Some((
+                        KeyCode::Char(key.chars().last().unwrap()),
+                        KeyModifiers::CONTROL,
+                    )),
+                    "esc" => Some((KeyCode::Esc, KeyModifiers::NONE)),
+                    "enter" => Some((KeyCode::Enter, KeyModifiers::NONE)),
+                    "a" => Some((KeyCode::Char('a'), KeyModifiers::NONE)),
+                    "space" => Some((KeyCode::Char(' '), KeyModifiers::NONE)),
+                    "m" => Some((KeyCode::Char('m'), KeyModifiers::NONE)),
+                    _ => None,
+                };
+                if let Some((code, modifiers)) = code {
+                    targets.push((
+                        Rect::new(x, area.y, width, 1),
+                        ClickAction::Key(KeyEvent::new(code, modifiers)),
+                    ));
+                } else {
+                    // A two-way control has two targets; its label cannot choose a
+                    // direction for the user. ASCII terminals name the directions.
+                    for (prefix, first, second) in [
+                        ("↑↓", KeyCode::Up, KeyCode::Down),
+                        ("←→", KeyCode::Left, KeyCode::Right),
+                        ("up/down", KeyCode::Up, KeyCode::Down),
+                        ("left/right", KeyCode::Left, KeyCode::Right),
+                    ] {
+                        if hint.starts_with(prefix) {
+                            let (first_width, second_offset, second_width) =
+                                if let Some((a, b)) = prefix.split_once('/') {
+                                    (a.len() as u16, a.len() as u16 + 1, b.len() as u16)
+                                } else {
+                                    (1, 1, 1)
+                                };
+                            for (offset, width, code) in [
+                                (0, first_width, first),
+                                (second_offset, second_width, second),
+                            ] {
+                                targets.push((
+                                    Rect::new(x + offset, area.y, width, 1),
+                                    ClickAction::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                                ));
+                            }
+                            break;
+                        }
+                    }
+                }
+                x += width + Span::raw(&separator).width() as u16;
+            }
+        }
+        if used > 0 && used < area.width as usize {
+            targets.push((
+                Rect::new(area.right() - used as u16, area.y, used as u16 - 1, 1),
+                ClickAction::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)),
+            ));
+        }
+        targets
+            .retain(|(rect, _)| rect.width > 0 && rect.x >= area.x && rect.right() <= area.right());
+    }
     let left = vec![Span::raw(" "), Span::styled(hints, theme.dim())];
 
-    frame.render_widget(Paragraph::new(spread(area.width, left, right)), area);
+    (spread(area.width, left, right), targets)
 }
 
 /// The shortcut line, shortened a step at a time rather than cut mid-word.
 fn fit(app: &App, width: usize, theme: &Theme) -> String {
-    let full = if app.view_mode == ViewMode::Settings {
-        [
+    let full: &[&str] = if app.view_mode == ViewMode::Settings {
+        &[
             "tab section · ↑↓ move · ←→ adjust · a measure · space toggle · m live · esc back",
             "tab section · ↑↓ move · ←→ adjust · enter apply · esc back",
             "tab section · ↑↓ move · ←→ adjust · esc back",
-            "↑↓ move · ←→ adjust · esc back",
+            "↑↓ move · enter apply · esc back",
             "esc back",
         ]
     } else if app.selected_peer.is_some() {
         // While a name is picked out, the row tells you what the keys now do to that
         // one person. Nothing else on this line changes meaning, and these three keys
         // have nowhere else to announce themselves.
-        [
+        &[
             "↑↓ person · ←→ volume · ctrl+k silence · esc done · f2 talk · f6 audio · ctrl+c",
             "↑↓ person · ←→ volume · ctrl+k silence · esc done · f2 talk · ctrl+c",
             "↑↓ person · ←→ volume · ctrl+k silence · esc done · f2 talk",
@@ -208,21 +407,31 @@ fn fit(app: &App, width: usize, theme: &Theme) -> String {
             "esc done · f2 talk",
         ]
     } else {
-        [
+        &[
             "tab channel · f2 talk · f3 mute · f5 deafen · f6 audio · ctrl+c quit",
             "tab channel · f2 talk · f3 mute · f6 audio · ctrl+c quit",
             "tab channel · f2 talk · f3 mute · f6 audio · ctrl+c",
+            // A Mac names the ctrl keys, which are longer; these two rungs keep mute
+            // on 80 columns there and talk on 40.
+            "tab · f2 talk · f3 mute · f6 audio · ctrl+c",
             "tab · f2 talk · f6 audio · ctrl+c",
+            "tab · f2 talk · ctrl+c",
             "ctrl+c quit",
         ]
     };
-    for step in full {
-        let step = theme.plainly(step);
+    let ptt = app.ptt_mode && app.view_mode != ViewMode::Settings && app.selected_peer.is_none();
+    let with_ptt = full
+        .iter()
+        .filter(|step| ptt && step.contains("f2 talk"))
+        .map(|step| step.replacen("f2 talk", "f2 talk · f4 ptt", 1));
+    for step in with_ptt.chain(full.iter().map(|step| step.to_string())) {
+        let step = theme.plainly(&theme.keys(&step));
         if step.chars().count() <= width {
             return step;
         }
     }
-    clip(&theme.plainly(full[4]), width, theme)
+    let last = theme.keys(full[full.len() - 1]);
+    clip(&theme.plainly(&last), width, theme)
 }
 
 /// Puts `right` against the right edge, `left` against the left.
@@ -232,6 +441,8 @@ fn spread(width: u16, left: Vec<Span<'static>>, right: Vec<Span<'static>>) -> Te
     let mut spans = left;
     if gap > 0 {
         spans.push(Span::raw(" ".repeat(gap)));
+    }
+    if used <= width as usize {
         spans.extend(right);
     }
     TextLine::from(spans)
@@ -267,14 +478,24 @@ fn millis(rtt: std::time::Duration) -> String {
 
 /// Cuts to width, with an ellipsis when something was lost.
 fn clip(text: &str, width: usize, theme: &Theme) -> String {
-    if text.chars().count() <= width {
+    if Span::raw(text).width() <= width {
         return text.to_string();
     }
-    if width <= 1 {
-        return text.chars().take(width).collect();
+    let cut = theme.glyphs.cut.to_string();
+    let suffix = Span::raw(&cut).width();
+    if width < suffix {
+        return String::new();
     }
-    let kept: String = text.chars().take(width - 1).collect();
-    format!("{kept}{}", theme.glyphs.cut)
+    let mut kept = String::new();
+    for ch in text.chars() {
+        let mut next = kept.clone();
+        next.push(ch);
+        if Span::raw(&next).width() > width - suffix {
+            break;
+        }
+        kept = next;
+    }
+    format!("{kept}{cut}")
 }
 
 /// An invite code is cut to its head; a room name or relay invite is shown whole when
@@ -284,7 +505,7 @@ fn short_invite(invite: &str, width: usize, theme: &Theme) -> String {
     if crate::invite::looks_like_code(invite) {
         return short_code(invite, theme);
     }
-    if invite.chars().count() + "f1 invite ".len() <= width / 2 {
+    if invite.chars().count() + theme.keys("f1 invite ").len() <= width / 2 {
         return invite.to_string();
     }
     let room = invite.split('@').next().unwrap_or(invite);
@@ -316,9 +537,12 @@ mod tests {
     }
 
     fn rendered(width: u16, height: u16, app: &App) -> String {
+        rendered_with(width, height, app, &Theme::from_env())
+    }
+
+    fn rendered_with(width: u16, height: u16, app: &App, theme: &Theme) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let theme = Theme::from_env();
-        terminal.draw(|frame| draw(frame, app, &theme)).unwrap();
+        terminal.draw(|frame| draw(frame, app, theme)).unwrap();
         terminal
             .backend()
             .buffer()
@@ -476,7 +700,10 @@ mod tests {
         // must not cost it.
         for width in [80, 60, 50, 40] {
             let line = fit(&app, width, &theme);
-            assert!(line.contains("f2"), "at {width} columns: {line}");
+            assert!(
+                line.contains(&theme.keys("f2")),
+                "at {width} columns: {line}"
+            );
             assert!(line.chars().count() <= width);
         }
     }
@@ -485,18 +712,19 @@ mod tests {
     fn the_invite_code_survives_a_crowded_footer() {
         // The shortcuts shorten so the code keeps its corner; the code is the one
         // thing on that row nobody can retype from memory.
+        let theme = Theme::from_env();
         for width in [72, 76, 80, 100] {
             let screen = rendered(width, 24, &room());
             let footer = screen.lines().last().unwrap();
             assert!(
-                footer.contains("f1 code"),
+                footer.contains(&theme.keys("f1 code")),
                 "lost the code at {width}: {footer}"
             );
         }
     }
 
     #[test]
-    fn a_relay_invite_fits_a_narrow_footer() {
+    fn a_narrow_footer_gives_shortcuts_priority_over_the_invite() {
         let mut app = room();
         app.invite_code = "a-long-room-name@relay.example.com".into();
 
@@ -509,9 +737,12 @@ mod tests {
 
         let narrow = rendered(40, 24, &app);
         let footer = narrow.lines().last().unwrap();
+        let theme = Theme::from_env();
         assert!(
-            footer.contains("a-long-room-name") && !footer.contains("relay.example.com"),
-            "a narrow footer keeps the room and cuts the relay: {footer}"
+            footer.contains("tab")
+                && footer.contains(&theme.keys("f2 talk"))
+                && !footer.contains(&theme.keys("f1 invite")),
+            "a narrow footer keeps navigation and voice controls: {footer}"
         );
     }
 
@@ -522,8 +753,9 @@ mod tests {
         app.passphrase = Some("chestnut-ferry-lens-moss".into());
         let screen = rendered(120, 24, &app);
         let footer = screen.lines().last().unwrap();
+        let theme = Theme::from_env();
         assert!(
-            footer.contains("f1 invite lobby@relay.example.com"),
+            footer.contains(&theme.keys("f1 invite lobby@relay.example.com")),
             "{footer}"
         );
         assert!(
@@ -532,7 +764,8 @@ mod tests {
         );
 
         let code = rendered(120, 24, &room());
-        assert!(code.lines().last().unwrap().contains("f1 code"));
+        let footer = code.lines().last().unwrap();
+        assert!(footer.contains(&theme.keys("f1 code")));
     }
 
     #[test]
@@ -597,15 +830,60 @@ mod tests {
     fn the_shortcut_line_shortens_instead_of_breaking() {
         let app = room();
         let theme = Theme::from_env();
-        assert!(fit(&app, 80, &theme).contains("f3 mute"));
+        let mute = theme.keys("f3 mute");
+        assert!(fit(&app, 80, &theme).contains(&mute));
         assert!(
-            fit(&app, 55, &theme).contains("f3 mute"),
+            fit(&app, 55, &theme).contains(&mute),
             "the ladder must not skip a rung"
         );
         assert!(fit(&app, 40, &theme).chars().count() <= 40);
         assert!(fit(&app, 12, &theme).chars().count() <= 12);
         assert!(fit(&app, 3, &theme).chars().count() <= 3);
     }
+    #[test]
+    fn a_mac_footer_names_the_ctrl_keys() {
+        // On a Mac the F keys need fn held down, so the footer names the ctrl key
+        // that does the same thing, and keeps mute beside the code at 80 columns
+        // and talk at 40.
+        let mut mac = Theme::from_env();
+        mac.ctrl_keys = true;
+        let screen = rendered_with(80, 24, &room(), &mac);
+        let footer = screen.lines().last().unwrap();
+        for hint in ["ctrl+y code", "ctrl+g talk", "ctrl+t mute", "ctrl+o audio"] {
+            assert!(footer.contains(hint), "{hint}: {footer}");
+        }
+        for f in ["f1", "f2", "f3", "f6"] {
+            assert!(!footer.contains(f), "{f}: {footer}");
+        }
+        let narrow = rendered_with(40, 24, &room(), &mac);
+        let footer = narrow.lines().last().unwrap();
+        assert!(
+            footer.contains("tab") && footer.contains("ctrl+g talk"),
+            "{footer}"
+        );
+        assert!(fit(&room(), 140, &mac).contains("ctrl+e deafen"));
+    }
+
+    #[test]
+    fn push_to_talk_names_its_key_beside_talk() {
+        let mut app = room();
+        let theme = Theme::from_env();
+        assert!(!fit(&app, 140, &theme).contains("ptt"));
+        app.ptt_mode = true;
+        assert!(fit(&app, 140, &theme).contains(&theme.plainly(&theme.keys("f2 talk · f4 ptt"))));
+        let mut mac = Theme::from_env();
+        mac.ctrl_keys = true;
+        assert!(
+            fit(&app, 40, &mac).contains("ctrl+p ptt"),
+            "{}",
+            fit(&app, 40, &mac)
+        );
+        assert!(fit(&app, 30, &mac).contains("ctrl+g talk"));
+        assert!(fit(&app, 30, &theme).contains(&theme.keys("f2 talk")));
+        app.selected_peer = Some(PeerId([2; 32]));
+        assert!(!fit(&app, 140, &theme).contains("ptt"));
+    }
+
     #[test]
     fn millis_caps_at_999() {
         use std::time::Duration;
@@ -709,7 +987,7 @@ mod tests {
 
     #[test]
     fn a_narrow_header_lets_the_name_go_before_the_number() {
-        let app = call(
+        let mut app = call(
             &["bob", "cem", "deniz", "emre"],
             &[
                 (2, false, 18),
@@ -718,8 +996,10 @@ mod tests {
                 (5, true, 340),
             ],
         );
+        app.muted = true;
         let top = header(40, &app);
         assert!(top.contains("RELAY") && top.contains("340ms"), "{top}");
+        assert!(top.contains("muted"), "{top}");
         assert!(!top.contains("emre"), "{top}");
     }
 
@@ -766,7 +1046,7 @@ mod tests {
 
     #[test]
     fn when_only_the_chip_fits_the_number_goes_too() {
-        let app = call(
+        let mut app = call(
             &["bob", "cem", "deniz", "emre"],
             &[
                 (2, false, 18),
@@ -775,6 +1055,8 @@ mod tests {
                 (5, true, 340),
             ],
         );
+        app.muted = true;
+        app.deafened = true;
         let top = header(34, &app);
         assert!(top.contains("RELAY"), "{top}");
         assert!(!top.contains("340ms") && !top.contains("emre"), "{top}");
@@ -1057,6 +1339,28 @@ mod pictures {
             std::fs::write(&path, &picture)
                 .unwrap_or_else(|e| panic!("could not write {path}: {e}"));
             println!("{path} — {} bytes", picture.len());
+        }
+        // Review the breakpoints with real room/settings state as well as the
+        // normal README size. These artifacts stay out of the shipped assets.
+        let review = std::path::Path::new("target/ui-review");
+        std::fs::create_dir_all(review).unwrap();
+        for (cols, rows) in [(44, 12), (56, 16), (70, 20), (80, 24)] {
+            let mut room = hero();
+            room.muted = true;
+            room.deafened = true;
+            let mut mic = settings();
+            mic.settings_section = SettingsSection::MicTest;
+            for (name, app) in [
+                ("room", room),
+                ("settings", settings()),
+                ("settings-mic", mic),
+            ] {
+                std::fs::write(
+                    review.join(format!("{name}-{cols}x{rows}.svg")),
+                    svg(&app, cols, rows),
+                )
+                .unwrap();
+            }
         }
     }
 

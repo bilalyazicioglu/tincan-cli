@@ -36,7 +36,8 @@ tincan join <INVITE-CODE> --name bob
 
 Prebuilt binaries are downloaded for macOS (`arm64`, `x64`), Linux (`x64`, `arm64`) and
 Windows (`x64`). The Windows binary is built and tested in CI but has not been exercised
-on a real Windows desktop; anything else falls back to `cargo install tincan-chat`.
+on a real Windows desktop. On other platforms, the launcher suggests building from
+source with `cargo install tincan-chat`; it does not build automatically.
 
 ## Links
 

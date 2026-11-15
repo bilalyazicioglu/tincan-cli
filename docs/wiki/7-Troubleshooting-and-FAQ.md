@@ -27,5 +27,5 @@ A: No, not even between two machines on the same network. Peers find each other 
 - **Fix**: Pick another device on the settings screen, or check that the one you want is not held open exclusively by another application.
 
 ### Issue 2: Terminal Function Keys F1-F5 do not trigger action
-- **Fix**: Some terminal emulators trap F-keys. Use alternative shortcuts: `Ctrl+G` for voice join (F2), `Ctrl+T` for mute (F3).
+- **Fix**: Some terminal emulators trap F-keys. Use alternative shortcuts: `Ctrl+Y` for the invite (F1), `Ctrl+G` for voice join (F2), `Ctrl+T` for mute (F3), `Ctrl+P` for push-to-talk (F4), `Ctrl+E` for deafen (F5), `Ctrl+O` for audio settings (F6).
 

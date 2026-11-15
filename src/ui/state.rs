@@ -488,11 +488,21 @@ impl App {
             return;
         }
         let count = self.channels.len() as u8;
-        self.viewing = ChannelId(if forward {
+        let channel = ChannelId(if forward {
             (self.viewing.0 + 1) % count
         } else {
             (self.viewing.0 + count - 1) % count
         });
+        self.view_channel(channel);
+    }
+
+    /// Reading a channel has the same meaning whether selected by key or pointer.
+    pub fn view_channel(&mut self, channel: ChannelId) {
+        if channel.0 as usize >= self.channels.len() {
+            return;
+        }
+        self.viewing = channel;
+        self.selected_peer = None;
         // Looking at a channel is what reading it means.
         self.unread.remove(&self.viewing);
         self.mentioned.remove(&self.viewing);
@@ -693,6 +703,12 @@ impl App {
             None if forward => others[0],
             None => others[last],
         });
+    }
+
+    pub fn select_person(&mut self, peer: PeerId) {
+        if peer != self.me && self.peers.iter().any(|person| person.id == peer) {
+            self.selected_peer = Some(peer);
+        }
     }
 
     /// Whether anything on screen is still moving. The event loop asks before waking
