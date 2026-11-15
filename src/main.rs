@@ -384,7 +384,7 @@ async fn host(
     }
 
     // Wait for the user rather than a timer. The interface takes over the whole
-    // screen, and a 63-character code is not something anyone can copy against a
+    // screen, and a 64-character code is not something anyone can copy against a
     // countdown. F1 brings it back once the interface is up.
     print!(
         "\n{}",
